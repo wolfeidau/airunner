@@ -1,0 +1,9 @@
+.certs/
+dist/
+.envrc*
+.vscode
+vendor/
+*.zip
+bin/
+coverage.*
+.claude

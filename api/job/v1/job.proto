@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package job.v1;
+
+import "google/protobuf/timestamp.proto";
+
+message UUID {
+  bytes value = 1; // Unique identifier value
+}
+
+// JobService provides job management operations
+service JobService {
+  // EnqueueJob queues a new job
+  rpc EnqueueJob(EnqueueJobRequest) returns (EnqueueJobResponse) {}
+
+  // ListJobs retrieves a list of jobs
+  rpc ListJobs(ListJobsRequest) returns (ListJobsResponse) {}
+}
+
+// EnqueueJobRequest is the request message for EnqueueJob
+message EnqueueJobRequest {
+  JobParams job_params = 1; // Parameters for the job to be enqueued
+}
+
+// EnqueueJobResponse is the response message for EnqueueJob
+message EnqueueJobResponse {
+  string job_id = 1; // Unique identifier for the enqueued job
+  google.protobuf.Timestamp created_at = 2; // Timestamp when the job was created
+  JobState state = 3; // Current state of the job
+}
+
+// ListJobsRequest is the request message for ListJobs
+message ListJobsRequest {
+  int32 page = 1; // Page number for pagination
+  int32 page_size = 2; // Number of jobs per page
+}
+
+// ListJobsResponse is the response message for ListJobs
+message ListJobsResponse {
+  repeated Job jobs = 1; // List of jobs
+  int32 last_page = 2; // Provides the last page number for pagination
+}
+
+message JobParams {
+  string request_id = 1; // Unique request id for the job
+  string commit = 2; // Commit hash or identifier for the job
+  string branch = 3; // Branch name for the job
+  map<string, string> environment = 4; // Environment variables for the job
+  map<string, string> metadata = 5; // Additional metadata for the job
+  string owner = 6; // Owner of the job
+}
+
+enum JobState {
+  JOB_STATE_UNSPECIFIED = 0; // Unspecified state
+  JOB_STATE_SCHEDULED = 1; // Job is scheduled to run
+  JOB_STATE_RUNNING = 2; // Job is currently running
+  JOB_STATE_COMPLETED = 3; // Job has completed successfully
+  JOB_STATE_FAILED = 4; // Job has failed
+}
+
+// Job represents a job in the system
+message Job {
+  UUID job_id = 1; // Unique identifier for the job
+  JobParams job_params = 2; // Parameters associated with the job
+  JobState state = 3; // Current state of the job
+  google.protobuf.Timestamp created_at = 4; // Timestamp when the job was created
+  google.protobuf.Timestamp updated_at = 5; // Timestamp when the job was last updated
+}

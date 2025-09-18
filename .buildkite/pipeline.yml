@@ -1,6 +1,6 @@
 steps:
-  - if: build.branch == "main"
-    if_changed: ".buildkite/Dockerfile.build"
+  - # if: build.branch == "main"
+    # if_changed: ".buildkite/Dockerfile.build"
     key: base_image
     label: ":docker: Create base image"
     command: |

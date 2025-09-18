@@ -1,0 +1,22 @@
+version: "3.5"
+
+services:
+  dynamodb:
+    command: "-jar DynamoDBLocal.jar -port 4101 -disableTelemetry -dbPath ./data -sharedDb"
+    image: "amazon/dynamodb-local:2.5.2"
+    environment:
+      JAVA_OPTS: "-Xmx128m"
+    ports:
+      - "4101:4101"
+    volumes:
+      - "dynamodb-data:/home/dynamodblocal/data"
+    user: root
+    working_dir: /home/dynamodblocal
+    healthcheck:
+      test: [ "CMD-SHELL", '[ "$(curl -s -o /dev/null -I -w ''%{http_code}'' http://localhost:4101)" == "400" ]' ]
+      interval: 1s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  dynamodb-data:

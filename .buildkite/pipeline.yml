@@ -1,7 +1,18 @@
+image: "nscr.io/qma22et3h0er6/base:latest"
+
 steps:
-  - # if: build.branch == "main"
-    # if_changed: ".buildkite/Dockerfile.build"
+  - name: ":docker: Set up base image"
+    key: base_image_setup
+    command: |
+      export REGISTRY="$(nsc workspace describe -o json -k registry_url)"
+      export SERVICE="base"
+      export DOCKER_REPOSITORY="$${REGISTRY}/$${SERVICE}:latest"
+
+
+  - if: build.branch == "main"
+    if_changed: ".buildkite/Dockerfile.build"
     key: base_image
+    depends_on: [base_image_setup]
     label: ":docker: Create base image"
     command: |
       export REGISTRY="$(nsc workspace describe -o json -k registry_url)"

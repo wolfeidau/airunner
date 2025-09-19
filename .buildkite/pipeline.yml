@@ -1,16 +1,9 @@
 image: "nscr.io/qma22et3h0er6/base:latest"
 
 steps:
-  - name: ":docker: Set up base image"
-    key: base_image_setup
-    command: echo "Setting up base image"
-    plugins:
-      - .buildkite/plugins/base-image:
-
   - if: build.branch == "main"
     if_changed: ".buildkite/Dockerfile.build"
     key: base_image
-    depends_on: [base_image_setup]
     label: ":docker: Create base image"
     command: |
       export REGISTRY="$(nsc workspace describe -o json -k registry_url)"
@@ -29,7 +22,7 @@ steps:
 
   - group: ":mag: QA"
     id: quality_checks
-    depends_on: [base_image_setup, base_image]
+    depends_on: [base_image]
     steps:
       - key: lint
         label: ":golangci-lint: lint"

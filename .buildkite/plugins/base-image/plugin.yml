@@ -1,5 +1,0 @@
-name: base-image
-description: base-image cache plugin for Buildkite. Supports Linux.
-author: https://github.com/wolfeidau
-requirements:
-  - base-image

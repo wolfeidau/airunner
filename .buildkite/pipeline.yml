@@ -31,7 +31,7 @@ steps:
 
   - group: ":mag: QA"
     id: quality_checks
-    depends_on: [base_image]
+    depends_on: [base_image_setup, base_image]
     steps:
       - key: lint
         label: ":golangci-lint: lint"

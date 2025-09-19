@@ -3,11 +3,9 @@ image: "nscr.io/qma22et3h0er6/base:latest"
 steps:
   - name: ":docker: Set up base image"
     key: base_image_setup
-    command: |
-      export REGISTRY="$(nsc workspace describe -o json -k registry_url)"
-      export SERVICE="base"
-      export DOCKER_REPOSITORY="$${REGISTRY}/$${SERVICE}:latest"
-
+    command: echo "Setting up base image"
+    plugins:
+      - .buildkite/plugins/base-image:
 
   - if: build.branch == "main"
     if_changed: ".buildkite/Dockerfile.build"

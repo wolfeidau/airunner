@@ -1,0 +1,8 @@
+#!/bin/bash
+set -euo pipefail
+
+REGISTRY=""
+REGISTRY="$(nsc workspace describe -o json -k registry_url)"
+export REGISTRY
+export SERVICE="base"
+export DOCKER_REPOSITORY="${REGISTRY}/${SERVICE}:latest"

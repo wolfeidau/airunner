@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -24,5 +25,13 @@ func (s *RPCServerCmd) Run(ctx context.Context, globals *Globals) error {
 	log.Info().Str("version", globals.Version).Msg("Starting RPC server")
 	log.Info().Str("listen", s.Listen).Msg("Listening for RPC connections")
 
-	return http.ListenAndServeTLS(s.Listen, s.Cert, s.Key, mux)
+	server := &http.Server{
+		Addr:         s.Listen,
+		Handler:      mux,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	return server.ListenAndServeTLS(s.Cert, s.Key)
 }

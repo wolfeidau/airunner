@@ -4,7 +4,9 @@ go 1.24.5
 
 require (
 	connectrpc.com/connect v1.18.1
+	connectrpc.com/cors v0.1.0
 	github.com/alecthomas/kong v1.12.1
+	github.com/rs/cors v1.11.1
 	github.com/rs/zerolog v1.34.0
 	google.golang.org/protobuf v1.36.8
 )

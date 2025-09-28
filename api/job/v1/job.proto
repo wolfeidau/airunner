@@ -157,6 +157,12 @@ message ListJobsResponse {
   int32 last_page = 2; // Provides the last page number for pagination
 }
 
+enum ProcessType {
+  PROCESS_TYPE_UNSPECIFIED = 0;
+  PROCESS_TYPE_PIPE = 1; // Pipe mode for non-interactive processes
+  PROCESS_TYPE_PTY = 2; // PTY mode for interactive processes
+}
+
 message JobParams {
   string repository = 1; // Repository URL for the job
   string commit = 2; // Commit hash or identifier for the job
@@ -164,6 +170,11 @@ message JobParams {
   map<string, string> environment = 4; // Environment variables for the job
   map<string, string> metadata = 5; // Additional metadata for the job
   string owner = 6; // Owner of the job
+  string command = 7; // Command to execute (e.g., "go", "npm", "make")
+  repeated string args = 8; // Command arguments
+  ProcessType process_type = 9; // Process execution mode
+  int32 timeout_seconds = 10; // Command execution timeout in seconds
+  string working_directory = 11; // Optional working directory override
 }
 
 enum JobState {

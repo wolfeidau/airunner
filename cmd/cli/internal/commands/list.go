@@ -12,12 +12,12 @@ import (
 )
 
 type ListCmd struct {
-	Server   string         `help:"Server URL" default:"https://localhost:8080"`
-	Queue    string         `help:"Queue name to filter by" default:""`
-	State    jobv1.JobState `help:"Job state to filter by" default:"JOB_STATE_UNSPECIFIED"`
-	Page     int32          `help:"Page number" default:"1"`
-	PageSize int32          `help:"Number of jobs per page" default:"20"`
-	Watch    bool           `help:"Watch for changes (refresh every 5 seconds)" default:"false"`
+	Server   string `help:"Server URL" default:"https://localhost:8080"`
+	Queue    string `help:"Queue name to filter by" default:""`
+	State    string `help:"Job state to filter by (scheduled, running, completed, failed, cancelled)" default:""`
+	Page     int32  `help:"Page number" default:"1"`
+	PageSize int32  `help:"Number of jobs per page" default:"20"`
+	Watch    bool   `help:"Watch for changes (refresh every 5 seconds)" default:"false"`
 }
 
 func (l *ListCmd) Run(ctx context.Context, globals *Globals) error {
@@ -37,9 +37,12 @@ func (l *ListCmd) Run(ctx context.Context, globals *Globals) error {
 }
 
 func (l *ListCmd) listJobs(ctx context.Context, clients *client.Clients) error {
+	// Convert string state to enum
+	state := l.stringToJobState(l.State)
+
 	req := &jobv1.ListJobsRequest{
 		Queue:    l.Queue,
-		State:    l.State,
+		State:    state,
 		Page:     l.Page,
 		PageSize: l.PageSize,
 	}
@@ -89,8 +92,8 @@ func (l *ListCmd) printJobs(jobs []*jobv1.Job, lastPage int32) {
 	}
 
 	stateFilter := "all"
-	if l.State != jobv1.JobState_JOB_STATE_UNSPECIFIED {
-		stateFilter = jobStateToString(l.State)
+	if l.State != "" {
+		stateFilter = l.State
 	}
 
 	fmt.Printf("Jobs (queue: %s, state: %s, page: %d/%d):\n",
@@ -145,5 +148,22 @@ func (l *ListCmd) printJobs(jobs []*jobv1.Job, lastPage int32) {
 		if l.Page < lastPage {
 			fmt.Printf("Use --page=%d to see next page\n", l.Page+1)
 		}
+	}
+}
+
+func (l *ListCmd) stringToJobState(state string) jobv1.JobState {
+	switch strings.ToLower(state) {
+	case "scheduled":
+		return jobv1.JobState_JOB_STATE_SCHEDULED
+	case "running":
+		return jobv1.JobState_JOB_STATE_RUNNING
+	case "completed":
+		return jobv1.JobState_JOB_STATE_COMPLETED
+	case "failed":
+		return jobv1.JobState_JOB_STATE_FAILED
+	case "cancelled":
+		return jobv1.JobState_JOB_STATE_CANCELLED
+	default:
+		return jobv1.JobState_JOB_STATE_UNSPECIFIED // All states
 	}
 }

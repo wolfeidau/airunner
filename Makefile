@@ -11,18 +11,12 @@ help: ## Show this help message
 build: ## Build all binaries
 	@mkdir -p bin
 	go build -o bin/airunner-cli ./cmd/cli
-	go build -o bin/airunner-orchestrator ./cmd/orchestrator
 	go build -o bin/airunner-server ./cmd/server
 
 .PHONY: build-cli
 build-cli: ## Build CLI binary (multi-purpose client)
 	@mkdir -p bin
 	go build -o bin/airunner-cli ./cmd/cli
-
-.PHONY: build-orchestrator
-build-orchestrator: ## Build orchestrator binary (future cloud backend)
-	@mkdir -p bin
-	go build -o bin/airunner-orchestrator ./cmd/orchestrator
 
 .PHONY: build-server
 build-server: ## Build server binary (job queue server)
@@ -66,4 +60,3 @@ lint-fix: ## Run linter with auto-fix
 clean: ## Clean build artifacts
 	rm -rf bin/
 	rm -f $(COVERAGE_FILE)
-	rm -rf .certs/

@@ -2,16 +2,15 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"log"
-	"os"
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/rs/zerolog/log"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 	"github.com/wolfeidau/airunner/internal/client"
-	"google.golang.org/protobuf/types/known/durationpb"
-	"google.golang.org/protobuf/types/known/timestamppb"
+	"github.com/wolfeidau/airunner/internal/worker"
 )
 
 type WorkerCmd struct {
@@ -21,7 +20,7 @@ type WorkerCmd struct {
 }
 
 func (w *WorkerCmd) Run(ctx context.Context, globals *Globals) error {
-	log.Printf("Starting worker for queue '%s' connecting to %s", w.Queue, w.Server)
+	log.Info().Str("queue", w.Queue).Str("server", w.Server).Msg("Worker starting")
 
 	// Create clients
 	config := client.Config{
@@ -34,11 +33,11 @@ func (w *WorkerCmd) Run(ctx context.Context, globals *Globals) error {
 	// Start worker loop
 	for {
 		if globals.Debug {
-			log.Println("Looking for jobs...")
+			log.Debug().Msg("Looking for jobs...")
 		}
 
 		if err := w.processJob(ctx, clients); err != nil {
-			log.Printf("Error processing job: %v", err)
+			log.Error().Err(err).Msg("Error processing job")
 			time.Sleep(5 * time.Second)
 			continue
 		}
@@ -77,138 +76,26 @@ func (w *WorkerCmd) processJob(ctx context.Context, clients *client.Clients) err
 	job := stream.Msg().Job
 	taskToken := stream.Msg().TaskToken
 
-	log.Printf("Received job %s: %s", job.JobId, job.JobParams.Repository)
+	log.Info().Str("job_id", job.JobId).Str("repository", job.JobParams.Repository).Msg("Job dequeued")
 
-	// Start publishing events
+	if job.JobParams.Command == "" {
+		log.Printf("Error: No command specified for job %s", job.JobId)
+		return errors.New("no command specified")
+	}
+
 	eventStream := clients.Events.PublishJobEvents(ctx)
 
-	// Publish job start event
-	startEvent := &jobv1.JobEvent{
-		EventType: jobv1.EventType_EVENT_TYPE_PROCESS_START,
-		EventData: &jobv1.JobEvent_ProcessStart{
-			ProcessStart: &jobv1.ProcessStartEvent{
-				Pid: func() int32 {
-					pid := os.Getpid()
-					if pid > 2147483647 {
-						return 2147483647
-					}
-					// #nosec G115 - bounded by explicit check
-					return int32(pid)
-				}(),
-				StartedAt: timestamppb.Now(),
-			},
-		},
-	}
+	executor := worker.NewJobExecutor(eventStream, taskToken)
 
-	if err := eventStream.Send(&jobv1.PublishJobEventsRequest{
-		TaskToken: taskToken,
-		Events:    []*jobv1.JobEvent{startEvent},
-	}); err != nil {
-		return fmt.Errorf("failed to send start event: %w", err)
-	}
-
-	// Simulate job execution
-	startTime := time.Now()
-	success := w.executeJob(ctx, job, taskToken, eventStream)
-	duration := time.Since(startTime)
-
-	// Publish job end event
-	endEvent := &jobv1.JobEvent{
-		EventType: jobv1.EventType_EVENT_TYPE_PROCESS_END,
-		EventData: &jobv1.JobEvent_ProcessEnd{
-			ProcessEnd: &jobv1.ProcessEndEvent{
-				Pid: func() int32 {
-					pid := os.Getpid()
-					if pid > 2147483647 {
-						return 2147483647
-					}
-					// #nosec G115 - bounded by explicit check
-					return int32(pid)
-				}(),
-				ExitCode: func() int32 {
-					if success {
-						return 0
-					} else {
-						return 1
-					}
-				}(),
-				RunDuration: durationpb.New(duration),
-			},
-		},
-	}
-
-	if err := eventStream.Send(&jobv1.PublishJobEventsRequest{
-		TaskToken: taskToken,
-		Events:    []*jobv1.JobEvent{endEvent},
-	}); err != nil {
-		log.Printf("Failed to send end event: %v", err)
-	}
-
-	if _, err := eventStream.CloseAndReceive(); err != nil {
-		log.Printf("Failed to close event stream: %v", err)
-	}
-
-	// Complete the job
-	result := &jobv1.JobResult{
-		JobId:   job.JobId,
-		Success: success,
-		ExitCode: func() int32 {
-			if success {
-				return 0
-			} else {
-				return 1
-			}
-		}(),
-		StartedAt:   timestamppb.New(startTime),
-		CompletedAt: timestamppb.Now(),
-	}
-
-	if !success {
-		result.ErrorMessage = "Job execution failed"
-	}
-
-	_, err = clients.Job.CompleteJob(ctx, connect.NewRequest(&jobv1.CompleteJobRequest{
-		TaskToken: taskToken,
-		JobResult: result,
-	}))
-
-	if err != nil {
+	if err := executor.Execute(ctx, job); err != nil {
 		return fmt.Errorf("failed to complete job: %w", err)
 	}
 
-	log.Printf("Job %s completed successfully", job.JobId)
+	if _, err := eventStream.CloseAndReceive(); err != nil {
+		return fmt.Errorf("failed to close event stream: %w", err)
+	}
+
+	log.Info().Str("job_id", job.JobId).Msg("Job completed successfully")
+
 	return nil
-}
-
-func (w *WorkerCmd) executeJob(ctx context.Context, job *jobv1.Job, taskToken string, eventStream *connect.ClientStreamForClient[jobv1.PublishJobEventsRequest, jobv1.PublishJobEventsResponse]) bool {
-	log.Printf("Executing job for repository: %s", job.JobParams.Repository)
-
-	// Simulate some work - in a real implementation, this would clone the repo and run the job
-	w.publishOutput(taskToken, eventStream, fmt.Sprintf("Cloning repository %s...\n", job.JobParams.Repository))
-	time.Sleep(2 * time.Second)
-
-	w.publishOutput(taskToken, eventStream, "Building project...\n")
-	time.Sleep(3 * time.Second)
-
-	w.publishOutput(taskToken, eventStream, "Build completed successfully!\n")
-
-	return true // Success
-}
-
-func (w *WorkerCmd) publishOutput(taskToken string, eventStream *connect.ClientStreamForClient[jobv1.PublishJobEventsRequest, jobv1.PublishJobEventsResponse], output string) {
-	outputEvent := &jobv1.JobEvent{
-		EventType: jobv1.EventType_EVENT_TYPE_OUTPUT,
-		EventData: &jobv1.JobEvent_Output{
-			Output: &jobv1.OutputEvent{
-				Output: []byte(output),
-			},
-		},
-	}
-
-	if err := eventStream.Send(&jobv1.PublishJobEventsRequest{
-		TaskToken: taskToken,
-		Events:    []*jobv1.JobEvent{outputEvent},
-	}); err != nil {
-		log.Printf("Failed to send output event: %v", err)
-	}
 }

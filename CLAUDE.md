@@ -4,11 +4,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is `airunner`, a Go-based microservices architecture with three main components:
+This is `airunner`, a Go-based job orchestration platform with two main binaries:
 
-- **Agent** (`cmd/agent/main.go`) - Job execution component
-- **Orchestrator** (`cmd/orchestrator/main.go`) - Job coordination and management
-- **Server** (`cmd/server/main.go`) - API server providing gRPC services
+### Binaries
+
+- **airunner-server** (`cmd/server/main.go`) - Job queue server
+  - Provides gRPC API for job management
+  - Runs in-memory job store for development
+  - Handles job queuing, visibility timeouts, and event streaming
+
+- **airunner-cli** (`cmd/cli/main.go`) - Multi-purpose client
+  - `worker` - Long-running job execution worker
+  - `submit` - Submit jobs to the queue
+  - `monitor` - Real-time job event monitoring
+  - `list` - List and filter jobs
+
+- **airunner-orchestrator** (`cmd/orchestrator/main.go`) - Future cloud backend
+  - Reserved for SQS/DynamoDB/EventBridge implementation
+  - Not currently implemented
 
 The system uses Protocol Buffers for service definitions, with the main job service defined in `api/job/v1/job.proto`.
 
@@ -21,17 +34,47 @@ make help         # Show all available make targets
 
 **Building the project:**
 ```bash
-make build        # Build all binaries (agent, orchestrator, server)
-make build-agent  # Build only the agent binary
+make build        # Build all binaries (airunner-cli, airunner-orchestrator, airunner-server)
+make build-cli    # Build only the CLI binary
+make build-agent  # Alias for build-cli (backwards compatibility)
 make build-orchestrator # Build only the orchestrator binary
 make build-server # Build only the server binary
 ```
 
-**Running components:**
+**Usage Examples:**
 ```bash
-./bin/server      # Start the gRPC API server
-./bin/orchestrator # Start the job orchestrator
-./bin/agent       # Start a job agent
+# Start the server
+./bin/airunner-server
+
+# Run a worker
+./bin/airunner-cli worker --server=https://localhost:8080
+
+# Submit a job
+./bin/airunner-cli submit --server=https://localhost:8080 github.com/example/repo
+
+# Monitor job progress
+./bin/airunner-cli monitor --server=https://localhost:8080 <job-id>
+
+# List jobs
+./bin/airunner-cli list --server=https://localhost:8080 --queue=default
+
+# Watch jobs in real-time
+./bin/airunner-cli list --server=https://localhost:8080 --watch
+```
+
+**CLI Command Reference:**
+```bash
+# Worker mode - runs continuously processing jobs
+./bin/airunner-cli worker [--server=URL] [--queue=NAME] [--timeout=SECONDS]
+
+# Submit mode - submit a single job
+./bin/airunner-cli submit [--server=URL] [--queue=NAME] [OPTIONS] <repository-url>
+
+# Monitor mode - stream events for a specific job
+./bin/airunner-cli monitor [--server=URL] [--from-sequence=N] <job-id>
+
+# List mode - list and filter jobs
+./bin/airunner-cli list [--server=URL] [--queue=NAME] [--state=STATE] [--watch]
 ```
 
 **Protocol Buffers:**

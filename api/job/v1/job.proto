@@ -2,24 +2,115 @@ syntax = "proto3";
 
 package job.v1;
 
+import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
 
-message UUID {
-  bytes value = 1; // Unique identifier value
-}
-
 // JobService provides job management operations
+// Core job queue operations
 service JobService {
   // EnqueueJob queues a new job
   rpc EnqueueJob(EnqueueJobRequest) returns (EnqueueJobResponse) {}
+
+  // DequeueJob retrieves jobs from the queue
+  rpc DequeueJob(DequeueJobRequest) returns (stream DequeueJobResponse) {}
+
+  // UpdateJob updates the visibility timeout of a job
+  rpc UpdateJob(UpdateJobRequest) returns (UpdateJobResponse) {}
+
+  // CompleteJob marks a job as completed
+  rpc CompleteJob(CompleteJobRequest) returns (CompleteJobResponse) {}
 
   // ListJobs retrieves a list of jobs
   rpc ListJobs(ListJobsRequest) returns (ListJobsResponse) {}
 }
 
+// Real-time event streaming
+service JobEventsService {
+  // StreamJobEvents streams job events for a specific job
+  rpc StreamJobEvents(StreamJobEventsRequest) returns (stream StreamJobEventsResponse) {}
+
+  // PublishJobEvents allows workers to publish job events
+  rpc PublishJobEvents(stream PublishJobEventsRequest) returns (PublishJobEventsResponse) {}
+}
+
+message JobEvent {
+  int64 sequence = 1; // monotonic sequence number of the event to ensure ordering
+  google.protobuf.Timestamp timestamp = 2;
+  EventType event_type = 3;
+  oneof event_data {
+    ProcessStartEvent process_start = 4;
+    ProcessEndEvent process_end = 5;
+    ProcessErrorEvent process_error = 6;
+    HeartbeatEvent heartbeat = 7;
+    OutputEvent output = 8;
+    TerminalResizeEvent terminal_resize = 9;
+  }
+}
+
+message ProcessStartEvent {
+  int32 pid = 1;
+  google.protobuf.Timestamp started_at = 2;
+}
+
+message ProcessEndEvent {
+  int32 pid = 1;
+  int32 exit_code = 2;
+  google.protobuf.Duration run_duration = 3; // Duration in milliseconds
+}
+
+message ProcessErrorEvent {
+  string error_message = 1;
+}
+
+message HeartbeatEvent {
+  google.protobuf.Duration elapsed_time = 1; // Elapsed time in milliseconds since last heartbeat
+  bool process_alive = 2; // Indicates if the process is still alive
+}
+
+message TerminalResizeEvent {
+  int32 cols = 1; // Number of columns
+  int32 rows = 2; // Number of rows
+  int32 width_pixels = 3; // Width in pixels
+  int32 height_pixels = 4; // Height in pixels
+}
+
+message OutputEvent {
+  bytes output = 1; // Output data (stdout/stderr)
+}
+
+enum EventType {
+  EVENT_TYPE_UNSPECIFIED = 0;
+  EVENT_TYPE_PROCESS_START = 1;
+  EVENT_TYPE_PROCESS_END = 2;
+  EVENT_TYPE_PROCESS_ERROR = 3;
+  EVENT_TYPE_HEARTBEAT = 4;
+  EVENT_TYPE_OUTPUT = 5;
+  EVENT_TYPE_TERMINAL_RESIZE = 6;
+}
+
+message PublishJobEventsRequest {
+  string task_token = 1; // Authenticate worker
+  repeated JobEvent events = 2;
+}
+
+message PublishJobEventsResponse {}
+
+message StreamJobEventsRequest {
+  string job_id = 1;
+  int64 from_sequence = 2; // Optional: replay from specific sequence
+  int64 from_timestamp = 3; // Optional: replay from specific time
+  repeated EventType event_filter = 4; // Optional: filter specific event types
+}
+
+message StreamJobEventsResponse {
+  JobEvent event = 1;
+}
+
 // EnqueueJobRequest is the request message for EnqueueJob
 message EnqueueJobRequest {
-  JobParams job_params = 1; // Parameters for the job to be enqueued
+  string request_id = 1; // Unique request id for the job enqueue idempotency
+  string queue = 2; // Queue name to enqueue the job into
+  JobParams job_params = 3; // Parameters for the job to be enqueued
 }
 
 // EnqueueJobResponse is the response message for EnqueueJob
@@ -29,10 +120,35 @@ message EnqueueJobResponse {
   JobState state = 3; // Current state of the job
 }
 
+// DequeueJobRequest is the request message for DequeueJob
+message DequeueJobRequest {
+  string queue = 1; // Queue name to dequeue jobs from
+  int32 max_jobs = 2; // Maximum number of jobs to dequeue, defaults to 1 currently
+  int32 visibility_timeout_seconds = 3; // How long job stays invisible after dequeue (default: 300s)
+}
+
+// DequeueJobResponse is the response message for DequeueJob
+message DequeueJobResponse {
+  Job job = 1; // The dequeued job
+  string task_token = 2; // Token to acknowledge job completion
+}
+
+// UpdateJobResponse is the response message for UpdateJob
+message UpdateJobRequest {
+  string queue = 1; // Queue name where the job is located, used for partitioning
+  string task_token = 2; // Token to acknowledge job completion
+  int32 visibility_timeout_seconds = 3; // How long job stays invisible after update (default: 300s)
+}
+
+// UpdateJobResponse is the response message for UpdateJob
+message UpdateJobResponse {}
+
 // ListJobsRequest is the request message for ListJobs
 message ListJobsRequest {
-  int32 page = 1; // Page number for pagination
-  int32 page_size = 2; // Number of jobs per page
+  string queue = 1; // Queue name to filter jobs
+  JobState state = 2; // State to filter jobs (e.g., "scheduled", "running", "completed", "failed")
+  int32 page = 3; // Page number for pagination
+  int32 page_size = 4; // Number of jobs per page
 }
 
 // ListJobsResponse is the response message for ListJobs
@@ -41,13 +157,24 @@ message ListJobsResponse {
   int32 last_page = 2; // Provides the last page number for pagination
 }
 
+enum ProcessType {
+  PROCESS_TYPE_UNSPECIFIED = 0;
+  PROCESS_TYPE_PIPE = 1; // Pipe mode for non-interactive processes
+  PROCESS_TYPE_PTY = 2; // PTY mode for interactive processes
+}
+
 message JobParams {
-  string request_id = 1; // Unique request id for the job
+  string repository = 1; // Repository URL for the job
   string commit = 2; // Commit hash or identifier for the job
   string branch = 3; // Branch name for the job
   map<string, string> environment = 4; // Environment variables for the job
   map<string, string> metadata = 5; // Additional metadata for the job
   string owner = 6; // Owner of the job
+  string command = 7; // Command to execute (e.g., "go", "npm", "make")
+  repeated string args = 8; // Command arguments
+  ProcessType process_type = 9; // Process execution mode
+  int32 timeout_seconds = 10; // Command execution timeout in seconds
+  string working_directory = 11; // Optional working directory override
 }
 
 enum JobState {
@@ -56,13 +183,33 @@ enum JobState {
   JOB_STATE_RUNNING = 2; // Job is currently running
   JOB_STATE_COMPLETED = 3; // Job has completed successfully
   JOB_STATE_FAILED = 4; // Job has failed
+  JOB_STATE_CANCELLED = 5; // Job has been cancelled
 }
 
 // Job represents a job in the system
 message Job {
-  UUID job_id = 1; // Unique identifier for the job
+  string job_id = 1; // Unique identifier for the job
   JobParams job_params = 2; // Parameters associated with the job
   JobState state = 3; // Current state of the job
   google.protobuf.Timestamp created_at = 4; // Timestamp when the job was created
   google.protobuf.Timestamp updated_at = 5; // Timestamp when the job was last updated
+}
+
+// CompleteJobRequest is the request message for CompleteJob
+message CompleteJobRequest {
+  string task_token = 1; // Token to acknowledge job completion
+  JobResult job_result = 2; // Result of the completed job
+}
+
+// CompleteJobResponse is the response message for CompleteJob
+// Currently empty, can be extended in the future if needed
+message CompleteJobResponse {}
+
+message JobResult {
+  string job_id = 1; // Unique identifier for the job
+  bool success = 2; // Indicates if the job was successful
+  int32 exit_code = 3; // Exit code of the job
+  string error_message = 4; // Error message if the job failed
+  google.protobuf.Timestamp started_at = 5; // Timestamp when the job started
+  google.protobuf.Timestamp completed_at = 6; // Timestamp when the job was completed
 }

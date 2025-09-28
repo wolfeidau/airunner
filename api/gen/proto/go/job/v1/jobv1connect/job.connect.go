@@ -23,6 +23,8 @@ const _ = connect.IsAtLeastVersion1_13_0
 const (
 	// JobServiceName is the fully-qualified name of the JobService service.
 	JobServiceName = "job.v1.JobService"
+	// JobEventsServiceName is the fully-qualified name of the JobEventsService service.
+	JobEventsServiceName = "job.v1.JobEventsService"
 )
 
 // These constants are the fully-qualified names of the RPCs defined in this package. They're
@@ -35,14 +37,32 @@ const (
 const (
 	// JobServiceEnqueueJobProcedure is the fully-qualified name of the JobService's EnqueueJob RPC.
 	JobServiceEnqueueJobProcedure = "/job.v1.JobService/EnqueueJob"
+	// JobServiceDequeueJobProcedure is the fully-qualified name of the JobService's DequeueJob RPC.
+	JobServiceDequeueJobProcedure = "/job.v1.JobService/DequeueJob"
+	// JobServiceUpdateJobProcedure is the fully-qualified name of the JobService's UpdateJob RPC.
+	JobServiceUpdateJobProcedure = "/job.v1.JobService/UpdateJob"
+	// JobServiceCompleteJobProcedure is the fully-qualified name of the JobService's CompleteJob RPC.
+	JobServiceCompleteJobProcedure = "/job.v1.JobService/CompleteJob"
 	// JobServiceListJobsProcedure is the fully-qualified name of the JobService's ListJobs RPC.
 	JobServiceListJobsProcedure = "/job.v1.JobService/ListJobs"
+	// JobEventsServiceStreamJobEventsProcedure is the fully-qualified name of the JobEventsService's
+	// StreamJobEvents RPC.
+	JobEventsServiceStreamJobEventsProcedure = "/job.v1.JobEventsService/StreamJobEvents"
+	// JobEventsServicePublishJobEventsProcedure is the fully-qualified name of the JobEventsService's
+	// PublishJobEvents RPC.
+	JobEventsServicePublishJobEventsProcedure = "/job.v1.JobEventsService/PublishJobEvents"
 )
 
 // JobServiceClient is a client for the job.v1.JobService service.
 type JobServiceClient interface {
 	// EnqueueJob queues a new job
 	EnqueueJob(context.Context, *connect.Request[v1.EnqueueJobRequest]) (*connect.Response[v1.EnqueueJobResponse], error)
+	// DequeueJob retrieves jobs from the queue
+	DequeueJob(context.Context, *connect.Request[v1.DequeueJobRequest]) (*connect.ServerStreamForClient[v1.DequeueJobResponse], error)
+	// UpdateJob updates the visibility timeout of a job
+	UpdateJob(context.Context, *connect.Request[v1.UpdateJobRequest]) (*connect.Response[v1.UpdateJobResponse], error)
+	// CompleteJob marks a job as completed
+	CompleteJob(context.Context, *connect.Request[v1.CompleteJobRequest]) (*connect.Response[v1.CompleteJobResponse], error)
 	// ListJobs retrieves a list of jobs
 	ListJobs(context.Context, *connect.Request[v1.ListJobsRequest]) (*connect.Response[v1.ListJobsResponse], error)
 }
@@ -64,6 +84,24 @@ func NewJobServiceClient(httpClient connect.HTTPClient, baseURL string, opts ...
 			connect.WithSchema(jobServiceMethods.ByName("EnqueueJob")),
 			connect.WithClientOptions(opts...),
 		),
+		dequeueJob: connect.NewClient[v1.DequeueJobRequest, v1.DequeueJobResponse](
+			httpClient,
+			baseURL+JobServiceDequeueJobProcedure,
+			connect.WithSchema(jobServiceMethods.ByName("DequeueJob")),
+			connect.WithClientOptions(opts...),
+		),
+		updateJob: connect.NewClient[v1.UpdateJobRequest, v1.UpdateJobResponse](
+			httpClient,
+			baseURL+JobServiceUpdateJobProcedure,
+			connect.WithSchema(jobServiceMethods.ByName("UpdateJob")),
+			connect.WithClientOptions(opts...),
+		),
+		completeJob: connect.NewClient[v1.CompleteJobRequest, v1.CompleteJobResponse](
+			httpClient,
+			baseURL+JobServiceCompleteJobProcedure,
+			connect.WithSchema(jobServiceMethods.ByName("CompleteJob")),
+			connect.WithClientOptions(opts...),
+		),
 		listJobs: connect.NewClient[v1.ListJobsRequest, v1.ListJobsResponse](
 			httpClient,
 			baseURL+JobServiceListJobsProcedure,
@@ -75,13 +113,31 @@ func NewJobServiceClient(httpClient connect.HTTPClient, baseURL string, opts ...
 
 // jobServiceClient implements JobServiceClient.
 type jobServiceClient struct {
-	enqueueJob *connect.Client[v1.EnqueueJobRequest, v1.EnqueueJobResponse]
-	listJobs   *connect.Client[v1.ListJobsRequest, v1.ListJobsResponse]
+	enqueueJob  *connect.Client[v1.EnqueueJobRequest, v1.EnqueueJobResponse]
+	dequeueJob  *connect.Client[v1.DequeueJobRequest, v1.DequeueJobResponse]
+	updateJob   *connect.Client[v1.UpdateJobRequest, v1.UpdateJobResponse]
+	completeJob *connect.Client[v1.CompleteJobRequest, v1.CompleteJobResponse]
+	listJobs    *connect.Client[v1.ListJobsRequest, v1.ListJobsResponse]
 }
 
 // EnqueueJob calls job.v1.JobService.EnqueueJob.
 func (c *jobServiceClient) EnqueueJob(ctx context.Context, req *connect.Request[v1.EnqueueJobRequest]) (*connect.Response[v1.EnqueueJobResponse], error) {
 	return c.enqueueJob.CallUnary(ctx, req)
+}
+
+// DequeueJob calls job.v1.JobService.DequeueJob.
+func (c *jobServiceClient) DequeueJob(ctx context.Context, req *connect.Request[v1.DequeueJobRequest]) (*connect.ServerStreamForClient[v1.DequeueJobResponse], error) {
+	return c.dequeueJob.CallServerStream(ctx, req)
+}
+
+// UpdateJob calls job.v1.JobService.UpdateJob.
+func (c *jobServiceClient) UpdateJob(ctx context.Context, req *connect.Request[v1.UpdateJobRequest]) (*connect.Response[v1.UpdateJobResponse], error) {
+	return c.updateJob.CallUnary(ctx, req)
+}
+
+// CompleteJob calls job.v1.JobService.CompleteJob.
+func (c *jobServiceClient) CompleteJob(ctx context.Context, req *connect.Request[v1.CompleteJobRequest]) (*connect.Response[v1.CompleteJobResponse], error) {
+	return c.completeJob.CallUnary(ctx, req)
 }
 
 // ListJobs calls job.v1.JobService.ListJobs.
@@ -93,6 +149,12 @@ func (c *jobServiceClient) ListJobs(ctx context.Context, req *connect.Request[v1
 type JobServiceHandler interface {
 	// EnqueueJob queues a new job
 	EnqueueJob(context.Context, *connect.Request[v1.EnqueueJobRequest]) (*connect.Response[v1.EnqueueJobResponse], error)
+	// DequeueJob retrieves jobs from the queue
+	DequeueJob(context.Context, *connect.Request[v1.DequeueJobRequest], *connect.ServerStream[v1.DequeueJobResponse]) error
+	// UpdateJob updates the visibility timeout of a job
+	UpdateJob(context.Context, *connect.Request[v1.UpdateJobRequest]) (*connect.Response[v1.UpdateJobResponse], error)
+	// CompleteJob marks a job as completed
+	CompleteJob(context.Context, *connect.Request[v1.CompleteJobRequest]) (*connect.Response[v1.CompleteJobResponse], error)
 	// ListJobs retrieves a list of jobs
 	ListJobs(context.Context, *connect.Request[v1.ListJobsRequest]) (*connect.Response[v1.ListJobsResponse], error)
 }
@@ -110,6 +172,24 @@ func NewJobServiceHandler(svc JobServiceHandler, opts ...connect.HandlerOption) 
 		connect.WithSchema(jobServiceMethods.ByName("EnqueueJob")),
 		connect.WithHandlerOptions(opts...),
 	)
+	jobServiceDequeueJobHandler := connect.NewServerStreamHandler(
+		JobServiceDequeueJobProcedure,
+		svc.DequeueJob,
+		connect.WithSchema(jobServiceMethods.ByName("DequeueJob")),
+		connect.WithHandlerOptions(opts...),
+	)
+	jobServiceUpdateJobHandler := connect.NewUnaryHandler(
+		JobServiceUpdateJobProcedure,
+		svc.UpdateJob,
+		connect.WithSchema(jobServiceMethods.ByName("UpdateJob")),
+		connect.WithHandlerOptions(opts...),
+	)
+	jobServiceCompleteJobHandler := connect.NewUnaryHandler(
+		JobServiceCompleteJobProcedure,
+		svc.CompleteJob,
+		connect.WithSchema(jobServiceMethods.ByName("CompleteJob")),
+		connect.WithHandlerOptions(opts...),
+	)
 	jobServiceListJobsHandler := connect.NewUnaryHandler(
 		JobServiceListJobsProcedure,
 		svc.ListJobs,
@@ -120,6 +200,12 @@ func NewJobServiceHandler(svc JobServiceHandler, opts ...connect.HandlerOption) 
 		switch r.URL.Path {
 		case JobServiceEnqueueJobProcedure:
 			jobServiceEnqueueJobHandler.ServeHTTP(w, r)
+		case JobServiceDequeueJobProcedure:
+			jobServiceDequeueJobHandler.ServeHTTP(w, r)
+		case JobServiceUpdateJobProcedure:
+			jobServiceUpdateJobHandler.ServeHTTP(w, r)
+		case JobServiceCompleteJobProcedure:
+			jobServiceCompleteJobHandler.ServeHTTP(w, r)
 		case JobServiceListJobsProcedure:
 			jobServiceListJobsHandler.ServeHTTP(w, r)
 		default:
@@ -135,6 +221,118 @@ func (UnimplementedJobServiceHandler) EnqueueJob(context.Context, *connect.Reque
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("job.v1.JobService.EnqueueJob is not implemented"))
 }
 
+func (UnimplementedJobServiceHandler) DequeueJob(context.Context, *connect.Request[v1.DequeueJobRequest], *connect.ServerStream[v1.DequeueJobResponse]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("job.v1.JobService.DequeueJob is not implemented"))
+}
+
+func (UnimplementedJobServiceHandler) UpdateJob(context.Context, *connect.Request[v1.UpdateJobRequest]) (*connect.Response[v1.UpdateJobResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("job.v1.JobService.UpdateJob is not implemented"))
+}
+
+func (UnimplementedJobServiceHandler) CompleteJob(context.Context, *connect.Request[v1.CompleteJobRequest]) (*connect.Response[v1.CompleteJobResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("job.v1.JobService.CompleteJob is not implemented"))
+}
+
 func (UnimplementedJobServiceHandler) ListJobs(context.Context, *connect.Request[v1.ListJobsRequest]) (*connect.Response[v1.ListJobsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("job.v1.JobService.ListJobs is not implemented"))
+}
+
+// JobEventsServiceClient is a client for the job.v1.JobEventsService service.
+type JobEventsServiceClient interface {
+	// StreamJobEvents streams job events for a specific job
+	StreamJobEvents(context.Context, *connect.Request[v1.StreamJobEventsRequest]) (*connect.ServerStreamForClient[v1.StreamJobEventsResponse], error)
+	// PublishJobEvents allows workers to publish job events
+	PublishJobEvents(context.Context) *connect.ClientStreamForClient[v1.PublishJobEventsRequest, v1.PublishJobEventsResponse]
+}
+
+// NewJobEventsServiceClient constructs a client for the job.v1.JobEventsService service. By
+// default, it uses the Connect protocol with the binary Protobuf Codec, asks for gzipped responses,
+// and sends uncompressed requests. To use the gRPC or gRPC-Web protocols, supply the
+// connect.WithGRPC() or connect.WithGRPCWeb() options.
+//
+// The URL supplied here should be the base URL for the Connect or gRPC server (for example,
+// http://api.acme.com or https://acme.com/grpc).
+func NewJobEventsServiceClient(httpClient connect.HTTPClient, baseURL string, opts ...connect.ClientOption) JobEventsServiceClient {
+	baseURL = strings.TrimRight(baseURL, "/")
+	jobEventsServiceMethods := v1.File_job_v1_job_proto.Services().ByName("JobEventsService").Methods()
+	return &jobEventsServiceClient{
+		streamJobEvents: connect.NewClient[v1.StreamJobEventsRequest, v1.StreamJobEventsResponse](
+			httpClient,
+			baseURL+JobEventsServiceStreamJobEventsProcedure,
+			connect.WithSchema(jobEventsServiceMethods.ByName("StreamJobEvents")),
+			connect.WithClientOptions(opts...),
+		),
+		publishJobEvents: connect.NewClient[v1.PublishJobEventsRequest, v1.PublishJobEventsResponse](
+			httpClient,
+			baseURL+JobEventsServicePublishJobEventsProcedure,
+			connect.WithSchema(jobEventsServiceMethods.ByName("PublishJobEvents")),
+			connect.WithClientOptions(opts...),
+		),
+	}
+}
+
+// jobEventsServiceClient implements JobEventsServiceClient.
+type jobEventsServiceClient struct {
+	streamJobEvents  *connect.Client[v1.StreamJobEventsRequest, v1.StreamJobEventsResponse]
+	publishJobEvents *connect.Client[v1.PublishJobEventsRequest, v1.PublishJobEventsResponse]
+}
+
+// StreamJobEvents calls job.v1.JobEventsService.StreamJobEvents.
+func (c *jobEventsServiceClient) StreamJobEvents(ctx context.Context, req *connect.Request[v1.StreamJobEventsRequest]) (*connect.ServerStreamForClient[v1.StreamJobEventsResponse], error) {
+	return c.streamJobEvents.CallServerStream(ctx, req)
+}
+
+// PublishJobEvents calls job.v1.JobEventsService.PublishJobEvents.
+func (c *jobEventsServiceClient) PublishJobEvents(ctx context.Context) *connect.ClientStreamForClient[v1.PublishJobEventsRequest, v1.PublishJobEventsResponse] {
+	return c.publishJobEvents.CallClientStream(ctx)
+}
+
+// JobEventsServiceHandler is an implementation of the job.v1.JobEventsService service.
+type JobEventsServiceHandler interface {
+	// StreamJobEvents streams job events for a specific job
+	StreamJobEvents(context.Context, *connect.Request[v1.StreamJobEventsRequest], *connect.ServerStream[v1.StreamJobEventsResponse]) error
+	// PublishJobEvents allows workers to publish job events
+	PublishJobEvents(context.Context, *connect.ClientStream[v1.PublishJobEventsRequest]) (*connect.Response[v1.PublishJobEventsResponse], error)
+}
+
+// NewJobEventsServiceHandler builds an HTTP handler from the service implementation. It returns the
+// path on which to mount the handler and the handler itself.
+//
+// By default, handlers support the Connect, gRPC, and gRPC-Web protocols with the binary Protobuf
+// and JSON codecs. They also support gzip compression.
+func NewJobEventsServiceHandler(svc JobEventsServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
+	jobEventsServiceMethods := v1.File_job_v1_job_proto.Services().ByName("JobEventsService").Methods()
+	jobEventsServiceStreamJobEventsHandler := connect.NewServerStreamHandler(
+		JobEventsServiceStreamJobEventsProcedure,
+		svc.StreamJobEvents,
+		connect.WithSchema(jobEventsServiceMethods.ByName("StreamJobEvents")),
+		connect.WithHandlerOptions(opts...),
+	)
+	jobEventsServicePublishJobEventsHandler := connect.NewClientStreamHandler(
+		JobEventsServicePublishJobEventsProcedure,
+		svc.PublishJobEvents,
+		connect.WithSchema(jobEventsServiceMethods.ByName("PublishJobEvents")),
+		connect.WithHandlerOptions(opts...),
+	)
+	return "/job.v1.JobEventsService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case JobEventsServiceStreamJobEventsProcedure:
+			jobEventsServiceStreamJobEventsHandler.ServeHTTP(w, r)
+		case JobEventsServicePublishJobEventsProcedure:
+			jobEventsServicePublishJobEventsHandler.ServeHTTP(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+}
+
+// UnimplementedJobEventsServiceHandler returns CodeUnimplemented from all methods.
+type UnimplementedJobEventsServiceHandler struct{}
+
+func (UnimplementedJobEventsServiceHandler) StreamJobEvents(context.Context, *connect.Request[v1.StreamJobEventsRequest], *connect.ServerStream[v1.StreamJobEventsResponse]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("job.v1.JobEventsService.StreamJobEvents is not implemented"))
+}
+
+func (UnimplementedJobEventsServiceHandler) PublishJobEvents(context.Context, *connect.ClientStream[v1.PublishJobEventsRequest]) (*connect.Response[v1.PublishJobEventsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("job.v1.JobEventsService.PublishJobEvents is not implemented"))
 }

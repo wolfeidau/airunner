@@ -10,24 +10,18 @@ help: ## Show this help message
 .PHONY: build
 build: ## Build all binaries
 	@mkdir -p bin
-	go build -o bin/agent ./cmd/agent
-	go build -o bin/orchestrator ./cmd/orchestrator
-	go build -o bin/server ./cmd/server
+	go build -o bin/airunner-cli ./cmd/cli
+	go build -o bin/airunner-server ./cmd/server
 
-.PHONY: build-agent
-build-agent: ## Build agent binary
+.PHONY: build-cli
+build-cli: ## Build CLI binary (multi-purpose client)
 	@mkdir -p bin
-	go build -o bin/agent ./cmd/agent
-
-.PHONY: build-orchestrator
-build-orchestrator: ## Build orchestrator binary
-	@mkdir -p bin
-	go build -o bin/orchestrator ./cmd/orchestrator
+	go build -o bin/airunner-cli ./cmd/cli
 
 .PHONY: build-server
-build-server: ## Build server binary
+build-server: ## Build server binary (job queue server)
 	@mkdir -p bin
-	go build -o bin/server ./cmd/server
+	go build -o bin/airunner-server ./cmd/server
 
 .PHONY: proto-generate
 proto-generate: ## Generate Go code from proto files
@@ -66,4 +60,3 @@ lint-fix: ## Run linter with auto-fix
 clean: ## Clean build artifacts
 	rm -rf bin/
 	rm -f $(COVERAGE_FILE)
-	rm -rf .certs/

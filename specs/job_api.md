@@ -14,8 +14,9 @@ This document outlines the implementation plan for the airunner job orchestratio
 
 ### Implementation Defaults
 - Memory store cleanup interval: 30 seconds
-- Event buffer size: 1000 events per job with LRU eviction
+- Event buffer size: Unlimited events per job (simple append-only for development)
 - Default visibility timeout: 300 seconds (5 minutes)
+- Long polling timeout for dequeue: 5 seconds
 - Max concurrent streams per job: 10
 - Idempotency token format: UUIDv4 with validation
 
@@ -62,8 +63,9 @@ type MemoryJobStore struct {
     mu sync.RWMutex
 
     // Core job storage
-    jobs map[string]*Job                    // UUIDv7 job ID -> Job
-    queues map[string][]*Job               // Queue name -> Jobs (non-FIFO)
+    jobs map[string]*Job                    // UUIDv4 job ID -> Job
+    jobQueues map[string]string             // Job ID -> Queue name mapping
+    queues map[string][]*Job               // Queue name -> Jobs (FIFO)
 
     // Visibility timeout management
     invisibleJobs map[string]time.Time     // Job ID -> Visibility expiry
@@ -75,6 +77,7 @@ type MemoryJobStore struct {
     // Event streaming
     jobEvents map[string][]*JobEvent       // Job ID -> Event buffer
     eventStreams map[string][]chan *JobEvent // Job ID -> Active streams
+    eventSeq map[string]int64              // Job ID -> Next sequence number
 
     // Background cleanup
     cleanupTicker *time.Ticker
@@ -85,20 +88,20 @@ type MemoryJobStore struct {
 #### Key Features
 
 1. **UUID Strategy & Type Consistency**
-   - UUIDv7 for job IDs (time-ordered, sortable) - ensures chronological ordering
+   - UUIDv4 for job IDs (random, widely supported) - simplified cross-language compatibility
    - UUIDv4 for task tokens (secure, random) - prevents token prediction attacks
    - UUIDv4 for request IDs (idempotency tokens) - prevents duplicate job creation
-   - All UUID fields in protobuf use the `UUID` message type for consistency
+   - All UUID fields in protobuf use standard `string` type for simplicity
 
 2. **Visibility Timeout (SQS-like behavior)**
    - Jobs become invisible after dequeue for specified duration
    - Background cleanup returns expired jobs to queues
    - Workers can extend timeout via UpdateJob
 
-3. **Non-FIFO Queue Processing**
-   - Random/priority-based job selection
-   - Better load distribution across workers
-   - Prevents head-of-line blocking
+3. **FIFO Queue Processing**
+   - First-in-first-out job selection from queue front
+   - Predictable job ordering and processing
+   - Simple and reliable queue semantics
 
 4. **Event Streaming**
    - Real-time event buffers per job
@@ -112,14 +115,14 @@ type MemoryJobStore struct {
 type JobStore interface {
     // Job lifecycle
     EnqueueJob(ctx context.Context, req *EnqueueJobRequest) (*EnqueueJobResponse, error)
-    DequeueJobs(ctx context.Context, queue string, maxJobs int, timeout time.Duration) ([]*JobWithToken, error)
-    UpdateJobVisibility(ctx context.Context, taskToken string, timeout time.Duration) error
+    DequeueJobs(ctx context.Context, queue string, maxJobs int, timeoutSeconds int) ([]*JobWithToken, error)
+    UpdateJobVisibility(ctx context.Context, queue string, taskToken string, timeoutSeconds int) error
     CompleteJob(ctx context.Context, taskToken string, result *JobResult) error
-    ListJobs(ctx context.Context, filters JobFilters) (*JobList, error)
+    ListJobs(ctx context.Context, req *ListJobsRequest) (*ListJobsResponse, error)
 
     // Event streaming
     PublishEvents(ctx context.Context, taskToken string, events []*JobEvent) error
-    StreamEvents(ctx context.Context, jobId string, fromTimestamp int64) (<-chan *JobEvent, error)
+    StreamEvents(ctx context.Context, jobId string, fromSequence int64, fromTimestamp int64, eventFilter []EventType) (<-chan *JobEvent, error)
 
     // Lifecycle
     Start() error
@@ -129,7 +132,7 @@ type JobStore interface {
 
 ### Phase 2: JobServer Implementation
 
-**File: `internal/server/server.go`**
+**Files: `internal/server/job.go`, `internal/server/job_event.go`, `internal/server/server.go`**
 
 #### Service Implementation
 
@@ -146,7 +149,7 @@ func NewJobServer(store JobStore) *JobServer {
 #### Method Implementations
 
 1. **EnqueueJob**
-   - Generate UUIDv7 job ID
+   - Generate UUIDv4 job ID
    - Check request ID for idempotency
    - Validate job parameters
    - Store job in SCHEDULED state
@@ -154,14 +157,14 @@ func NewJobServer(store JobStore) *JobServer {
 
 2. **DequeueJob (Streaming)**
    - Long-polling implementation
-   - Non-FIFO job selection from queue
+   - FIFO job selection from queue front
    - Generate UUIDv4 task token
    - Set visibility timeout
    - Transition job to RUNNING state
    - Stream job to client
 
 3. **UpdateJob**
-   - Validate task token (no queue field needed - token identifies the job)
+   - Validate task token and queue for partitioning support
    - Extend visibility timeout
    - Update job timestamps
 
@@ -315,19 +318,19 @@ func main() {
 ### UUID Generation & Validation
 
 ```go
-// UUIDv7 for job IDs (time-ordered)
+// UUIDv4 for job IDs (random, widely supported)
 func generateJobID() string {
-    return uuid.Must(uuid.NewV7()).String()
+    return uuid.New().String()
 }
 
 // UUIDv4 for task tokens (random, secure)
 func generateTaskToken() string {
-    return uuid.Must(uuid.NewV4()).String()
+    return uuid.New().String()
 }
 
 // UUIDv4 for request IDs (idempotency)
 func generateRequestID() string {
-    return uuid.Must(uuid.NewV4()).String()
+    return uuid.New().String()
 }
 
 // Validate UUID format for API inputs
@@ -352,7 +355,8 @@ func (s *MemoryJobStore) cleanupExpiredJobs() {
             // Return job to queue
             job := s.jobs[jobId]
             job.State = JobState_JOB_STATE_SCHEDULED
-            s.queues[job.Queue] = append(s.queues[job.Queue], job)
+            queueName := s.jobQueues[jobId]
+            s.queues[queueName] = append(s.queues[queueName], job)
 
             // Clean up tracking
             delete(s.invisibleJobs, jobId)
@@ -383,7 +387,7 @@ func (s *MemoryJobStore) fanoutEvent(jobId string, event *JobEvent) {
 ## API Schema Notes
 
 ### Protobuf Design Decisions
-- **Type Consistency**: All job IDs and task tokens use `UUID` message type throughout
+- **Type Consistency**: All job IDs and task tokens use standard `string` type throughout
 - **Event Types**: Include `EVENT_TYPE_UNSPECIFIED = 0` for proto3 best practices
 - **Field Evolution**: Some field number gaps exist to allow for future proto evolution
 - **Validation**: JobResult includes job_id field for cross-validation with task token
@@ -401,7 +405,7 @@ Use Connect RPC error codes for all API errors:
 
 ### Memory Usage
 
-- Event buffers: Limited size with LRU eviction
+- Event buffers: Unlimited size with simple append (development mode)
 - Job retention: Configurable cleanup after completion
 - Stream management: Automatic cleanup on client disconnect
 

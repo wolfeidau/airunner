@@ -2,12 +2,8 @@ syntax = "proto3";
 
 package job.v1;
 
+import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
-
-// UUID type. encoded as 16 bytes.
-message UUID {
-  bytes uuid = 1; // 16 bytes representing the UUID
-}
 
 // JobService provides job management operations
 // Core job queue operations
@@ -59,7 +55,7 @@ message ProcessStartEvent {
 message ProcessEndEvent {
   int32 pid = 1;
   int32 exit_code = 2;
-  int64 run_duration = 3; // Duration in milliseconds
+  google.protobuf.Duration run_duration = 3; // Duration in milliseconds
 }
 
 message ProcessErrorEvent {
@@ -67,7 +63,7 @@ message ProcessErrorEvent {
 }
 
 message HeartbeatEvent {
-  int64 elapsed_time = 1; // Elapsed time in milliseconds since last heartbeat
+  google.protobuf.Duration elapsed_time = 1; // Elapsed time in milliseconds since last heartbeat
   bool process_alive = 2; // Indicates if the process is still alive
 }
 
@@ -93,15 +89,17 @@ enum EventType {
 }
 
 message PublishJobEventsRequest {
-  UUID task_token = 1; // Authenticate worker
+  string task_token = 1; // Authenticate worker
   repeated JobEvent events = 2;
 }
 
 message PublishJobEventsResponse {}
 
 message StreamJobEventsRequest {
-  UUID job_id = 1;
-  int64 from_timestamp = 2; // Optional: replay from specific time
+  string job_id = 1;
+  int64 from_sequence = 2; // Optional: replay from specific sequence
+  int64 from_timestamp = 3; // Optional: replay from specific time
+  repeated EventType event_filter = 4; // Optional: filter specific event types
 }
 
 message StreamJobEventsResponse {
@@ -110,14 +108,14 @@ message StreamJobEventsResponse {
 
 // EnqueueJobRequest is the request message for EnqueueJob
 message EnqueueJobRequest {
-  UUID request_id = 1; // Unique request id for the job enqueue idempotency
+  string request_id = 1; // Unique request id for the job enqueue idempotency
   string queue = 2; // Queue name to enqueue the job into
   JobParams job_params = 3; // Parameters for the job to be enqueued
 }
 
 // EnqueueJobResponse is the response message for EnqueueJob
 message EnqueueJobResponse {
-  UUID job_id = 1; // Unique identifier for the enqueued job
+  string job_id = 1; // Unique identifier for the enqueued job
   google.protobuf.Timestamp created_at = 2; // Timestamp when the job was created
   JobState state = 3; // Current state of the job
 }
@@ -132,13 +130,14 @@ message DequeueJobRequest {
 // DequeueJobResponse is the response message for DequeueJob
 message DequeueJobResponse {
   Job job = 1; // The dequeued job
-  UUID task_token = 2; // Token to acknowledge job completion
+  string task_token = 2; // Token to acknowledge job completion
 }
 
 // UpdateJobResponse is the response message for UpdateJob
 message UpdateJobRequest {
-  UUID task_token = 1; // Token to acknowledge job completion
-  int32 visibility_timeout_seconds = 2; // How long job stays invisible after update (default: 300s)
+  string queue = 1; // Queue name where the job is located, used for partitioning
+  string task_token = 2; // Token to acknowledge job completion
+  int32 visibility_timeout_seconds = 3; // How long job stays invisible after update (default: 300s)
 }
 
 // UpdateJobResponse is the response message for UpdateJob
@@ -173,11 +172,12 @@ enum JobState {
   JOB_STATE_RUNNING = 2; // Job is currently running
   JOB_STATE_COMPLETED = 3; // Job has completed successfully
   JOB_STATE_FAILED = 4; // Job has failed
+  JOB_STATE_CANCELLED = 5; // Job has been cancelled
 }
 
 // Job represents a job in the system
 message Job {
-  UUID job_id = 1; // Unique identifier for the job
+  string job_id = 1; // Unique identifier for the job
   JobParams job_params = 2; // Parameters associated with the job
   JobState state = 3; // Current state of the job
   google.protobuf.Timestamp created_at = 4; // Timestamp when the job was created
@@ -186,7 +186,7 @@ message Job {
 
 // CompleteJobRequest is the request message for CompleteJob
 message CompleteJobRequest {
-  UUID task_token = 1; // Token to acknowledge job completion
+  string task_token = 1; // Token to acknowledge job completion
   JobResult job_result = 2; // Result of the completed job
 }
 
@@ -195,7 +195,7 @@ message CompleteJobRequest {
 message CompleteJobResponse {}
 
 message JobResult {
-  UUID job_id = 1; // Unique identifier for the job
+  string job_id = 1; // Unique identifier for the job
   bool success = 2; // Indicates if the job was successful
   int32 exit_code = 3; // Exit code of the job
   string error_message = 4; // Error message if the job failed

@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"time"
@@ -10,8 +11,8 @@ import (
 	"github.com/rs/cors"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
-	"github.com/wolfeidau/airunner/api/gen/proto/go/job/v1/jobv1connect"
 	"github.com/wolfeidau/airunner/internal/server"
+	"github.com/wolfeidau/airunner/internal/store"
 )
 
 type RPCServerCmd struct {
@@ -25,22 +26,22 @@ func (s *RPCServerCmd) Run(ctx context.Context, globals *Globals) error {
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr}).
 		With().Caller().Logger()
 
-	mux := http.NewServeMux()
-
 	log.Info().Str("version", globals.Version).Msg("Starting RPC server")
-	log.Info().Str("listen", s.Listen).Msg("Listening for RPC connections")
+	log.Info().Str("url", fmt.Sprintf("https://%s", s.Listen)).Msg("Listening for RPC connections")
 
-	jobService := server.NewJobServer()
+	// Create and start the memory store
+	memStore := store.NewMemoryJobStore()
+	if err := memStore.Start(); err != nil {
+		return err
+	}
+	defer memStore.Stop()
 
-	mux.Handle(jobv1connect.NewJobServiceHandler(jobService))
+	// Create server with store
+	jobServer := server.NewServer(memStore)
 
-	jobEventService := server.NewJobEventServer()
-
-	mux.Handle(jobv1connect.NewJobEventsServiceHandler(jobEventService))
-
-	server := &http.Server{
+	httpServer := &http.Server{
 		Addr:              s.Listen,
-		Handler:           withCORS(s.Hostname, mux),
+		Handler:           withCORS(s.Hostname, jobServer.Handler()),
 		ReadHeaderTimeout: time.Second,
 		ReadTimeout:       5 * time.Minute,
 		WriteTimeout:      5 * time.Minute,
@@ -48,7 +49,7 @@ func (s *RPCServerCmd) Run(ctx context.Context, globals *Globals) error {
 		MaxHeaderBytes:    8 * 1024, // 8KiB
 	}
 
-	return server.ListenAndServeTLS(s.Cert, s.Key)
+	return httpServer.ListenAndServeTLS(s.Cert, s.Key)
 }
 
 // withCORS adds CORS support to a Connect HTTP handler.

@@ -1,37 +1,43 @@
-package main
+package commands
 
 import (
 	"context"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"time"
 
 	"connectrpc.com/connect"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
-	"github.com/wolfeidau/airunner/api/gen/proto/go/job/v1/jobv1connect"
+	"github.com/wolfeidau/airunner/internal/client"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-func main() {
-	if len(os.Args) < 2 {
-		log.Fatal("Usage: worker <server-url>")
-	}
+type WorkerCmd struct {
+	Server  string `help:"Server URL" default:"https://localhost:8080"`
+	Queue   string `help:"Queue name to process" default:"default"`
+	Timeout int    `help:"Visibility timeout in seconds" default:"300"`
+}
 
-	serverURL := os.Args[1]
-	log.Printf("Connecting to job server at %s", serverURL)
+func (w *WorkerCmd) Run(ctx context.Context, globals *Globals) error {
+	log.Printf("Starting worker for queue '%s' connecting to %s", w.Queue, w.Server)
 
 	// Create clients
-	jobClient := jobv1connect.NewJobServiceClient(http.DefaultClient, serverURL)
-	eventsClient := jobv1connect.NewJobEventsServiceClient(http.DefaultClient, serverURL)
+	config := client.Config{
+		ServerURL: w.Server,
+		Timeout:   30 * time.Second,
+		Debug:     globals.Debug,
+	}
+	clients := client.NewClients(config)
 
 	// Start worker loop
 	for {
-		log.Println("Looking for jobs...")
+		if globals.Debug {
+			log.Println("Looking for jobs...")
+		}
 
-		if err := processJob(context.Background(), jobClient, eventsClient); err != nil {
+		if err := w.processJob(ctx, clients); err != nil {
 			log.Printf("Error processing job: %v", err)
 			time.Sleep(5 * time.Second)
 			continue
@@ -42,15 +48,19 @@ func main() {
 	}
 }
 
-func processJob(ctx context.Context, jobClient jobv1connect.JobServiceClient, eventsClient jobv1connect.JobEventsServiceClient) error {
+func (w *WorkerCmd) processJob(ctx context.Context, clients *client.Clients) error {
 	// Dequeue a job
+	var timeoutSeconds int32 = 300 // default
+	if w.Timeout > 0 && w.Timeout <= 2147483647 {
+		timeoutSeconds = int32(w.Timeout)
+	}
 	req := &jobv1.DequeueJobRequest{
-		Queue:                    "default",
+		Queue:                    w.Queue,
 		MaxJobs:                  1,
-		VisibilityTimeoutSeconds: 300, // 5 minutes
+		VisibilityTimeoutSeconds: timeoutSeconds,
 	}
 
-	stream, err := jobClient.DequeueJob(ctx, connect.NewRequest(req))
+	stream, err := clients.Job.DequeueJob(ctx, connect.NewRequest(req))
 	if err != nil {
 		return fmt.Errorf("failed to dequeue job: %w", err)
 	}
@@ -70,14 +80,21 @@ func processJob(ctx context.Context, jobClient jobv1connect.JobServiceClient, ev
 	log.Printf("Received job %s: %s", job.JobId, job.JobParams.Repository)
 
 	// Start publishing events
-	eventStream := eventsClient.PublishJobEvents(ctx)
+	eventStream := clients.Events.PublishJobEvents(ctx)
 
 	// Publish job start event
 	startEvent := &jobv1.JobEvent{
 		EventType: jobv1.EventType_EVENT_TYPE_PROCESS_START,
 		EventData: &jobv1.JobEvent_ProcessStart{
 			ProcessStart: &jobv1.ProcessStartEvent{
-				Pid:       int32(os.Getpid()),
+				Pid: func() int32 {
+					pid := os.Getpid()
+					if pid > 2147483647 {
+						return 2147483647
+					}
+					// #nosec G115 - bounded by explicit check
+					return int32(pid)
+				}(),
 				StartedAt: timestamppb.Now(),
 			},
 		},
@@ -92,7 +109,7 @@ func processJob(ctx context.Context, jobClient jobv1connect.JobServiceClient, ev
 
 	// Simulate job execution
 	startTime := time.Now()
-	success := executeJob(ctx, job, taskToken, eventStream)
+	success := w.executeJob(ctx, job, taskToken, eventStream)
 	duration := time.Since(startTime)
 
 	// Publish job end event
@@ -100,8 +117,21 @@ func processJob(ctx context.Context, jobClient jobv1connect.JobServiceClient, ev
 		EventType: jobv1.EventType_EVENT_TYPE_PROCESS_END,
 		EventData: &jobv1.JobEvent_ProcessEnd{
 			ProcessEnd: &jobv1.ProcessEndEvent{
-				Pid:         int32(os.Getpid()),
-				ExitCode:    func() int32 { if success { return 0 } else { return 1 } }(),
+				Pid: func() int32 {
+					pid := os.Getpid()
+					if pid > 2147483647 {
+						return 2147483647
+					}
+					// #nosec G115 - bounded by explicit check
+					return int32(pid)
+				}(),
+				ExitCode: func() int32 {
+					if success {
+						return 0
+					} else {
+						return 1
+					}
+				}(),
 				RunDuration: durationpb.New(duration),
 			},
 		},
@@ -120,9 +150,15 @@ func processJob(ctx context.Context, jobClient jobv1connect.JobServiceClient, ev
 
 	// Complete the job
 	result := &jobv1.JobResult{
-		JobId:       job.JobId,
-		Success:     success,
-		ExitCode:    func() int32 { if success { return 0 } else { return 1 } }(),
+		JobId:   job.JobId,
+		Success: success,
+		ExitCode: func() int32 {
+			if success {
+				return 0
+			} else {
+				return 1
+			}
+		}(),
 		StartedAt:   timestamppb.New(startTime),
 		CompletedAt: timestamppb.Now(),
 	}
@@ -131,7 +167,7 @@ func processJob(ctx context.Context, jobClient jobv1connect.JobServiceClient, ev
 		result.ErrorMessage = "Job execution failed"
 	}
 
-	_, err = jobClient.CompleteJob(ctx, connect.NewRequest(&jobv1.CompleteJobRequest{
+	_, err = clients.Job.CompleteJob(ctx, connect.NewRequest(&jobv1.CompleteJobRequest{
 		TaskToken: taskToken,
 		JobResult: result,
 	}))
@@ -144,15 +180,27 @@ func processJob(ctx context.Context, jobClient jobv1connect.JobServiceClient, ev
 	return nil
 }
 
-func executeJob(ctx context.Context, job *jobv1.Job, taskToken string, eventStream *connect.ClientStreamForClient[jobv1.PublishJobEventsRequest, jobv1.PublishJobEventsResponse]) bool {
+func (w *WorkerCmd) executeJob(ctx context.Context, job *jobv1.Job, taskToken string, eventStream *connect.ClientStreamForClient[jobv1.PublishJobEventsRequest, jobv1.PublishJobEventsResponse]) bool {
 	log.Printf("Executing job for repository: %s", job.JobParams.Repository)
 
 	// Simulate some work - in a real implementation, this would clone the repo and run the job
+	w.publishOutput(taskToken, eventStream, fmt.Sprintf("Cloning repository %s...\n", job.JobParams.Repository))
+	time.Sleep(2 * time.Second)
+
+	w.publishOutput(taskToken, eventStream, "Building project...\n")
+	time.Sleep(3 * time.Second)
+
+	w.publishOutput(taskToken, eventStream, "Build completed successfully!\n")
+
+	return true // Success
+}
+
+func (w *WorkerCmd) publishOutput(taskToken string, eventStream *connect.ClientStreamForClient[jobv1.PublishJobEventsRequest, jobv1.PublishJobEventsResponse], output string) {
 	outputEvent := &jobv1.JobEvent{
 		EventType: jobv1.EventType_EVENT_TYPE_OUTPUT,
 		EventData: &jobv1.JobEvent_Output{
 			Output: &jobv1.OutputEvent{
-				Output: []byte(fmt.Sprintf("Cloning repository %s...\n", job.JobParams.Repository)),
+				Output: []byte(output),
 			},
 		},
 	}
@@ -163,45 +211,4 @@ func executeJob(ctx context.Context, job *jobv1.Job, taskToken string, eventStre
 	}); err != nil {
 		log.Printf("Failed to send output event: %v", err)
 	}
-
-	// Simulate work
-	time.Sleep(2 * time.Second)
-
-	// More output
-	outputEvent2 := &jobv1.JobEvent{
-		EventType: jobv1.EventType_EVENT_TYPE_OUTPUT,
-		EventData: &jobv1.JobEvent_Output{
-			Output: &jobv1.OutputEvent{
-				Output: []byte("Building project...\n"),
-			},
-		},
-	}
-
-	if err := eventStream.Send(&jobv1.PublishJobEventsRequest{
-		TaskToken: taskToken,
-		Events:    []*jobv1.JobEvent{outputEvent2},
-	}); err != nil {
-		log.Printf("Failed to send output event: %v", err)
-	}
-
-	time.Sleep(3 * time.Second)
-
-	// Final output
-	outputEvent3 := &jobv1.JobEvent{
-		EventType: jobv1.EventType_EVENT_TYPE_OUTPUT,
-		EventData: &jobv1.JobEvent_Output{
-			Output: &jobv1.OutputEvent{
-				Output: []byte("Build completed successfully!\n"),
-			},
-		},
-	}
-
-	if err := eventStream.Send(&jobv1.PublishJobEventsRequest{
-		TaskToken: taskToken,
-		Events:    []*jobv1.JobEvent{outputEvent3},
-	}); err != nil {
-		log.Printf("Failed to send output event: %v", err)
-	}
-
-	return true // Success
 }

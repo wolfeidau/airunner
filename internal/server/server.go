@@ -9,8 +9,8 @@ import (
 
 // Server wraps the HTTP server and job services
 type Server struct {
-	store      store.JobStore
-	jobServer  *JobServer
+	store       store.JobStore
+	jobServer   *JobServer
 	eventServer *JobEventServer
 }
 

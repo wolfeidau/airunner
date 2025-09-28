@@ -19,7 +19,9 @@ func TestCompleteJobWorkflow(t *testing.T) {
 	// Create test server
 	memStore := store.NewMemoryJobStore()
 	require.NoError(t, memStore.Start())
-	defer memStore.Stop()
+	defer func() {
+		require.NoError(t, memStore.Stop())
+	}()
 
 	server := NewServer(memStore)
 	testServer := httptest.NewServer(server.Handler())
@@ -140,7 +142,9 @@ func TestIdempotentJobEnqueue(t *testing.T) {
 	// Create test server
 	memStore := store.NewMemoryJobStore()
 	require.NoError(t, memStore.Start())
-	defer memStore.Stop()
+	defer func() {
+		require.NoError(t, memStore.Stop())
+	}()
 
 	server := NewServer(memStore)
 	testServer := httptest.NewServer(server.Handler())

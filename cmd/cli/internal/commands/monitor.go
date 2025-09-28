@@ -1,35 +1,40 @@
-package main
+package commands
 
 import (
 	"context"
 	"fmt"
-	"log"
-	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"connectrpc.com/connect"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
-	"github.com/wolfeidau/airunner/api/gen/proto/go/job/v1/jobv1connect"
+	"github.com/wolfeidau/airunner/internal/client"
 )
 
-func main() {
-	if len(os.Args) < 3 {
-		log.Fatal("Usage: monitor <server-url> <job-id>")
+type MonitorCmd struct {
+	Server        string            `help:"Server URL" default:"https://localhost:8080"`
+	JobID         string            `arg:"" help:"Job ID to monitor"`
+	FromSequence  int64             `help:"Start from sequence number" default:"0"`
+	FromTimestamp int64             `help:"Start from timestamp" default:"0"`
+	EventFilter   []jobv1.EventType `help:"Filter specific event types"`
+}
+
+func (m *MonitorCmd) Run(ctx context.Context, globals *Globals) error {
+	fmt.Printf("Monitoring job %s on server %s\n", m.JobID, m.Server)
+
+	// Create clients
+	config := client.Config{
+		ServerURL: m.Server,
+		Timeout:   30 * time.Second,
+		Debug:     globals.Debug,
 	}
-
-	serverURL := os.Args[1]
-	jobID := os.Args[2]
-
-	log.Printf("Monitoring job %s on server %s", jobID, serverURL)
-
-	// Create client
-	client := jobv1connect.NewJobEventsServiceClient(http.DefaultClient, serverURL)
+	clients := client.NewClients(config)
 
 	// Set up context for graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	// Handle interrupts
@@ -37,33 +42,34 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigChan
-		log.Println("Received interrupt signal, shutting down...")
+		fmt.Println("Received interrupt signal, shutting down...")
 		cancel()
 	}()
 
 	// Start monitoring
-	if err := monitorJob(ctx, client, jobID); err != nil {
-		log.Fatalf("Failed to monitor job: %v", err)
+	if err := m.monitorJob(ctx, clients); err != nil {
+		return fmt.Errorf("failed to monitor job: %w", err)
 	}
 
-	log.Println("Monitoring finished")
+	fmt.Println("Monitoring finished")
+	return nil
 }
 
-func monitorJob(ctx context.Context, client jobv1connect.JobEventsServiceClient, jobID string) error {
+func (m *MonitorCmd) monitorJob(ctx context.Context, clients *client.Clients) error {
 	req := &jobv1.StreamJobEventsRequest{
-		JobId:         jobID,
-		FromSequence:  0, // Start from beginning
-		FromTimestamp: 0, // No timestamp filter
-		EventFilter:   []jobv1.EventType{}, // All event types
+		JobId:         m.JobID,
+		FromSequence:  m.FromSequence,
+		FromTimestamp: m.FromTimestamp,
+		EventFilter:   m.EventFilter,
 	}
 
-	stream, err := client.StreamJobEvents(ctx, connect.NewRequest(req))
+	stream, err := clients.Events.StreamJobEvents(ctx, connect.NewRequest(req))
 	if err != nil {
 		return fmt.Errorf("failed to create event stream: %w", err)
 	}
 	defer stream.Close()
 
-	fmt.Printf("Streaming events for job %s:\n", jobID)
+	fmt.Printf("Streaming events for job %s:\n", m.JobID)
 	fmt.Println(strings.Repeat("=", 50))
 
 	for stream.Receive() {
@@ -104,10 +110,10 @@ func monitorJob(ctx context.Context, client jobv1connect.JobEventsServiceClient,
 				if !heartbeat.ProcessAlive {
 					status = "💀"
 				}
-				fmt.Printf("[%s] %s Heartbeat (Elapsed: %dms)\n",
+				fmt.Printf("[%s] %s Heartbeat (Elapsed: %v)\n",
 					event.Timestamp.AsTime().Format("15:04:05"),
 					status,
-					heartbeat.ElapsedTime)
+					heartbeat.ElapsedTime.AsDuration())
 			}
 
 		case jobv1.EventType_EVENT_TYPE_OUTPUT:

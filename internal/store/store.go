@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 	"github.com/google/uuid"
+	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -40,21 +40,21 @@ type MemoryJobStore struct {
 	mu sync.RWMutex
 
 	// Core job storage
-	jobs      map[string]*jobv1.Job           // job ID -> Job
-	jobQueues map[string]string               // job ID -> queue name
-	queues    map[string][]*jobv1.Job        // queue name -> Jobs (FIFO)
+	jobs      map[string]*jobv1.Job   // job ID -> Job
+	jobQueues map[string]string       // job ID -> queue name
+	queues    map[string][]*jobv1.Job // queue name -> Jobs (FIFO)
 
 	// Visibility timeout management
-	invisibleJobs map[string]time.Time     // job ID -> visibility expiry
-	taskTokens    map[string]string        // task token -> job ID
+	invisibleJobs map[string]time.Time // job ID -> visibility expiry
+	taskTokens    map[string]string    // task token -> job ID
 
 	// Idempotency support
-	requestIds map[string]string           // request ID -> job ID
+	requestIds map[string]string // request ID -> job ID
 
 	// Event streaming
-	jobEvents    map[string][]*jobv1.JobEvent        // job ID -> event buffer
-	eventStreams map[string][]chan *jobv1.JobEvent   // job ID -> active streams
-	eventSeq     map[string]int64                    // job ID -> next sequence number
+	jobEvents    map[string][]*jobv1.JobEvent      // job ID -> event buffer
+	eventStreams map[string][]chan *jobv1.JobEvent // job ID -> active streams
+	eventSeq     map[string]int64                  // job ID -> next sequence number
 
 	// Background cleanup
 	cleanupTicker *time.Ticker
@@ -321,9 +321,17 @@ func (s *MemoryJobStore) ListJobs(ctx context.Context, req *jobv1.ListJobsReques
 	endIdx := startIdx + pageSize
 
 	if startIdx >= len(filteredJobs) {
+		lastPage := (len(filteredJobs)-1)/pageSize + 1
+		var lastPageInt32 int32
+		if lastPage <= 2147483647 {
+			// #nosec G115 - bounded by explicit check
+			lastPageInt32 = int32(lastPage)
+		} else {
+			lastPageInt32 = 2147483647
+		}
 		return &jobv1.ListJobsResponse{
 			Jobs:     []*jobv1.Job{},
-			LastPage: int32((len(filteredJobs)-1)/pageSize + 1),
+			LastPage: lastPageInt32,
 		}, nil
 	}
 
@@ -331,9 +339,17 @@ func (s *MemoryJobStore) ListJobs(ctx context.Context, req *jobv1.ListJobsReques
 		endIdx = len(filteredJobs)
 	}
 
+	lastPage := (len(filteredJobs)-1)/pageSize + 1
+	var lastPageInt32 int32
+	if lastPage <= 2147483647 {
+		// #nosec G115 - bounded by explicit check
+		lastPageInt32 = int32(lastPage)
+	} else {
+		lastPageInt32 = 2147483647
+	}
 	return &jobv1.ListJobsResponse{
 		Jobs:     filteredJobs[startIdx:endIdx],
-		LastPage: int32((len(filteredJobs)-1)/pageSize + 1),
+		LastPage: lastPageInt32,
 	}, nil
 }
 

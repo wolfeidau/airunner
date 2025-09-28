@@ -34,7 +34,11 @@ func (s *RPCServerCmd) Run(ctx context.Context, globals *Globals) error {
 	if err := memStore.Start(); err != nil {
 		return err
 	}
-	defer memStore.Stop()
+	defer func() {
+		if err := memStore.Stop(); err != nil {
+			log.Error().Err(err).Msg("Failed to stop memory store")
+		}
+	}()
 
 	// Create server with store
 	jobServer := server.NewServer(memStore)

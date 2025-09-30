@@ -9,6 +9,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/rs/zerolog/log"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
+	"github.com/wolfeidau/airunner/internal/util"
 	consolestream "github.com/wolfeidau/console-stream"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -17,12 +18,15 @@ import (
 type JobExecutor struct {
 	eventStream *connect.ClientStreamForClient[jobv1.PublishJobEventsRequest, jobv1.PublishJobEventsResponse]
 	taskToken   string
+	sequence    int64
+	pid         int32 // Process ID from ProcessStart event
 }
 
 func NewJobExecutor(eventStream *connect.ClientStreamForClient[jobv1.PublishJobEventsRequest, jobv1.PublishJobEventsResponse], taskToken string) *JobExecutor {
 	return &JobExecutor{
 		eventStream: eventStream,
 		taskToken:   taskToken,
+		sequence:    1, // Start sequence at 1
 	}
 }
 
@@ -84,16 +88,31 @@ func (je *JobExecutor) Execute(ctx context.Context, job *jobv1.Job) error {
 	return errors.New("failed job execution") // Should not reach here normally
 }
 
+// assignSequence sets the sequence number and timestamp for an event
+func (je *JobExecutor) assignSequence(event *jobv1.JobEvent) {
+	event.Sequence = je.sequence
+	je.sequence++
+
+	if event.Timestamp == nil {
+		event.Timestamp = timestamppb.Now()
+	}
+}
+
 func (je *JobExecutor) publishProcessStartEvent(event *consolestream.ProcessStart) {
+	// Store PID for use in ProcessEnd event
+	je.pid = util.AsInt32(event.PID)
+
 	startEvent := &jobv1.JobEvent{
 		EventType: jobv1.EventType_EVENT_TYPE_PROCESS_START,
 		EventData: &jobv1.JobEvent_ProcessStart{
 			ProcessStart: &jobv1.ProcessStartEvent{
-				Pid:       asInt32(event.PID),
+				Pid:       je.pid,
 				StartedAt: timestamppb.Now(),
 			},
 		},
 	}
+
+	je.assignSequence(startEvent)
 
 	if err := je.eventStream.Send(&jobv1.PublishJobEventsRequest{
 		TaskToken: je.taskToken,
@@ -113,6 +132,8 @@ func (je *JobExecutor) publishOutputEvent(output []byte) {
 		},
 	}
 
+	je.assignSequence(outputEvent)
+
 	if err := je.eventStream.Send(&jobv1.PublishJobEventsRequest{
 		TaskToken: je.taskToken,
 		Events:    []*jobv1.JobEvent{outputEvent},
@@ -126,12 +147,14 @@ func (je *JobExecutor) publishProcessEndEvent(event *consolestream.ProcessEnd) {
 		EventType: jobv1.EventType_EVENT_TYPE_PROCESS_END,
 		EventData: &jobv1.JobEvent_ProcessEnd{
 			ProcessEnd: &jobv1.ProcessEndEvent{
-				Pid:         0, // console-stream doesn't provide PID in ProcessEnd
-				ExitCode:    asInt32(event.ExitCode),
+				Pid:         je.pid, // Use stored PID from ProcessStart
+				ExitCode:    util.AsInt32(event.ExitCode),
 				RunDuration: durationpb.New(event.Duration),
 			},
 		},
 	}
+
+	je.assignSequence(endEvent)
 
 	if err := je.eventStream.Send(&jobv1.PublishJobEventsRequest{
 		TaskToken: je.taskToken,
@@ -151,21 +174,12 @@ func (je *JobExecutor) publishErrorEvent(errorMessage string) {
 		},
 	}
 
+	je.assignSequence(errorEvent)
+
 	if err := je.eventStream.Send(&jobv1.PublishJobEventsRequest{
 		TaskToken: je.taskToken,
 		Events:    []*jobv1.JobEvent{errorEvent},
 	}); err != nil {
 		log.Error().Err(err).Msg("Failed to send error event")
 	}
-}
-
-func asInt32(i int) int32 {
-	if i > 2147483647 {
-		return 2147483647
-	}
-	if i < -2147483648 {
-		return -2147483648
-	}
-	// #nosec G115 - bounded by explicit check
-	return int32(i)
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
+	"github.com/wolfeidau/airunner/internal/util"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -47,6 +48,7 @@ type MemoryJobStore struct {
 	// Visibility timeout management
 	invisibleJobs map[string]time.Time // job ID -> visibility expiry
 	taskTokens    map[string]string    // task token -> job ID
+	jobTokens     map[string]string    // job ID -> current task token (reverse map)
 
 	// Idempotency support
 	requestIds map[string]string // request ID -> job ID
@@ -54,7 +56,6 @@ type MemoryJobStore struct {
 	// Event streaming
 	jobEvents    map[string][]*jobv1.JobEvent      // job ID -> event buffer
 	eventStreams map[string][]chan *jobv1.JobEvent // job ID -> active streams
-	eventSeq     map[string]int64                  // job ID -> next sequence number
 
 	// Background cleanup
 	cleanupTicker *time.Ticker
@@ -69,10 +70,10 @@ func NewMemoryJobStore() *MemoryJobStore {
 		queues:        make(map[string][]*jobv1.Job),
 		invisibleJobs: make(map[string]time.Time),
 		taskTokens:    make(map[string]string),
+		jobTokens:     make(map[string]string),
 		requestIds:    make(map[string]string),
 		jobEvents:     make(map[string][]*jobv1.JobEvent),
 		eventStreams:  make(map[string][]chan *jobv1.JobEvent),
-		eventSeq:      make(map[string]int64),
 		stopCleanup:   make(chan bool),
 	}
 }
@@ -120,13 +121,11 @@ func (s *MemoryJobStore) cleanupExpiredJobs() {
 				queueName := s.jobQueues[jobId]
 				s.queues[queueName] = append(s.queues[queueName], job)
 
-				// Clean up tracking
+				// Clean up tracking using reverse map
 				delete(s.invisibleJobs, jobId)
-				for token, id := range s.taskTokens {
-					if id == jobId {
-						delete(s.taskTokens, token)
-						break
-					}
+				if token, exists := s.jobTokens[jobId]; exists {
+					delete(s.taskTokens, token)
+					delete(s.jobTokens, jobId)
 				}
 			}
 		}
@@ -207,6 +206,7 @@ func (s *MemoryJobStore) DequeueJobs(ctx context.Context, queue string, maxJobs 
 			expiry := time.Now().Add(time.Duration(timeoutSeconds) * time.Second)
 			s.invisibleJobs[job.JobId] = expiry
 			s.taskTokens[taskToken] = job.JobId
+			s.jobTokens[job.JobId] = taskToken
 
 			results = append(results, &JobWithToken{
 				Job:       job,
@@ -281,6 +281,7 @@ func (s *MemoryJobStore) CompleteJob(ctx context.Context, taskToken string, resu
 	// Clean up visibility timeout and task token
 	delete(s.invisibleJobs, jobId)
 	delete(s.taskTokens, taskToken)
+	delete(s.jobTokens, jobId)
 
 	return nil
 }
@@ -322,16 +323,9 @@ func (s *MemoryJobStore) ListJobs(ctx context.Context, req *jobv1.ListJobsReques
 
 	if startIdx >= len(filteredJobs) {
 		lastPage := (len(filteredJobs)-1)/pageSize + 1
-		var lastPageInt32 int32
-		if lastPage <= 2147483647 {
-			// #nosec G115 - bounded by explicit check
-			lastPageInt32 = int32(lastPage)
-		} else {
-			lastPageInt32 = 2147483647
-		}
 		return &jobv1.ListJobsResponse{
 			Jobs:     []*jobv1.Job{},
-			LastPage: lastPageInt32,
+			LastPage: util.AsInt32(lastPage),
 		}, nil
 	}
 
@@ -340,16 +334,9 @@ func (s *MemoryJobStore) ListJobs(ctx context.Context, req *jobv1.ListJobsReques
 	}
 
 	lastPage := (len(filteredJobs)-1)/pageSize + 1
-	var lastPageInt32 int32
-	if lastPage <= 2147483647 {
-		// #nosec G115 - bounded by explicit check
-		lastPageInt32 = int32(lastPage)
-	} else {
-		lastPageInt32 = 2147483647
-	}
 	return &jobv1.ListJobsResponse{
 		Jobs:     filteredJobs[startIdx:endIdx],
-		LastPage: lastPageInt32,
+		LastPage: util.AsInt32(lastPage),
 	}, nil
 }
 
@@ -363,14 +350,8 @@ func (s *MemoryJobStore) PublishEvents(ctx context.Context, taskToken string, ev
 		return fmt.Errorf("invalid task token")
 	}
 
-	// Assign sequence numbers and timestamps
+	// Set timestamp if not already set
 	for _, event := range events {
-		if s.eventSeq[jobId] == 0 {
-			s.eventSeq[jobId] = 1
-		}
-		event.Sequence = s.eventSeq[jobId]
-		s.eventSeq[jobId]++
-
 		if event.Timestamp == nil {
 			event.Timestamp = timestamppb.Now()
 		}

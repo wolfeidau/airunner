@@ -77,7 +77,6 @@ type MemoryJobStore struct {
     // Event streaming
     jobEvents map[string][]*JobEvent       // Job ID -> Event buffer
     eventStreams map[string][]chan *JobEvent // Job ID -> Active streams
-    eventSeq map[string]int64              // Job ID -> Next sequence number
 
     // Background cleanup
     cleanupTicker *time.Ticker
@@ -106,7 +105,7 @@ type MemoryJobStore struct {
 4. **Event Streaming**
    - Real-time event buffers per job
    - Multiple concurrent stream subscriptions
-   - Sequence-based ordering with monotonic sequence numbers
+   - Sequence-based ordering with source-assigned monotonic sequence numbers
    - Timestamp-based replay capability
 
 #### Store Interface
@@ -209,10 +208,32 @@ func NewJobEventsServer(store JobStore) *JobEventsServer {
 2. **PublishJobEvents (Client Streaming)**
    - Validate task token (UUID format)
    - Buffer incoming events in memory
-   - Assign monotonic sequence numbers to ensure ordering
+   - Validate monotonic sequence numbers assigned by worker (protects against network reordering)
+   - Store events with worker-assigned sequences to preserve source ordering
    - Timestamp validation for event ordering
    - Fanout to active streams with non-blocking sends
    - Efficient batch processing for multiple events
+
+#### Sequence Number Assignment Strategy
+
+**Design Decision: Source-Assigned Sequences**
+
+Sequences are assigned by the worker (event source) rather than the store for the following reasons:
+
+1. **Network Reordering Protection**: Events transmitted over the network from remote workers may arrive out of order. Source-assigned sequences preserve the true temporal order of events as they occurred.
+
+2. **Per-Execution Scoping**: Sequences are scoped to a single job execution attempt. If a job times out and is re-executed, the new execution starts with sequence=1, making it easier to distinguish between execution attempts.
+
+3. **Single-Worker Model**: The current architecture assigns one worker per job execution, eliminating the need for store-side sequence coordination.
+
+**Store Responsibilities**:
+- Validate that received sequences are monotonic within a batch
+- Detect missing or duplicate events (future enhancement)
+- Preserve worker-assigned sequences when storing and streaming events
+
+**Future Considerations**:
+- If multiple goroutines need to publish events for the same execution, consider adding an `execution_id` field to distinguish retry attempts
+- For distributed tracing, sequences provide happened-before relationships within an execution
 
 ### Phase 4: Integration Tests
 
@@ -276,7 +297,7 @@ func main() {
 
         if job != nil {
             // Start event streaming
-            go publishEvents(eventsClient, job.TaskToken)
+            go publishEvents(eventsClient, job.TaskToken) // Worker assigns sequences
 
             // Extend timeout periodically
             go extendTimeout(client, job.TaskToken)
@@ -381,6 +402,37 @@ func (s *MemoryJobStore) fanoutEvent(jobId string, event *JobEvent) {
             // Channel full, skip this stream
         }
     }
+}
+```
+
+### Sequence Validation
+
+```go
+func (s *MemoryJobStore) PublishEvents(ctx context.Context, taskToken string, events []*JobEvent) error {
+    jobId, exists := s.taskTokens[taskToken]
+    if !exists {
+        return fmt.Errorf("invalid task token")
+    }
+
+    // Validate sequences are monotonic within this batch
+    // (sequences are already assigned by worker)
+    for i := 1; i < len(events); i++ {
+        if events[i].Sequence <= events[i-1].Sequence {
+            return connect.NewError(connect.CodeInvalidArgument,
+                fmt.Errorf("non-monotonic sequence detected: %d -> %d",
+                    events[i-1].Sequence, events[i].Sequence))
+        }
+    }
+
+    // Store events with worker-assigned sequences preserved
+    s.jobEvents[jobId] = append(s.jobEvents[jobId], events...)
+
+    // Fanout to active streams
+    for _, event := range events {
+        s.fanoutEvent(jobId, event)
+    }
+
+    return nil
 }
 ```
 

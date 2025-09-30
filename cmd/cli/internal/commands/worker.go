@@ -4,13 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/cenkalti/backoff/v5"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 	"github.com/wolfeidau/airunner/internal/client"
+	"github.com/wolfeidau/airunner/internal/util"
 	"github.com/wolfeidau/airunner/internal/worker"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type WorkerCmd struct {
@@ -20,6 +25,11 @@ type WorkerCmd struct {
 }
 
 func (w *WorkerCmd) Run(ctx context.Context, globals *Globals) error {
+	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr}).
+		With().Caller().Logger()
+
+	log.Info().Str("version", globals.Version).Msg("Starting RPC server")
+
 	log.Info().Str("queue", w.Queue).Str("server", w.Server).Msg("Worker starting")
 
 	// Create clients
@@ -30,47 +40,57 @@ func (w *WorkerCmd) Run(ctx context.Context, globals *Globals) error {
 	}
 	clients := client.NewClients(config)
 
+	bkoffStrategy := backoff.NewExponentialBackOff()
+	bkoffStrategy.InitialInterval = 1 * time.Second
+	bkoffStrategy.MaxInterval = 10 * time.Second
+	bkoffStrategy.Multiplier = 1.5
+	bkoffStrategy.RandomizationFactor = 0.5
+
 	// Start worker loop
 	for {
 		if globals.Debug {
 			log.Debug().Msg("Looking for jobs...")
 		}
 
-		if err := w.processJob(ctx, clients); err != nil {
+		jobFound, err := w.processJob(ctx, clients)
+		if err != nil {
 			log.Error().Err(err).Msg("Error processing job")
 			time.Sleep(5 * time.Second)
 			continue
 		}
 
-		// Brief pause before next poll
-		time.Sleep(1 * time.Second)
+		if jobFound {
+			// Reset backoff when we found and processed a job
+			bkoffStrategy.Reset()
+			// Brief pause before next poll
+			time.Sleep(1 * time.Second)
+		} else {
+			// No job found, use exponential backoff
+			time.Sleep(bkoffStrategy.NextBackOff())
+		}
 	}
 }
 
-func (w *WorkerCmd) processJob(ctx context.Context, clients *client.Clients) error {
+func (w *WorkerCmd) processJob(ctx context.Context, clients *client.Clients) (bool, error) {
 	// Dequeue a job
-	var timeoutSeconds int32 = 300 // default
-	if w.Timeout > 0 && w.Timeout <= 2147483647 {
-		timeoutSeconds = int32(w.Timeout)
-	}
 	req := &jobv1.DequeueJobRequest{
 		Queue:                    w.Queue,
 		MaxJobs:                  1,
-		VisibilityTimeoutSeconds: timeoutSeconds,
+		VisibilityTimeoutSeconds: util.AsInt32(w.Timeout),
 	}
 
 	stream, err := clients.Job.DequeueJob(ctx, connect.NewRequest(req))
 	if err != nil {
-		return fmt.Errorf("failed to dequeue job: %w", err)
+		return false, fmt.Errorf("failed to dequeue job: %w", err)
 	}
 	defer stream.Close()
 
 	// Wait for a job
 	if !stream.Receive() {
 		if err := stream.Err(); err != nil {
-			return fmt.Errorf("stream error: %w", err)
+			return false, fmt.Errorf("stream error: %w", err)
 		}
-		return nil // No jobs available
+		return false, nil // No jobs available
 	}
 
 	job := stream.Msg().Job
@@ -80,22 +100,89 @@ func (w *WorkerCmd) processJob(ctx context.Context, clients *client.Clients) err
 
 	if job.JobParams.Command == "" {
 		log.Printf("Error: No command specified for job %s", job.JobId)
-		return errors.New("no command specified")
+		return true, errors.New("no command specified")
 	}
 
 	eventStream := clients.Events.PublishJobEvents(ctx)
 
 	executor := worker.NewJobExecutor(eventStream, taskToken)
 
-	if err := executor.Execute(ctx, job); err != nil {
-		return fmt.Errorf("failed to complete job: %w", err)
-	}
+	// Start visibility timeout extension goroutine
+	extendCtx, cancelExtend := context.WithCancel(ctx)
+	defer cancelExtend()
 
+	go w.extendVisibilityTimeout(extendCtx, clients, taskToken)
+
+	// Execute the job and capture result
+	var jobResult *jobv1.JobResult
+	executeErr := executor.Execute(ctx, job)
+
+	// Close event stream first
 	if _, err := eventStream.CloseAndReceive(); err != nil {
-		return fmt.Errorf("failed to close event stream: %w", err)
+		log.Error().Err(err).Msg("Failed to close event stream")
 	}
 
-	log.Info().Str("job_id", job.JobId).Msg("Job completed successfully")
+	// Build job result based on execution outcome
+	if executeErr != nil {
+		log.Error().Err(executeErr).Str("job_id", job.JobId).Msg("Job execution failed")
+		jobResult = &jobv1.JobResult{
+			JobId:        job.JobId,
+			Success:      false,
+			ExitCode:     1,
+			ErrorMessage: executeErr.Error(),
+			StartedAt:    job.UpdatedAt, // Job was marked RUNNING when dequeued
+			CompletedAt:  timestamppb.Now(),
+		}
+	} else {
+		log.Info().Str("job_id", job.JobId).Msg("Job executed successfully")
+		jobResult = &jobv1.JobResult{
+			JobId:       job.JobId,
+			Success:     true,
+			ExitCode:    0,
+			StartedAt:   job.UpdatedAt,
+			CompletedAt: timestamppb.Now(),
+		}
+	}
 
-	return nil
+	// Complete the job with the result
+	completeReq := &jobv1.CompleteJobRequest{
+		TaskToken: taskToken,
+		JobResult: jobResult,
+	}
+
+	if _, err := clients.Job.CompleteJob(ctx, connect.NewRequest(completeReq)); err != nil {
+		return true, fmt.Errorf("failed to complete job: %w", err)
+	}
+
+	log.Info().Str("job_id", job.JobId).Bool("success", jobResult.Success).Msg("Job completed")
+
+	return true, nil
+}
+
+func (w *WorkerCmd) extendVisibilityTimeout(ctx context.Context, clients *client.Clients, taskToken string) {
+	// Extend timeout every 60 seconds (well before the default 300s timeout)
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			// Job completed or context cancelled
+			return
+		case <-ticker.C:
+			// Extend visibility timeout by the configured timeout value
+			req := &jobv1.UpdateJobRequest{
+				Queue:                    w.Queue,
+				TaskToken:                taskToken,
+				VisibilityTimeoutSeconds: util.AsInt32(w.Timeout),
+			}
+
+			if _, err := clients.Job.UpdateJob(ctx, connect.NewRequest(req)); err != nil {
+				log.Error().Err(err).Msg("Failed to extend visibility timeout")
+				// Continue trying - don't exit the goroutine
+			} else {
+				log.Debug().Msg("Extended visibility timeout")
+			}
+		}
+	}
 }

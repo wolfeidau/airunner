@@ -116,7 +116,8 @@ make mkcert        # Generate local TLS certificates
 The codebase appears to be in early stages with skeleton main.go files, suggesting active development of a distributed job processing system.
 
 ## Code Style
-- Use `zerolog` for logging, `testify/require` for tests
+- **Logging**: ALWAYS use `"github.com/rs/zerolog/log"` for all logging operations
+- Use `testify/require` for tests
 - Error handling: return errors up the stack, log at top level
 - Package names: lowercase, descriptive (buildkite, commands, trace, tokens)
 - Use contexts for cancellation and tracing throughout

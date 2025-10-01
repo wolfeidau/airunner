@@ -1,0 +1,15 @@
+command: zsh
+args:
+  - "-c"
+  - "docker rmi mcr.microsoft.com/devcontainers/go:latest; docker pull mcr.microsoft.com/devcontainers/go:latest"
+processType: pty
+timeout: 30
+environment:
+  PATH: "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+metadata:
+  submitter: "integration-test"
+  priority: "high"
+repository: "https://github.com/example/test-repo"
+commit: "main"
+branch: "main"
+owner: "test-user"

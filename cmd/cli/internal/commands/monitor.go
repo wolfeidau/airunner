@@ -118,9 +118,7 @@ func (m *MonitorCmd) monitorJob(ctx context.Context, clients *client.Clients) er
 
 		case jobv1.EventType_EVENT_TYPE_OUTPUT:
 			if output := event.GetOutput(); output != nil {
-				fmt.Printf("[%s] 📝 %s",
-					event.Timestamp.AsTime().Format("15:04:05"),
-					string(output.Output))
+				fmt.Printf("%s", string(output.Output))
 			}
 
 		case jobv1.EventType_EVENT_TYPE_TERMINAL_RESIZE:

@@ -15,6 +15,19 @@ steps:
         --progress plain \
         --push .
 
+  - if: build.branch != "main"
+    if_changed: ".buildkite/Dockerfile.build"
+    key: base_image_check
+    image: "buildkite/hosted-agent-base-images:ubuntu-jammy"
+    label: ":docker: Check base image"
+    command: |
+      docker buildx build \
+        --no-cache \
+        --file .buildkite/Dockerfile.build \
+        --platform linux/amd64,linux/arm64 \
+        --tag "${BUILDKITE_HOSTED_REGISTRY_URL}/console-stream_base:dev" \
+        --progress plain .
+
   - group: ":mag: QA"
     key: quality_checks
     depends_on: [base_image]

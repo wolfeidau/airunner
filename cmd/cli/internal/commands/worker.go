@@ -13,15 +13,15 @@ import (
 	"github.com/rs/zerolog/log"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 	"github.com/wolfeidau/airunner/internal/client"
-	"github.com/wolfeidau/airunner/internal/util"
 	"github.com/wolfeidau/airunner/internal/worker"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type WorkerCmd struct {
-	Server  string `help:"Server URL" default:"https://localhost:8080"`
-	Queue   string `help:"Queue name to process" default:"default"`
-	Timeout int    `help:"Visibility timeout in seconds" default:"300"`
+	Server            string        `help:"Server URL" default:"https://localhost:8080"`
+	Queue             string        `help:"Queue name to process" default:"default"`
+	ClientTimeout     time.Duration `help:"Client timeout in seconds" default:"5m"`
+	VisibilityTimeout int32         `help:"Visibility timeout in seconds" default:"300"`
 }
 
 func (w *WorkerCmd) Run(ctx context.Context, globals *Globals) error {
@@ -35,7 +35,7 @@ func (w *WorkerCmd) Run(ctx context.Context, globals *Globals) error {
 	// Create clients
 	config := client.Config{
 		ServerURL: w.Server,
-		Timeout:   30 * time.Second,
+		Timeout:   w.ClientTimeout,
 		Debug:     globals.Debug,
 	}
 	clients := client.NewClients(config)
@@ -76,7 +76,7 @@ func (w *WorkerCmd) processJob(ctx context.Context, clients *client.Clients) (bo
 	req := &jobv1.DequeueJobRequest{
 		Queue:                    w.Queue,
 		MaxJobs:                  1,
-		VisibilityTimeoutSeconds: util.AsInt32(w.Timeout),
+		VisibilityTimeoutSeconds: w.VisibilityTimeout,
 	}
 
 	stream, err := clients.Job.DequeueJob(ctx, connect.NewRequest(req))
@@ -99,7 +99,7 @@ func (w *WorkerCmd) processJob(ctx context.Context, clients *client.Clients) (bo
 	log.Info().Str("job_id", job.JobId).Str("repository", job.JobParams.Repository).Msg("Job dequeued")
 
 	if job.JobParams.Command == "" {
-		log.Printf("Error: No command specified for job %s", job.JobId)
+		log.Error().Str("job_id", job.JobId).Msg("No command specified for job")
 		return true, errors.New("no command specified")
 	}
 
@@ -107,11 +107,7 @@ func (w *WorkerCmd) processJob(ctx context.Context, clients *client.Clients) (bo
 
 	executor := worker.NewJobExecutor(eventStream, taskToken)
 
-	// Start visibility timeout extension goroutine
-	extendCtx, cancelExtend := context.WithCancel(ctx)
-	defer cancelExtend()
-
-	go w.extendVisibilityTimeout(extendCtx, clients, taskToken)
+	go w.extendVisibilityTimeout(ctx, clients, taskToken)
 
 	// Execute the job and capture result
 	var jobResult *jobv1.JobResult
@@ -174,7 +170,7 @@ func (w *WorkerCmd) extendVisibilityTimeout(ctx context.Context, clients *client
 			req := &jobv1.UpdateJobRequest{
 				Queue:                    w.Queue,
 				TaskToken:                taskToken,
-				VisibilityTimeoutSeconds: util.AsInt32(w.Timeout),
+				VisibilityTimeoutSeconds: w.VisibilityTimeout,
 			}
 
 			if _, err := clients.Job.UpdateJob(ctx, connect.NewRequest(req)); err != nil {

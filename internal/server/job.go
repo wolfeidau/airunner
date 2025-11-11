@@ -42,10 +42,8 @@ func (s *JobServer) DequeueJob(ctx context.Context, req *connect.Request[v1.Dequ
 	}
 
 	// Long polling implementation - try multiple times
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
-
-	timeout := time.After(5 * time.Second) // 5 second timeout for the request
 
 	for {
 		jobs, err := s.store.DequeueJobs(ctx, req.Msg.Queue, maxJobs, timeoutSeconds)
@@ -73,8 +71,6 @@ func (s *JobServer) DequeueJob(ctx context.Context, req *connect.Request[v1.Dequ
 		select {
 		case <-ticker.C:
 			continue
-		case <-timeout:
-			return nil // No jobs available
 		case <-ctx.Done():
 			return ctx.Err()
 		}

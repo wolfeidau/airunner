@@ -11,7 +11,7 @@ require (
 	github.com/rs/cors v1.11.1
 	github.com/rs/zerolog v1.34.0
 	github.com/stretchr/testify v1.11.1
-	github.com/wolfeidau/console-stream v0.3.0
+	github.com/wolfeidau/console-stream v0.3.1
 	google.golang.org/protobuf v1.36.10
 	gopkg.in/yaml.v3 v3.0.1
 )

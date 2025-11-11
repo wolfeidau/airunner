@@ -35,8 +35,8 @@ proto-lint: ## Lint protocol buffer files
 proto-breaking: ## Check for breaking changes in proto files
 	cd api && buf breaking
 
-.PHONY: mkcert
-mkcert: ## Generate local TLS certificates
+.PHONY: certs
+certs: ## Generate local TLS certificates
 	@mkdir -p .certs
 	@mkcert -cert-file .certs/cert.pem -key-file .certs/key.pem localhost 127.0.0.1 ::1
 

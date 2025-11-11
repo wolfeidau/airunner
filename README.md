@@ -6,9 +6,17 @@ This is demonstrating the use of [console-stream](https://github.com/wolfeidau/c
 
 - Go 1.25.0 or later
 - make
+- [mkcert](https://github.com/FiloSottile/mkcert)
 - [goreman](https://github.com/mattn/goreman) or [Foreman](https://github.com/ddollar/foreman)
 
 # Usage
+
+Before we start you need some certs, run `make certs` to generate them. Note you will want to setup mkcert on your system to generate the certificates.
+
+```sh
+brew install mkcert
+make certs
+```
 
 In a shell window run.
 

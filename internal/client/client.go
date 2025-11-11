@@ -36,7 +36,7 @@ func NewClients(config Config) *Clients {
 func DefaultConfig() Config {
 	return Config{
 		ServerURL: "https://localhost:8080",
-		Timeout:   30 * time.Second,
+		Timeout:   5 * time.Minute,
 		Debug:     false,
 	}
 }

@@ -20,6 +20,7 @@ type MonitorCmd struct {
 	FromSequence  int64             `help:"Start from sequence number" default:"0"`
 	FromTimestamp int64             `help:"Start from timestamp" default:"0"`
 	EventFilter   []jobv1.EventType `help:"Filter specific event types"`
+	Timeout       time.Duration     `help:"Timeout for the monitor" default:"5m"`
 }
 
 func (m *MonitorCmd) Run(ctx context.Context, globals *Globals) error {
@@ -28,7 +29,7 @@ func (m *MonitorCmd) Run(ctx context.Context, globals *Globals) error {
 	// Create clients
 	config := client.Config{
 		ServerURL: m.Server,
-		Timeout:   30 * time.Second,
+		Timeout:   m.Timeout,
 		Debug:     globals.Debug,
 	}
 	clients := client.NewClients(config)
@@ -47,7 +48,12 @@ func (m *MonitorCmd) Run(ctx context.Context, globals *Globals) error {
 	}()
 
 	// Start monitoring
-	if err := m.monitorJob(ctx, clients); err != nil {
+	if err := monitorJob(ctx, clients, monitorJobArgs{
+		JobID:         m.JobID,
+		FromSequence:  m.FromSequence,
+		FromTimestamp: m.FromTimestamp,
+		EventFilter:   m.EventFilter,
+	}); err != nil {
 		return fmt.Errorf("failed to monitor job: %w", err)
 	}
 
@@ -55,12 +61,19 @@ func (m *MonitorCmd) Run(ctx context.Context, globals *Globals) error {
 	return nil
 }
 
-func (m *MonitorCmd) monitorJob(ctx context.Context, clients *client.Clients) error {
+type monitorJobArgs struct {
+	JobID         string
+	FromSequence  int64
+	FromTimestamp int64
+	EventFilter   []jobv1.EventType
+}
+
+func monitorJob(ctx context.Context, clients *client.Clients, args monitorJobArgs) error {
 	req := &jobv1.StreamJobEventsRequest{
-		JobId:         m.JobID,
-		FromSequence:  m.FromSequence,
-		FromTimestamp: m.FromTimestamp,
-		EventFilter:   m.EventFilter,
+		JobId:         args.JobID,
+		FromSequence:  args.FromSequence,
+		FromTimestamp: args.FromTimestamp,
+		EventFilter:   args.EventFilter,
 	}
 
 	stream, err := clients.Events.StreamJobEvents(ctx, connect.NewRequest(req))
@@ -69,7 +82,7 @@ func (m *MonitorCmd) monitorJob(ctx context.Context, clients *client.Clients) er
 	}
 	defer stream.Close()
 
-	fmt.Printf("Streaming events for job %s:\n", m.JobID)
+	fmt.Printf("Streaming events for job %s:\n", args.JobID)
 	fmt.Println(strings.Repeat("=", 50))
 
 	for stream.Receive() {
@@ -96,6 +109,8 @@ func (m *MonitorCmd) monitorJob(ctx context.Context, clients *client.Clients) er
 					end.ExitCode,
 					end.RunDuration.AsDuration())
 			}
+
+			return nil // we are done
 
 		case jobv1.EventType_EVENT_TYPE_PROCESS_ERROR:
 			if err := event.GetProcessError(); err != nil {

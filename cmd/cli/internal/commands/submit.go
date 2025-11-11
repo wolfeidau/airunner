@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 	"time"
 
@@ -39,13 +38,14 @@ type SubmitCmd struct {
 	Owner            string            `help:"Job owner" default:""`
 	Env              map[string]string `help:"Environment variables"`
 	Metadata         map[string]string `help:"Additional metadata"`
-	List             bool              `help:"List jobs after submission" default:"true"`
+	Monitor          bool              `help:"Monitor job after submission" default:"true"`
 	Command          string            `help:"Command to execute"`
 	Args             []string          `help:"Command arguments"`
 	ProcessType      string            `help:"Process type: pipe or pty" default:"pty"`
 	TimeoutSeconds   int               `help:"Command timeout in seconds" default:"300"`
 	WorkingDirectory string            `help:"Working directory for command execution"`
 	Config           string            `help:"YAML/JSON config file path"`
+	Timeout          time.Duration     `help:"Timeout for the monitor" default:"5m"`
 }
 
 func (s *SubmitCmd) Run(ctx context.Context, globals *Globals) error {
@@ -66,7 +66,7 @@ func (s *SubmitCmd) Run(ctx context.Context, globals *Globals) error {
 	// Create clients
 	config := client.Config{
 		ServerURL: s.Server,
-		Timeout:   30 * time.Second,
+		Timeout:   s.Timeout,
 		Debug:     globals.Debug,
 	}
 	clients := client.NewClients(config)
@@ -79,10 +79,14 @@ func (s *SubmitCmd) Run(ctx context.Context, globals *Globals) error {
 
 	fmt.Printf("Job submitted successfully with ID: %s\n", jobID)
 
-	// List jobs to show it was queued
-	if s.List {
-		if err := s.listJobs(ctx, clients); err != nil {
-			fmt.Printf("Failed to list jobs: %v\n", err)
+	if s.Monitor {
+		if err := monitorJob(ctx, clients, monitorJobArgs{
+			JobID:         jobID,
+			FromSequence:  0,
+			FromTimestamp: 0,
+			EventFilter:   nil,
+		}); err != nil {
+			return fmt.Errorf("failed to monitor job: %w", err)
 		}
 	}
 
@@ -226,61 +230,4 @@ func (s *SubmitCmd) submitJob(ctx context.Context, clients *client.Clients) (str
 	}
 
 	return resp.Msg.JobId, nil
-}
-
-func (s *SubmitCmd) listJobs(ctx context.Context, clients *client.Clients) error {
-	req := &jobv1.ListJobsRequest{
-		Queue:    s.Queue,
-		State:    jobv1.JobState_JOB_STATE_UNSPECIFIED, // All states
-		Page:     1,
-		PageSize: 10,
-	}
-
-	resp, err := clients.Job.ListJobs(ctx, connect.NewRequest(req))
-	if err != nil {
-		return fmt.Errorf("failed to list jobs: %w", err)
-	}
-
-	fmt.Printf("\nCurrent jobs in queue '%s':\n", s.Queue)
-	fmt.Printf("%-36s %-15s %-30s %-20s\n", "Job ID", "State", "Repository", "Created At")
-	fmt.Println("────────────────────────────────────────────────────────────────────────────────────────────────────")
-
-	// sort by created at descending
-	sort.Slice(resp.Msg.Jobs, func(i, j int) bool {
-		return resp.Msg.Jobs[i].CreatedAt.AsTime().After(resp.Msg.Jobs[j].CreatedAt.AsTime())
-	})
-
-	for _, job := range resp.Msg.Jobs {
-		state := jobStateToString(job.State)
-		createdAt := job.CreatedAt.AsTime().Format("2006-01-02 15:04:05")
-		repo := job.JobParams.Repository
-		if len(repo) > 30 {
-			repo = repo[:27] + "..."
-		}
-		fmt.Printf("%-36s %-15s %-30s %-20s\n",
-			job.JobId,
-			state,
-			repo,
-			createdAt)
-	}
-
-	fmt.Printf("\nTotal jobs: %d\n", len(resp.Msg.Jobs))
-	return nil
-}
-
-func jobStateToString(state jobv1.JobState) string {
-	switch state {
-	case jobv1.JobState_JOB_STATE_SCHEDULED:
-		return "SCHEDULED"
-	case jobv1.JobState_JOB_STATE_RUNNING:
-		return "RUNNING"
-	case jobv1.JobState_JOB_STATE_COMPLETED:
-		return "COMPLETED"
-	case jobv1.JobState_JOB_STATE_FAILED:
-		return "FAILED"
-	case jobv1.JobState_JOB_STATE_CANCELLED:
-		return "CANCELLED"
-	default:
-		return "UNKNOWN"
-	}
 }

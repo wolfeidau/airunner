@@ -5,7 +5,7 @@ go 1.25.1
 require (
 	connectrpc.com/connect v1.19.1
 	connectrpc.com/cors v0.1.0
-	github.com/alecthomas/kong v1.12.1
+	github.com/alecthomas/kong v1.13.0
 	github.com/cenkalti/backoff/v5 v5.0.3
 	github.com/google/uuid v1.6.0
 	github.com/rs/cors v1.11.1

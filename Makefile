@@ -61,4 +61,27 @@ clean: ## Clean build artifacts
 
 .PHONY: snapshot
 snapshot: ## Build and release a snapshot version
-	goreleaser release --clean --snapshot --one
+	goreleaser release --clean --snapshot
+
+.PHONY: terraform-init
+terraform-init: ## Initialize Terraform
+	cd infra && terraform init
+
+.PHONY: terraform-apply
+terraform-apply: ## Apply Terraform configuration
+	cd infra && terraform apply -var-file=terraform.tfvars
+
+.PHONY: terraform-plan
+terraform-plan: ## Plan Terraform configuration
+	cd infra && terraform plan -var-file=terraform.tfvars
+
+.PHONY: terraform-validate
+terraform-validate: ## Validate Terraform configuration
+	cd infra && terraform validate
+
+.PHONY: terraform-fmt
+terraform-fmt: ## Check Terraform formatting
+	cd infra && terraform fmt -check -diff
+
+.PHONY: terraform-verify
+terraform-verify: terraform-validate terraform-fmt terraform-plan ## Run all Terraform verification checks

@@ -11,7 +11,7 @@ var (
 	version = "dev"
 	cli     struct {
 		RPCServer commands.RPCServerCmd `cmd:"" help:"Start the RPC server"`
-		Debug     bool                  `help:"Enable debug mode."`
+		Dev       bool                  `help:"Enable dev mode."`
 		Version   kong.VersionFlag
 	}
 )
@@ -23,6 +23,6 @@ func main() {
 			"version": version,
 		},
 		kong.BindTo(ctx, (*context.Context)(nil)))
-	err := cmd.Run(&commands.Globals{Debug: cli.Debug, Version: version})
+	err := cmd.Run(&commands.Globals{Dev: cli.Dev, Version: version})
 	cmd.FatalIfErrorf(err)
 }

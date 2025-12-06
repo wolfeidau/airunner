@@ -1,3 +1,24 @@
+# Terraform files
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfvars
+!*.tfvars.example
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Terraform plan files
+*.tfplan
+
+# Lock files (some teams commit this, adjust as needed)
+.terraform.lock.hcl
+
 .certs/
 dist/
 .envrc*

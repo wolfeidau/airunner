@@ -4,10 +4,12 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 	"github.com/wolfeidau/airunner/api/gen/proto/go/job/v1/jobv1connect"
@@ -24,7 +26,7 @@ func TestCompleteJobWorkflow(t *testing.T) {
 	}()
 
 	server := NewServer(memStore)
-	testServer := httptest.NewServer(server.Handler())
+	testServer := httptest.NewServer(server.Handler(zerolog.New(os.Stderr)))
 	defer testServer.Close()
 
 	// Create clients
@@ -147,7 +149,7 @@ func TestIdempotentJobEnqueue(t *testing.T) {
 	}()
 
 	server := NewServer(memStore)
-	testServer := httptest.NewServer(server.Handler())
+	testServer := httptest.NewServer(server.Handler(zerolog.New(os.Stderr)))
 	defer testServer.Close()
 
 	jobClient := jobv1connect.NewJobServiceClient(http.DefaultClient, testServer.URL)

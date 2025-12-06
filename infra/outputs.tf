@@ -117,6 +117,28 @@ output "ecs_task_role_name" {
   value       = aws_iam_role.task.name
 }
 
+# JWT Authentication Outputs
+output "jwt_signing_key_parameter_arn" {
+  description = "ARN of the SSM parameter containing the JWT signing key (for token issuers)"
+  value       = aws_ssm_parameter.jwt_signing_key.arn
+  sensitive   = true
+}
+
+output "jwt_public_key_parameter_arn" {
+  description = "ARN of the SSM parameter containing the JWT public key"
+  value       = aws_ssm_parameter.jwt_public_key.arn
+}
+
+output "jwt_signing_key_parameter_name" {
+  description = "Name of the SSM parameter containing the JWT signing key"
+  value       = aws_ssm_parameter.jwt_signing_key.name
+}
+
+output "jwt_public_key_parameter_name" {
+  description = "Name of the SSM parameter containing the JWT public key"
+  value       = aws_ssm_parameter.jwt_public_key.name
+}
+
 # Service Access Instructions
 output "service_access_instructions" {
   description = "Instructions for accessing the service"

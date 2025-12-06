@@ -6,11 +6,45 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 6.0"
     }
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.0"
+    }
   }
 }
 
 provider "aws" {
   region = var.aws_region
+}
+
+# Generate ECDSA key pair for JWT signing (P256/ES256)
+resource "tls_private_key" "jwt" {
+  algorithm   = "ECDSA"
+  ecdsa_curve = "P256"
+}
+
+# Store private key in SSM (for token issuers/admin tools)
+resource "aws_ssm_parameter" "jwt_signing_key" {
+  name        = "/${var.application}/${var.environment}/jwt-signing-key"
+  description = "JWT signing key (ECDSA P256 private key) for ${var.application}"
+  type        = "SecureString"
+  value       = tls_private_key.jwt.private_key_pem
+
+  tags = {
+    Name = "${var.application}-${var.environment}-jwt-signing-key"
+  }
+}
+
+# Store public key in SSM (for RPC server verification)
+resource "aws_ssm_parameter" "jwt_public_key" {
+  name        = "/${var.application}/${var.environment}/jwt-public-key"
+  description = "JWT public key (ECDSA P256) for ${var.application}"
+  type        = "String"
+  value       = tls_private_key.jwt.public_key_pem
+
+  tags = {
+    Name = "${var.application}-${var.environment}-jwt-public-key"
+  }
 }
 
 locals {
@@ -186,6 +220,17 @@ resource "aws_iam_role_policy" "execution" {
         Effect   = "Allow"
         Action   = "ecr:GetAuthorizationToken"
         Resource = "*"
+      },
+      {
+        Sid    = "AllowSSMParameterRead"
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParameters",
+          "ssm:GetParameter"
+        ]
+        Resource = [
+          aws_ssm_parameter.jwt_public_key.arn
+        ]
       }
     ]
   })
@@ -491,9 +536,9 @@ resource "aws_ecs_task_definition" "airunner" {
 
   container_definitions = jsonencode([
     {
-      name      = local.name_prefix
-      image     = var.container_image
-      command   = [
+      name  = local.name_prefix
+      image = var.container_image
+      command = [
         "rpc-server",
         "--listen", "0.0.0.0:${var.container_port}",
         "--hostname", "airunner-${var.environment}.${var.domain_name}"
@@ -504,6 +549,12 @@ resource "aws_ecs_task_definition" "airunner" {
           containerPort = var.container_port
           hostPort      = var.container_port
           protocol      = "tcp"
+        }
+      ]
+      secrets = [
+        {
+          name      = "JWT_PUBLIC_KEY"
+          valueFrom = aws_ssm_parameter.jwt_public_key.arn
         }
       ]
       logConfiguration = {

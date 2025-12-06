@@ -31,13 +31,13 @@ variable "tags" {
 variable "container_image" {
   description = "Container image URI"
   type        = string
-  default     = "ghcr.io/wolfeidau/airunner/server:0.1.1"
+  default     = "ghcr.io/wolfeidau/airunner/server:0.1.0"
 }
 
 variable "container_port" {
   description = "Port the container listens on"
   type        = number
-  default     = 8443
+  default     = 8993
 }
 
 variable "desired_count" {

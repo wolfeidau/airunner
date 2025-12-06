@@ -30,7 +30,7 @@ type JobConfig struct {
 }
 
 type SubmitCmd struct {
-	Server           string            `help:"Server URL" default:"https://localhost:8080"`
+	Server           string            `help:"Server URL" default:"https://localhost:8993"`
 	Queue            string            `help:"Queue name" default:"default"`
 	Repository       string            `arg:"" help:"Repository URL to process"`
 	Commit           string            `help:"Commit hash or identifier" default:"main"`

@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"time"
 
+	"connectrpc.com/authn"
 	connectcors "connectrpc.com/cors"
 	"github.com/rs/cors"
+	"github.com/wolfeidau/airunner/internal/auth"
 	"github.com/wolfeidau/airunner/internal/autossl"
 	"github.com/wolfeidau/airunner/internal/logger"
 	"github.com/wolfeidau/airunner/internal/server"
@@ -21,6 +23,7 @@ type RPCServerCmd struct {
 	Cert     string `help:"path to TLS cert file" default:""`
 	Key      string `help:"path to TLS key file" default:""`
 	Hostname string `help:"hostname for TLS cert" default:"localhost:8993"`
+	NoAuth   bool   `help:"disable JWT authentication (development only)" default:"false"`
 }
 
 func (s *RPCServerCmd) Run(ctx context.Context, globals *Globals) error {
@@ -43,15 +46,32 @@ func (s *RPCServerCmd) Run(ctx context.Context, globals *Globals) error {
 	// Create server with store
 	jobServer := server.NewServer(memStore)
 
+	// Build handler chain: CORS -> Auth -> Connect handlers
+	handler := jobServer.Handler(log)
+
+	// Add JWT auth middleware unless disabled
+	if !s.NoAuth {
+		jwtAuthFunc, err := auth.NewJWTAuthFunc()
+		if err != nil {
+			return fmt.Errorf("failed to initialize JWT auth: %w", err)
+		}
+		middleware := authn.NewMiddleware(jwtAuthFunc)
+		handler = middleware.Wrap(handler)
+		log.Info().Msg("JWT authentication enabled")
+	} else {
+		log.Warn().Msg("JWT authentication disabled")
+	}
+
+	// Add CORS
+	handler = withCORS(s.Hostname, handler)
+
 	httpServer := &http.Server{
-		Addr: s.Listen,
-		Handler: withCORS(
-			s.Hostname, jobServer.Handler(log),
-		),
+		Addr:              s.Listen,
+		Handler:           handler,
 		ReadHeaderTimeout: time.Second,
 		ReadTimeout:       5 * time.Minute,
 		WriteTimeout:      5 * time.Minute,
-		IdleTimeout:       60 * time.Second,
+		IdleTimeout:       5 * time.Minute,
 		MaxHeaderBytes:    8 * 1024, // 8KiB
 	}
 
@@ -83,7 +103,7 @@ func withCORS(hostname string, h http.Handler) http.Handler {
 	middleware := cors.New(cors.Options{
 		AllowedOrigins: []string{hostname},
 		AllowedMethods: connectcors.AllowedMethods(),
-		AllowedHeaders: connectcors.AllowedHeaders(),
+		AllowedHeaders: append(connectcors.AllowedHeaders(), "Authorization"),
 		ExposedHeaders: connectcors.ExposedHeaders(),
 	})
 	return middleware.Handler(h)

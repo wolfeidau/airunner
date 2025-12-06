@@ -9,9 +9,7 @@ help: ## Show this help message
 
 .PHONY: build
 build: ## Build all binaries
-	@mkdir -p bin
-	go build -o bin/airunner-cli ./cmd/cli
-	go build -o bin/airunner-server ./cmd/server
+	goreleaser build --clean --snapshot --single-target
 
 .PHONY: build-cli
 build-cli: ## Build CLI binary (multi-purpose client)
@@ -60,3 +58,7 @@ lint-fix: ## Run linter with auto-fix
 clean: ## Clean build artifacts
 	rm -rf bin/
 	rm -f $(COVERAGE_FILE)
+
+.PHONY: snapshot
+snapshot: ## Build and release a snapshot version
+	goreleaser release --clean --snapshot --one

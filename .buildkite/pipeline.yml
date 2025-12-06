@@ -53,3 +53,9 @@ steps:
       - key: build
         label: ":hammer: build"
         command: make build
+
+  - if: build.branch == "main"
+    key: snapshot
+    depends_on: [quality_checks]
+    label: ":hammer: snapshot"
+    command: make snapshot

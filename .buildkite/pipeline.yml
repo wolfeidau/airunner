@@ -50,6 +50,12 @@ steps:
           - go run github.com/nikolaydubina/go-cover-treemap -coverprofile coverage.out > cover-tree.svg
           - echo '<details><summary>Coverage tree map</summary><img src="artifact://cover-tree.svg" alt="Test coverage tree map" width="70%"></details>' | buildkite-agent annotate --style "info"
 
-      - key: snapshot
-        label: ":hammer: build snapshot"
-        command: make snapshot
+      - key: build
+        label: ":hammer: build"
+        command: make build
+
+  - if: build.branch == "main"
+    key: snapshot
+    depends_on: [quality_checks]
+    label: ":hammer: snapshot"
+    command: make snapshot

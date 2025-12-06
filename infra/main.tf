@@ -109,8 +109,8 @@ resource "aws_security_group" "airunner" {
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    from_port       = 8443
-    to_port         = 8443
+    from_port       = var.container_port
+    to_port         = var.container_port
     protocol        = "tcp"
     security_groups = [aws_security_group.alb.id]
   }
@@ -365,7 +365,7 @@ resource "aws_autoscaling_group" "ecs" {
   name                      = "${local.name_prefix}-asg"
   vpc_zone_identifier       = aws_subnet.public[*].id
   min_size                  = 1
-  max_size                  = 2
+  max_size                  = 1
   desired_capacity          = 1
   health_check_type         = "ELB"
   health_check_grace_period = 300
@@ -439,7 +439,7 @@ resource "aws_lb" "main" {
 
 resource "aws_lb_target_group" "airunner" {
   name_prefix      = "tg-"
-  port             = 8443
+  port             = var.container_port
   protocol         = "HTTPS"
   vpc_id           = aws_vpc.main.id
   target_type      = "ip"
@@ -484,8 +484,8 @@ resource "aws_ecs_task_definition" "airunner" {
   family                   = local.name_prefix
   network_mode             = "awsvpc"
   requires_compatibilities = ["EC2"]
-  cpu                      = "256"
-  memory                   = "512"
+  cpu                      = var.task_cpu
+  memory                   = var.task_memory
   execution_role_arn       = aws_iam_role.execution.arn
   task_role_arn            = aws_iam_role.task.arn
 
@@ -493,11 +493,16 @@ resource "aws_ecs_task_definition" "airunner" {
     {
       name      = local.name_prefix
       image     = var.container_image
+      command   = [
+        "rpc-server",
+        "--listen", "0.0.0.0:${var.container_port}",
+        "--hostname", "airunner-${var.environment}.${var.domain_name}"
+      ]
       essential = true
       portMappings = [
         {
-          containerPort = 8443
-          hostPort      = 8443
+          containerPort = var.container_port
+          hostPort      = var.container_port
           protocol      = "tcp"
         }
       ]
@@ -524,7 +529,7 @@ resource "aws_ecs_service" "airunner" {
   name            = local.name_prefix
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.airunner.arn
-  desired_count   = 1
+  desired_count   = var.desired_count
   launch_type     = "EC2"
 
   network_configuration {
@@ -536,7 +541,7 @@ resource "aws_ecs_service" "airunner" {
   load_balancer {
     target_group_arn = aws_lb_target_group.airunner.arn
     container_name   = local.name_prefix
-    container_port   = 8443
+    container_port   = var.container_port
   }
 
   tags = {

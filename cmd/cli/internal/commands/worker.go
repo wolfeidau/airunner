@@ -72,6 +72,10 @@ func (w *WorkerCmd) Run(ctx context.Context, globals *Globals) error {
 }
 
 func (w *WorkerCmd) processJob(ctx context.Context, clients *client.Clients) (bool, error) {
+	// Create a context for dequeue without the client timeout
+	dequeueCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
 	// Dequeue a job
 	req := &jobv1.DequeueJobRequest{
 		Queue:                    w.Queue,
@@ -79,7 +83,7 @@ func (w *WorkerCmd) processJob(ctx context.Context, clients *client.Clients) (bo
 		VisibilityTimeoutSeconds: w.VisibilityTimeout,
 	}
 
-	stream, err := clients.Job.DequeueJob(ctx, connect.NewRequest(req))
+	stream, err := clients.Job.DequeueJob(dequeueCtx, connect.NewRequest(req))
 	if err != nil {
 		return false, fmt.Errorf("failed to dequeue job: %w", err)
 	}
@@ -107,7 +111,11 @@ func (w *WorkerCmd) processJob(ctx context.Context, clients *client.Clients) (bo
 
 	executor := worker.NewJobExecutor(eventStream, taskToken)
 
-	go w.extendVisibilityTimeout(ctx, clients, taskToken)
+	// Create a separate context for timeout extension so we can cancel it when the job completes
+	timeoutCtx, cancelTimeout := context.WithCancel(ctx)
+	defer cancelTimeout()
+
+	go w.extendVisibilityTimeout(timeoutCtx, clients, taskToken)
 
 	// Execute the job and capture result
 	var jobResult *jobv1.JobResult

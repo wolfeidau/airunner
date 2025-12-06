@@ -3,10 +3,12 @@ module github.com/wolfeidau/airunner
 go 1.25.1
 
 require (
+	connectrpc.com/authn v0.2.0
 	connectrpc.com/connect v1.19.1
 	connectrpc.com/cors v0.1.0
 	github.com/alecthomas/kong v1.13.0
 	github.com/cenkalti/backoff/v5 v5.0.3
+	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/google/uuid v1.6.0
 	github.com/rs/cors v1.11.1
 	github.com/rs/zerolog v1.34.0

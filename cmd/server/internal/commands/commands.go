@@ -1,6 +1,6 @@
 package commands
 
 type Globals struct {
-	Debug   bool
+	Dev     bool
 	Version string
 }

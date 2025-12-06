@@ -3,7 +3,10 @@ package server
 import (
 	"net/http"
 
+	"connectrpc.com/connect"
+	"github.com/rs/zerolog"
 	"github.com/wolfeidau/airunner/api/gen/proto/go/job/v1/jobv1connect"
+	"github.com/wolfeidau/airunner/internal/logger"
 	"github.com/wolfeidau/airunner/internal/store"
 )
 
@@ -24,15 +27,25 @@ func NewServer(store store.JobStore) *Server {
 }
 
 // Handler returns the HTTP handler for the server
-func (s *Server) Handler() http.Handler {
+func (s *Server) Handler(log zerolog.Logger) http.Handler {
 	mux := http.NewServeMux()
 
 	// Register job service
-	jobPath, jobHandler := jobv1connect.NewJobServiceHandler(s.jobServer)
+	jobPath, jobHandler := jobv1connect.NewJobServiceHandler(
+		s.jobServer,
+		connect.WithInterceptors(
+			logger.NewConnectRequests(log),
+		),
+	)
 	mux.Handle(jobPath, jobHandler)
 
 	// Register events service
-	eventsPath, eventsHandler := jobv1connect.NewJobEventsServiceHandler(s.eventServer)
+	eventsPath, eventsHandler := jobv1connect.NewJobEventsServiceHandler(
+		s.eventServer,
+		connect.WithInterceptors(
+			logger.NewConnectRequests(log),
+		),
+	)
 	mux.Handle(eventsPath, eventsHandler)
 
 	return mux

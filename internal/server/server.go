@@ -30,6 +30,13 @@ func NewServer(store store.JobStore) *Server {
 func (s *Server) Handler(log zerolog.Logger) http.Handler {
 	mux := http.NewServeMux()
 
+	// Health check endpoint for load balancer
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+
 	// Register job service
 	jobPath, jobHandler := jobv1connect.NewJobServiceHandler(
 		s.jobServer,

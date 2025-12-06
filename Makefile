@@ -60,3 +60,7 @@ lint-fix: ## Run linter with auto-fix
 clean: ## Clean build artifacts
 	rm -rf bin/
 	rm -f $(COVERAGE_FILE)
+
+.PHONY: snapshot
+snapshot: ## Build and release a snapshot version
+	goreleaser release --clean --snapshot

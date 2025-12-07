@@ -24,7 +24,7 @@ type RPCServerCmd struct {
 	Key          string `help:"path to TLS key file" default:""`
 	Hostname     string `help:"hostname for TLS cert" default:"localhost:8993"`
 	NoAuth       bool   `help:"disable JWT authentication (development only)" default:"false"`
-	JWTPublicKey string `help:"path to JWT public key file" env:"JWT_PUBLIC_KEY"`
+	JWTPublicKey string `help:"PEM-encoded JWT public key" env:"JWT_PUBLIC_KEY"`
 }
 
 func (s *RPCServerCmd) Run(ctx context.Context, globals *Globals) error {

@@ -128,6 +128,26 @@ Protocol Buffers ([`api/job/v1/job.proto`](api/job/v1/job.proto))
 - `PIPE` - Non-interactive commands (default)
 - `PTY` - Interactive commands with pseudo-terminal and ANSI support
 
+### Authentication
+
+The server supports JWT-based authentication using ECDSA (ES256) signing:
+
+- **Server**: Requires `JWT_PUBLIC_KEY` environment variable containing PEM-encoded public key
+- **CLI**: Pass token via `--token` flag or `AIRUNNER_TOKEN` environment variable
+- **Development**: Use `--no-auth` flag to disable authentication
+
+Generate tokens using the CLI:
+
+```bash
+# Set signing key (private key PEM)
+export JWT_SIGNING_KEY="$(cat private-key.pem)"
+
+# Generate a 1-hour token
+./bin/airunner-cli token --subject="user@example.com" --ttl=1h
+```
+
+Tokens require an expiration claim (`exp`) and are validated on every request except `/health`.
+
 ### Design Patterns
 
 1. Visibility Timeout, AWS SQS pattern for at-least-once delivery
@@ -145,11 +165,11 @@ Protocol Buffers ([`api/job/v1/job.proto`](api/job/v1/job.proto))
 - TLS with local certificates
 - Pagination and filtering
 - Idempotent job submission
+- JWT authentication (ECDSA ES256)
 
 **Not Implemented:**
 - `airunner-orchestrator` (cloud backend with SQS/DynamoDB/EventBridge)
 - Job persistence (currently in-memory only)
-- Authentication/authorization
 - Multi-tenancy
 
 This provides a production-ready development environment for testing job workflows, with clear extension points for cloud deployment. The architecture is similar to Buildkite Agent or GitHub Actions runners, but self-hosted.

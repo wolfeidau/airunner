@@ -46,6 +46,7 @@ type SubmitCmd struct {
 	WorkingDirectory string            `help:"Working directory for command execution"`
 	Config           string            `help:"YAML/JSON config file path"`
 	Timeout          time.Duration     `help:"Timeout for the monitor" default:"5m"`
+	Token            string            `help:"JWT token for authentication" env:"AIRUNNER_TOKEN"`
 }
 
 func (s *SubmitCmd) Run(ctx context.Context, globals *Globals) error {
@@ -68,6 +69,7 @@ func (s *SubmitCmd) Run(ctx context.Context, globals *Globals) error {
 		ServerURL: s.Server,
 		Timeout:   s.Timeout,
 		Debug:     globals.Debug,
+		Token:     s.Token,
 	}
 	clients := client.NewClients(config)
 

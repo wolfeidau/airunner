@@ -22,6 +22,7 @@ type WorkerCmd struct {
 	Queue             string        `help:"Queue name to process" default:"default"`
 	ClientTimeout     time.Duration `help:"Client timeout in seconds" default:"5m"`
 	VisibilityTimeout int32         `help:"Visibility timeout in seconds" default:"300"`
+	Token             string        `help:"JWT token for authentication" env:"AIRUNNER_TOKEN"`
 }
 
 func (w *WorkerCmd) Run(ctx context.Context, globals *Globals) error {
@@ -37,6 +38,7 @@ func (w *WorkerCmd) Run(ctx context.Context, globals *Globals) error {
 		ServerURL: w.Server,
 		Timeout:   w.ClientTimeout,
 		Debug:     globals.Debug,
+		Token:     w.Token,
 	}
 	clients := client.NewClients(config)
 
@@ -54,7 +56,10 @@ func (w *WorkerCmd) Run(ctx context.Context, globals *Globals) error {
 
 		jobFound, err := w.processJob(ctx, clients)
 		if err != nil {
-			log.Error().Err(err).Msg("Error processing job")
+			if isDeadlineExceeded(err) {
+				continue
+			}
+			log.Error().Err(err).Stack().Msg("Error processing job")
 			time.Sleep(5 * time.Second)
 			continue
 		}
@@ -73,7 +78,7 @@ func (w *WorkerCmd) Run(ctx context.Context, globals *Globals) error {
 
 func (w *WorkerCmd) processJob(ctx context.Context, clients *client.Clients) (bool, error) {
 	// Create a context for dequeue without the client timeout
-	dequeueCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	dequeueCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
 	// Dequeue a job
@@ -189,4 +194,12 @@ func (w *WorkerCmd) extendVisibilityTimeout(ctx context.Context, clients *client
 			}
 		}
 	}
+}
+
+func isDeadlineExceeded(err error) bool {
+	var connErr *connect.Error
+	if errors.As(err, &connErr) {
+		return connErr.Code() == connect.CodeDeadlineExceeded
+	}
+	return false
 }

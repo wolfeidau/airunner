@@ -150,7 +150,7 @@ func (s *MemoryJobStore) EnqueueJob(ctx context.Context, req *jobv1.EnqueueJobRe
 	}
 
 	// Generate job ID
-	jobId := uuid.New().String()
+	jobId := uuid.Must(uuid.NewV7()).String()
 	now := timestamppb.Now()
 
 	// Create job
@@ -196,7 +196,7 @@ func (s *MemoryJobStore) DequeueJobs(ctx context.Context, queue string, maxJobs 
 	for i, job := range queueJobs {
 		if i < numJobs {
 			// Generate task token
-			taskToken := uuid.New().String()
+			taskToken := uuid.Must(uuid.NewV7()).String()
 
 			// Update job state
 			job.State = jobv1.JobState_JOB_STATE_RUNNING

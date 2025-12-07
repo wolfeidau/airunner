@@ -18,6 +18,7 @@ type ListCmd struct {
 	Page     int32  `help:"Page number" default:"1"`
 	PageSize int32  `help:"Number of jobs per page" default:"20"`
 	Watch    bool   `help:"Watch for changes (refresh every 5 seconds)" default:"false"`
+	Token    string `help:"JWT token for authentication" env:"AIRUNNER_TOKEN"`
 }
 
 func (l *ListCmd) Run(ctx context.Context, globals *Globals) error {
@@ -25,6 +26,7 @@ func (l *ListCmd) Run(ctx context.Context, globals *Globals) error {
 	config := client.Config{
 		ServerURL: l.Server,
 		Timeout:   30 * time.Second,
+		Token:     l.Token,
 		Debug:     globals.Debug,
 	}
 	clients := client.NewClients(config)

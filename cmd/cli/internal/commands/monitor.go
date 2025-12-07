@@ -21,6 +21,7 @@ type MonitorCmd struct {
 	FromTimestamp int64             `help:"Start from timestamp" default:"0"`
 	EventFilter   []jobv1.EventType `help:"Filter specific event types"`
 	Timeout       time.Duration     `help:"Timeout for the monitor" default:"5m"`
+	Token         string            `help:"JWT token for authentication" env:"AIRUNNER_TOKEN"`
 }
 
 func (m *MonitorCmd) Run(ctx context.Context, globals *Globals) error {
@@ -30,6 +31,7 @@ func (m *MonitorCmd) Run(ctx context.Context, globals *Globals) error {
 	config := client.Config{
 		ServerURL: m.Server,
 		Timeout:   m.Timeout,
+		Token:     m.Token,
 		Debug:     globals.Debug,
 	}
 	clients := client.NewClients(config)

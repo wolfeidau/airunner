@@ -1,7 +1,7 @@
 command: zsh
 args:
   - "-c"
-  - "make build test lint"
+  - "make test lint"
 processType: pty
 timeout: 30
 environment:

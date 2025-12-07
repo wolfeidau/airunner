@@ -5,7 +5,6 @@ import (
 	"crypto/ecdsa"
 	"errors"
 	"net/http"
-	"os"
 	"time"
 
 	"connectrpc.com/authn"
@@ -17,10 +16,9 @@ type jwtVerifier struct {
 	publicKey *ecdsa.PublicKey
 }
 
-func newJWTVerifierFromEnv() (*jwtVerifier, error) {
-	publicKeyPEM := os.Getenv("JWT_PUBLIC_KEY")
+func newJWTVerifierFromPEM(publicKeyPEM string) (*jwtVerifier, error) {
 	if publicKeyPEM == "" {
-		return nil, errors.New("JWT_PUBLIC_KEY environment variable not set")
+		return nil, errors.New("JWT public key not provided")
 	}
 
 	publicKey, err := jwt.ParseECPublicKeyFromPEM([]byte(publicKeyPEM))
@@ -34,8 +32,8 @@ func newJWTVerifierFromEnv() (*jwtVerifier, error) {
 // NewJWTAuthFunc returns an authn.AuthFunc that validates Bearer JWTs.
 // The returned function extracts and validates JWT tokens from the Authorization header.
 // On success, it returns the subject claim which can be retrieved via authn.GetInfo(ctx).
-func NewJWTAuthFunc() (authn.AuthFunc, error) {
-	v, err := newJWTVerifierFromEnv()
+func NewJWTAuthFunc(publicKeyPEM string) (authn.AuthFunc, error) {
+	v, err := newJWTVerifierFromPEM(publicKeyPEM)
 	if err != nil {
 		return nil, err
 	}

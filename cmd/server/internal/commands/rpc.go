@@ -19,11 +19,12 @@ import (
 )
 
 type RPCServerCmd struct {
-	Listen   string `help:"listen address" default:"localhost:8993"`
-	Cert     string `help:"path to TLS cert file" default:""`
-	Key      string `help:"path to TLS key file" default:""`
-	Hostname string `help:"hostname for TLS cert" default:"localhost:8993"`
-	NoAuth   bool   `help:"disable JWT authentication (development only)" default:"false"`
+	Listen       string `help:"listen address" default:"localhost:8993"`
+	Cert         string `help:"path to TLS cert file" default:""`
+	Key          string `help:"path to TLS key file" default:""`
+	Hostname     string `help:"hostname for TLS cert" default:"localhost:8993"`
+	NoAuth       bool   `help:"disable JWT authentication (development only)" default:"false"`
+	JWTPublicKey string `help:"path to JWT public key file" env:"JWT_PUBLIC_KEY"`
 }
 
 func (s *RPCServerCmd) Run(ctx context.Context, globals *Globals) error {
@@ -51,7 +52,7 @@ func (s *RPCServerCmd) Run(ctx context.Context, globals *Globals) error {
 
 	// Add JWT auth middleware unless disabled
 	if !s.NoAuth {
-		jwtAuthFunc, err := auth.NewJWTAuthFunc()
+		jwtAuthFunc, err := auth.NewJWTAuthFunc(s.JWTPublicKey)
 		if err != nil {
 			return fmt.Errorf("failed to initialize JWT auth: %w", err)
 		}

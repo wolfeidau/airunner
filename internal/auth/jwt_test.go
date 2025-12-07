@@ -167,8 +167,8 @@ func TestJWTAuthFunc(t *testing.T) {
 			},
 		}
 		subject, err := authFunc(context.Background(), req)
-		require.NoError(t, err)
-		require.Equal(t, "user456", subject)
+		require.Error(t, err)
+		require.Nil(t, subject)
 	})
 
 	t.Run("token signed with wrong algorithm", func(t *testing.T) {

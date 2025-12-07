@@ -68,7 +68,11 @@ func NewJWTAuthFunc(publicKeyPEM string) (authn.AuthFunc, error) {
 			return nil, authn.Errorf("invalid claims")
 		}
 
-		if claims.ExpiresAt != nil && claims.ExpiresAt.Before(time.Now()) {
+		if claims.ExpiresAt == nil {
+			return nil, authn.Errorf("token missing exp")
+		}
+
+		if claims.ExpiresAt.Before(time.Now()) {
 			return nil, authn.Errorf("token expired")
 		}
 

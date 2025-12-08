@@ -1,7 +1,7 @@
-command: zsh
+command: sh
 args:
   - "-c"
-  - "docker rmi mcr.microsoft.com/devcontainers/go:latest; docker pull mcr.microsoft.com/devcontainers/go:latest"
+  - "docker build --progress plain -f .buildkite/Dockerfile.build -t airunner-build:latest . && docker run --rm -v .:/workspace -w /workspace airunner-build:latest make test lint"
 processType: pty
 timeout: 30
 environment:

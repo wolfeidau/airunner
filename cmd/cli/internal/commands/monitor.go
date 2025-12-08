@@ -22,6 +22,7 @@ type MonitorCmd struct {
 	EventFilter   []jobv1.EventType `help:"Filter specific event types"`
 	Timeout       time.Duration     `help:"Timeout for the monitor" default:"5m"`
 	Token         string            `help:"JWT token for authentication" env:"AIRUNNER_TOKEN"`
+	Playback      bool              `help:"Replay events at original speed based on timestamps"`
 }
 
 func (m *MonitorCmd) Run(ctx context.Context, globals *Globals) error {
@@ -55,6 +56,7 @@ func (m *MonitorCmd) Run(ctx context.Context, globals *Globals) error {
 		FromSequence:  m.FromSequence,
 		FromTimestamp: m.FromTimestamp,
 		EventFilter:   m.EventFilter,
+		Playback:      m.Playback,
 	}); err != nil {
 		return fmt.Errorf("failed to monitor job: %w", err)
 	}
@@ -68,6 +70,7 @@ type monitorJobArgs struct {
 	FromSequence  int64
 	FromTimestamp int64
 	EventFilter   []jobv1.EventType
+	Playback      bool
 }
 
 func monitorJob(ctx context.Context, clients *client.Clients, args monitorJobArgs) error {
@@ -87,8 +90,18 @@ func monitorJob(ctx context.Context, clients *client.Clients, args monitorJobArg
 	fmt.Printf("Streaming events for job %s:\n", args.JobID)
 	fmt.Println(strings.Repeat("=", 50))
 
+	var timer *playbackTimer
+	if args.Playback {
+		timer = newPlaybackTimer()
+	}
+
 	for stream.Receive() {
 		event := stream.Msg().Event
+
+		// Handle playback timing
+		if timer != nil && event.Timestamp != nil {
+			timer.wait(event.Timestamp.AsTime())
+		}
 
 		switch event.EventType {
 		case jobv1.EventType_EVENT_TYPE_PROCESS_START:
@@ -161,4 +174,32 @@ func monitorJob(ctx context.Context, clients *client.Clients, args monitorJobArg
 	}
 
 	return nil
+}
+
+type playbackTimer struct {
+	firstEventTime    time.Time
+	referenceWallTime time.Time
+	initialized       bool
+}
+
+func newPlaybackTimer() *playbackTimer {
+	return &playbackTimer{}
+}
+
+func (pt *playbackTimer) wait(eventTime time.Time) {
+	if !pt.initialized {
+		pt.firstEventTime = eventTime
+		pt.referenceWallTime = time.Now()
+		pt.initialized = true
+		return
+	}
+
+	// Calculate elapsed time since first event
+	elapsedEvent := eventTime.Sub(pt.firstEventTime)
+	elapsedWall := time.Since(pt.referenceWallTime)
+
+	// Sleep for the remaining time if playback is ahead
+	if elapsedEvent > elapsedWall {
+		time.Sleep(elapsedEvent - elapsedWall)
+	}
 }

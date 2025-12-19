@@ -38,9 +38,29 @@ certs: ## Generate local TLS certificates
 	@mkdir -p .certs
 	@mkcert -cert-file .certs/cert.pem -key-file .certs/key.pem localhost 127.0.0.1 ::1
 
+.PHONY: dynamodb
+dynamodb: ## Start local DynamoDB
+	docker compose -f .buildkite/docker-compose.yml up dynamodb --wait -d
+
+.PHONY: localstack
+localstack: ## Start LocalStack (SQS)
+	docker compose -f .buildkite/docker-compose.yml up localstack --wait -d
+
+.PHONY: infra-up
+infra-up: ## Start all local infrastructure (DynamoDB + LocalStack)
+	docker compose -f .buildkite/docker-compose.yml up dynamodb localstack --wait -d
+
+.PHONY: infra-down
+infra-down: ## Stop all local infrastructure
+	docker compose -f .buildkite/docker-compose.yml down
+
 .PHONY: test
 test: ## Run tests with coverage
 	go test -coverprofile $(COVERAGE_FILE) -covermode atomic -v ./...
+
+.PHONY: test-integration
+test-integration: infra-up ## Run integration tests with local DynamoDB and SQS
+	go test -tags integration -v ./...
 
 .PHONY: test-coverage
 test-coverage: test ## Run tests and show coverage report

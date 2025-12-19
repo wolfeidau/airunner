@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -20,9 +21,24 @@ import (
 	"github.com/rs/zerolog/log"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 	"github.com/wolfeidau/airunner/internal/util"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
+)
+
+// Sentinel errors for common error conditions
+var (
+	ErrInvalidTaskToken = errors.New("invalid task token")
+	ErrQueueMismatch    = errors.New("queue mismatch")
+	ErrJobNotFound      = errors.New("job not found")
+	ErrJobIDMismatch    = errors.New("job ID mismatch")
+	ErrThrottled        = errors.New("AWS request throttled")
+)
+
+// SQS and AWS service limits
+const (
+	sqsMaxMessages          = 10    // SQS maximum messages per ReceiveMessage call
+	sqsMaxVisibilitySeconds = 43200 // SQS maximum visibility timeout (12 hours)
+	eventChannelBufferSize  = 100   // Buffer size for event streaming channels
+	defaultListJobsPageSize = 50    // Default page size for ListJobs
 )
 
 // SQSJobStoreConfig holds the configuration for SQSJobStore
@@ -50,15 +66,10 @@ func (r *jobRecord) toProto() *jobv1.Job {
 	return &jobv1.Job{
 		JobId:     r.JobID,
 		State:     jobv1.JobState(r.State),
-		CreatedAt: timestamppb.New(millisToTime(r.CreatedAt)),
-		UpdatedAt: timestamppb.New(millisToTime(r.UpdatedAt)),
+		CreatedAt: timestamppb.New(time.UnixMilli(r.CreatedAt)),
+		UpdatedAt: timestamppb.New(time.UnixMilli(r.UpdatedAt)),
 		JobParams: r.JobParams,
 	}
-}
-
-// millisToTime converts Unix milliseconds to time.Time
-func millisToTime(millis int64) time.Time {
-	return time.UnixMilli(millis)
 }
 
 // recordsToProtos converts a slice of jobRecords to protobuf Jobs
@@ -68,6 +79,33 @@ func recordsToProtos(records []jobRecord) []*jobv1.Job {
 		jobs[i] = records[i].toProto()
 	}
 	return jobs
+}
+
+// wrapAWSError wraps AWS SDK errors, identifying throttling errors
+// Returns ErrThrottled for throttling errors, otherwise wraps the original error
+func wrapAWSError(err error, msg string) error {
+	if err == nil {
+		return nil
+	}
+
+	// Check for DynamoDB throttling errors
+	var provisionedErr *types.ProvisionedThroughputExceededException
+	if errors.As(err, &provisionedErr) {
+		return fmt.Errorf("%s: %w: %v", msg, ErrThrottled, err)
+	}
+
+	// Check for common throttling error messages in error strings
+	// AWS SDK v2 doesn't always use typed errors for all services
+	errMsg := err.Error()
+	if strings.Contains(errMsg, "ThrottlingException") ||
+		strings.Contains(errMsg, "RequestLimitExceeded") ||
+		strings.Contains(errMsg, "TooManyRequestsException") ||
+		strings.Contains(errMsg, "Throttling") {
+		return fmt.Errorf("%s: %w: %v", msg, ErrThrottled, err)
+	}
+
+	// Wrap other AWS errors
+	return fmt.Errorf("%s: %w", msg, err)
 }
 
 // SQSJobStore implements JobStore using AWS SQS and DynamoDB
@@ -109,9 +147,10 @@ func (s *SQSJobStore) Stop() error {
 	return nil
 }
 
-// TaskToken is a stateless token containing job_id, queue, and receipt_handle
+// taskToken is a stateless token containing job_id, queue, and receipt_handle
 // Format: base64url(job_id + "|" + queue_name + "|" + sqs_receipt_handle)
-type TaskToken struct {
+// This is an internal implementation detail and should not be exported
+type taskToken struct {
 	JobID         string
 	Queue         string
 	ReceiptHandle string
@@ -124,18 +163,27 @@ func encodeTaskToken(jobID, queue, receiptHandle string) string {
 }
 
 // decodeTaskToken extracts components from a task token
-func decodeTaskToken(token string) (*TaskToken, error) {
+func decodeTaskToken(token string) (*taskToken, error) {
+	if token == "" {
+		return nil, fmt.Errorf("%w: token cannot be empty", ErrInvalidTaskToken)
+	}
+
 	data, err := base64.URLEncoding.DecodeString(token)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid task token encoding: %v", err)
+		return nil, fmt.Errorf("%w: invalid encoding: %v", ErrInvalidTaskToken, err)
 	}
 
 	parts := strings.Split(string(data), "|")
 	if len(parts) != 3 {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid task token format: expected 3 parts, got %d", len(parts))
+		return nil, fmt.Errorf("%w: expected 3 parts, got %d", ErrInvalidTaskToken, len(parts))
 	}
 
-	return &TaskToken{
+	// Validate non-empty components
+	if parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return nil, fmt.Errorf("%w: empty component in token", ErrInvalidTaskToken)
+	}
+
+	return &taskToken{
 		JobID:         parts[0],
 		Queue:         parts[1],
 		ReceiptHandle: parts[2],
@@ -147,7 +195,7 @@ func (s *SQSJobStore) EnqueueJob(ctx context.Context, req *jobv1.EnqueueJobReque
 	// 1. Validate queue is configured
 	if _, exists := s.cfg.QueueURLs[req.Queue]; !exists {
 		log.Error().Str("queue", req.Queue).Msg("Queue not configured")
-		return nil, status.Errorf(codes.InvalidArgument, "queue not configured: %s", req.Queue)
+		return nil, fmt.Errorf("queue not configured: %s", req.Queue)
 	}
 
 	// 2. Check idempotency via GSI2 (request_id)
@@ -183,7 +231,7 @@ func (s *SQSJobStore) EnqueueJob(ctx context.Context, req *jobv1.EnqueueJobReque
 	params, err := attributevalue.MarshalMap(req.JobParams)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to marshal job params")
-		return nil, status.Errorf(codes.InvalidArgument, "failed to marshal job params: %v", err)
+		return nil, fmt.Errorf("failed to marshal job params: %w", err)
 	}
 	jobItem["job_params"] = &types.AttributeValueMemberM{Value: params}
 
@@ -197,7 +245,7 @@ func (s *SQSJobStore) EnqueueJob(ctx context.Context, req *jobv1.EnqueueJobReque
 	_, err = s.dynamoClient.PutItem(ctx, putInput)
 	if err != nil {
 		log.Error().Err(err).Str("job_id", jobID).Msg("Failed to create job in DynamoDB")
-		return nil, status.Errorf(codes.Internal, "failed to create job: %v", err)
+		return nil, wrapAWSError(err, "failed to create job in DynamoDB")
 	}
 
 	log.Info().Str("job_id", jobID).Str("queue", req.Queue).Msg("Job created and stored in DynamoDB")
@@ -213,7 +261,7 @@ func (s *SQSJobStore) EnqueueJob(ctx context.Context, req *jobv1.EnqueueJobReque
 	_, err = s.sqsClient.SendMessage(ctx, sendInput)
 	if err != nil {
 		log.Error().Err(err).Str("job_id", jobID).Msg("Failed to send message to SQS")
-		return nil, status.Errorf(codes.Internal, "failed to send to SQS: %v", err)
+		return nil, wrapAWSError(err, "failed to send message to SQS")
 	}
 
 	log.Info().Str("job_id", jobID).Str("queue", req.Queue).Msg("Message sent to SQS queue")
@@ -230,28 +278,30 @@ func (s *SQSJobStore) DequeueJobs(ctx context.Context, queue string, maxJobs int
 	queueURL, exists := s.cfg.QueueURLs[queue]
 	if !exists {
 		log.Error().Str("queue", queue).Msg("Queue not configured")
-		return nil, status.Errorf(codes.InvalidArgument, "queue not configured: %s", queue)
+		return nil, fmt.Errorf("queue not configured: %s", queue)
 	}
 
-	// Limit to SQS max of 10 messages per call
-	numToReceive := min(maxJobs, 10)
+	// Limit to SQS max messages per call
+	numToReceive := min(maxJobs, sqsMaxMessages)
 
 	// ReceiveMessage from SQS
 	receiveInput := &sqs.ReceiveMessageInput{
 		QueueUrl:            aws.String(queueURL),
-		MaxNumberOfMessages: int32(min(numToReceive, 10)),      //nolint:gosec // bounded above
-		WaitTimeSeconds:     0,                                 // Non-blocking; long polling handled at service layer
-		VisibilityTimeout:   int32(min(timeoutSeconds, 43200)), //nolint:gosec // SQS max is 12h
+		MaxNumberOfMessages: int32(min(numToReceive, sqsMaxMessages)),            //nolint:gosec // bounded above
+		WaitTimeSeconds:     0,                                                   // Non-blocking; long polling handled at service layer
+		VisibilityTimeout:   int32(min(timeoutSeconds, sqsMaxVisibilitySeconds)), //nolint:gosec // SQS max is 12h
 	}
 
 	output, err := s.sqsClient.ReceiveMessage(ctx, receiveInput)
 	if err != nil {
 		log.Error().Err(err).Str("queue", queue).Msg("Failed to receive messages from SQS")
-		return nil, status.Errorf(codes.Internal, "failed to receive from SQS: %v", err)
+		return nil, wrapAWSError(err, "failed to receive messages from SQS")
 	}
 
 	if len(output.Messages) == 0 {
 		log.Debug().Str("queue", queue).Msg("No messages in queue")
+		// Return nil (not empty slice) when queue is empty - this is not an error condition
+		// Consistent with Go conventions where nil represents "no data available"
 		return nil, nil
 	}
 
@@ -324,7 +374,7 @@ func (s *SQSJobStore) UpdateJobVisibility(ctx context.Context, queue string, tas
 	// Verify queue matches
 	if tt.Queue != queue {
 		log.Warn().Str("expected_queue", queue).Str("token_queue", tt.Queue).Msg("Queue mismatch")
-		return status.Errorf(codes.InvalidArgument, "queue mismatch: expected %s, got %s", queue, tt.Queue)
+		return fmt.Errorf("%w: expected %s, got %s", ErrQueueMismatch, queue, tt.Queue)
 	}
 
 	// Update visibility timeout in SQS
@@ -332,13 +382,13 @@ func (s *SQSJobStore) UpdateJobVisibility(ctx context.Context, queue string, tas
 	changeVisInput := &sqs.ChangeMessageVisibilityInput{
 		QueueUrl:          aws.String(queueURL),
 		ReceiptHandle:     aws.String(tt.ReceiptHandle),
-		VisibilityTimeout: int32(min(timeoutSeconds, 43200)), //nolint:gosec // SQS max is 12h
+		VisibilityTimeout: int32(min(timeoutSeconds, sqsMaxVisibilitySeconds)), //nolint:gosec // SQS max is 12h
 	}
 
 	_, err = s.sqsClient.ChangeMessageVisibility(ctx, changeVisInput)
 	if err != nil {
 		log.Error().Err(err).Str("job_id", tt.JobID).Msg("Failed to change message visibility in SQS")
-		return status.Errorf(codes.Internal, "failed to change visibility: %v", err)
+		return wrapAWSError(err, "failed to change message visibility")
 	}
 
 	// Update updated_at timestamp in DynamoDB
@@ -364,18 +414,18 @@ func (s *SQSJobStore) CompleteJob(ctx context.Context, taskToken string, result 
 	// Verify job ID matches
 	if tt.JobID != result.JobId {
 		log.Warn().Str("token_job_id", tt.JobID).Str("result_job_id", result.JobId).Msg("Job ID mismatch")
-		return status.Errorf(codes.InvalidArgument, "job ID mismatch: expected %s, got %s", tt.JobID, result.JobId)
+		return fmt.Errorf("%w: expected %s, got %s", ErrJobIDMismatch, tt.JobID, result.JobId)
 	}
 
 	// Get job from DynamoDB
 	job, err := s.getJobByID(ctx, tt.JobID)
 	if err != nil {
 		log.Error().Err(err).Str("job_id", tt.JobID).Msg("Failed to get job")
-		return status.Errorf(codes.Internal, "failed to get job: %v", err)
+		return fmt.Errorf("failed to get job: %w", err)
 	}
 	if job == nil {
 		log.Warn().Str("job_id", tt.JobID).Msg("Job not found")
-		return status.Errorf(codes.NotFound, "job not found: %s", tt.JobID)
+		return fmt.Errorf("%w: %s", ErrJobNotFound, tt.JobID)
 	}
 
 	// Update job state
@@ -390,7 +440,7 @@ func (s *SQSJobStore) CompleteJob(ctx context.Context, taskToken string, result 
 	resultMap, err := attributevalue.MarshalMap(result)
 	if err != nil {
 		log.Error().Err(err).Str("job_id", tt.JobID).Msg("Failed to marshal job result")
-		return status.Errorf(codes.Internal, "failed to marshal job result: %v", err)
+		return fmt.Errorf("failed to marshal job result: %w", err)
 	}
 
 	// UpdateItem in DynamoDB
@@ -408,7 +458,7 @@ func (s *SQSJobStore) CompleteJob(ctx context.Context, taskToken string, result 
 	expr, err := expression.NewBuilder().WithUpdate(updateBuilder).Build()
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to build update expression")
-		return status.Errorf(codes.Internal, "failed to build update expression: %v", err)
+		return fmt.Errorf("failed to build update expression: %w", err)
 	}
 
 	updateInput := &dynamodb.UpdateItemInput{
@@ -424,7 +474,7 @@ func (s *SQSJobStore) CompleteJob(ctx context.Context, taskToken string, result 
 	_, err = s.dynamoClient.UpdateItem(ctx, updateInput)
 	if err != nil {
 		log.Error().Err(err).Str("job_id", tt.JobID).Msg("Failed to update job in DynamoDB")
-		return status.Errorf(codes.Internal, "failed to update job: %v", err)
+		return wrapAWSError(err, "failed to update job in DynamoDB")
 	}
 
 	// Delete message from SQS
@@ -445,10 +495,28 @@ func (s *SQSJobStore) CompleteJob(ctx context.Context, taskToken string, result 
 }
 
 // ListJobs returns a filtered list of jobs
+//
+// PERFORMANCE WARNING: This implementation loads all matching results into memory
+// before applying pagination. For large result sets (>10,000 jobs), this can consume
+// significant memory and cause high latency.
+//
+// Current limitations:
+//   - Fetches ALL jobs from DynamoDB before filtering and paginating
+//   - Memory usage grows linearly with total job count
+//   - No support for cursor-based pagination
+//
+// Production considerations:
+//   - For large deployments, implement cursor-based pagination using DynamoDB's
+//     LastEvaluatedKey (see spec's Future Enhancements section)
+//   - Consider implementing server-side filtering using DynamoDB FilterExpression
+//   - Monitor memory usage and query latency metrics
+//
+// IMPORTANT: Always specify a queue filter when possible to use GSI1 Query instead
+// of full table Scan. Without a queue filter, this performs a full table scan.
 func (s *SQSJobStore) ListJobs(ctx context.Context, req *jobv1.ListJobsRequest) (*jobv1.ListJobsResponse, error) {
 	pageSize := int(req.PageSize)
 	if pageSize <= 0 {
-		pageSize = 50 // default
+		pageSize = defaultListJobsPageSize
 	}
 
 	page := int(req.Page)
@@ -464,7 +532,7 @@ func (s *SQSJobStore) ListJobs(ctx context.Context, req *jobv1.ListJobsRequest) 
 		expr, err := expression.NewBuilder().WithKeyCondition(keyCond).Build()
 		if err != nil {
 			log.Error().Err(err).Msg("Failed to build query expression")
-			return nil, status.Errorf(codes.Internal, "failed to build query expression: %v", err)
+			return nil, fmt.Errorf("failed to build query expression: %w", err)
 		}
 
 		queryInput := &dynamodb.QueryInput{
@@ -477,17 +545,22 @@ func (s *SQSJobStore) ListJobs(ctx context.Context, req *jobv1.ListJobsRequest) 
 
 		paginator := dynamodb.NewQueryPaginator(s.dynamoClient, queryInput)
 		for paginator.HasMorePages() {
+			// Check for context cancellation
+			if err := ctx.Err(); err != nil {
+				return nil, fmt.Errorf("operation canceled: %w", err)
+			}
+
 			page, err := paginator.NextPage(ctx)
 			if err != nil {
 				log.Error().Err(err).Str("queue", req.Queue).Msg("Failed to query jobs")
-				return nil, status.Errorf(codes.Internal, "failed to query jobs: %v", err)
+				return nil, wrapAWSError(err, "failed to query jobs")
 			}
 
 			var records []jobRecord
 			err = attributevalue.UnmarshalListOfMaps(page.Items, &records)
 			if err != nil {
 				log.Error().Err(err).Msg("Failed to unmarshal jobs")
-				return nil, status.Errorf(codes.Internal, "failed to unmarshal jobs: %v", err)
+				return nil, fmt.Errorf("failed to unmarshal jobs: %w", err)
 			}
 			allJobs = append(allJobs, recordsToProtos(records)...)
 		}
@@ -501,17 +574,22 @@ func (s *SQSJobStore) ListJobs(ctx context.Context, req *jobv1.ListJobsRequest) 
 
 		paginator := dynamodb.NewScanPaginator(s.dynamoClient, scanInput)
 		for paginator.HasMorePages() {
+			// Check for context cancellation
+			if err := ctx.Err(); err != nil {
+				return nil, fmt.Errorf("operation canceled: %w", err)
+			}
+
 			page, err := paginator.NextPage(ctx)
 			if err != nil {
 				log.Error().Err(err).Msg("Failed to scan jobs")
-				return nil, status.Errorf(codes.Internal, "failed to scan jobs: %v", err)
+				return nil, wrapAWSError(err, "failed to scan jobs")
 			}
 
 			var records []jobRecord
 			err = attributevalue.UnmarshalListOfMaps(page.Items, &records)
 			if err != nil {
 				log.Error().Err(err).Msg("Failed to unmarshal jobs")
-				return nil, status.Errorf(codes.Internal, "failed to unmarshal jobs: %v", err)
+				return nil, fmt.Errorf("failed to unmarshal jobs: %w", err)
 			}
 			allJobs = append(allJobs, recordsToProtos(records)...)
 		}
@@ -559,10 +637,10 @@ func (s *SQSJobStore) PublishEvents(ctx context.Context, taskToken string, event
 	// Verify job exists
 	job, err := s.getJobByID(ctx, tt.JobID)
 	if err != nil {
-		return status.Errorf(codes.Internal, "failed to get job: %v", err)
+		return fmt.Errorf("failed to get job: %w", err)
 	}
 	if job == nil {
-		return status.Errorf(codes.NotFound, "job not found: %s", tt.JobID)
+		return fmt.Errorf("%w: %s", ErrJobNotFound, tt.JobID)
 	}
 
 	// Set timestamps if not already set
@@ -590,10 +668,10 @@ func (s *SQSJobStore) StreamEvents(ctx context.Context, jobId string, fromSequen
 	// Verify job exists
 	job, err := s.getJobByID(ctx, jobId)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to get job: %v", err)
+		return nil, fmt.Errorf("failed to get job: %w", err)
 	}
 	if job == nil {
-		return nil, status.Errorf(codes.NotFound, "job not found: %s", jobId)
+		return nil, fmt.Errorf("%w: %s", ErrJobNotFound, jobId)
 	}
 
 	// TODO: Phase 2 - Query historical events from JobEvents table
@@ -602,7 +680,7 @@ func (s *SQSJobStore) StreamEvents(ctx context.Context, jobId string, fromSequen
 	_ = eventFilter
 
 	// Create channel for streaming
-	eventChan := make(chan *jobv1.JobEvent, 100)
+	eventChan := make(chan *jobv1.JobEvent, eventChannelBufferSize)
 
 	// Register stream
 	s.mu.Lock()
@@ -631,7 +709,9 @@ func (s *SQSJobStore) StreamEvents(ctx context.Context, jobId string, fromSequen
 	return eventChan, nil
 }
 
-// fanoutEvent sends an event to all active streams for a job (called with lock held)
+// fanoutEvent sends an event to all active streams for a job
+// Must be called with at least a read lock (RLock) held on s.mu to safely access eventStreams
+// Uses non-blocking sends to prevent slow consumers from blocking event publishing
 func (s *SQSJobStore) fanoutEvent(jobId string, event *jobv1.JobEvent) {
 	streams := s.eventStreams[jobId]
 	for _, ch := range streams {
@@ -674,6 +754,12 @@ func (s *SQSJobStore) getJobByID(ctx context.Context, jobID string) (*jobv1.Job,
 }
 
 // getJobByRequestID retrieves a job by request ID for idempotency checks
+// IMPORTANT: Requires GSI2 index (request_id -> job_id) to be created on the DynamoDB table
+// The index must be configured with:
+//   - Partition Key: request_id (String)
+//   - Projection: KEYS_ONLY or ALL
+//
+// If the index does not exist, this method will return an error from DynamoDB
 func (s *SQSJobStore) getJobByRequestID(ctx context.Context, requestID string) (*jobv1.Job, error) {
 	keyCond := expression.Key("request_id").Equal(expression.Value(requestID))
 	expr, err := expression.NewBuilder().WithKeyCondition(keyCond).Build()
@@ -691,7 +777,8 @@ func (s *SQSJobStore) getJobByRequestID(ctx context.Context, requestID string) (
 
 	output, err := s.dynamoClient.Query(ctx, queryInput)
 	if err != nil {
-		return nil, err
+		// Will return an error if GSI2 index doesn't exist
+		return nil, wrapAWSError(err, "failed to query by request_id (check GSI2 index exists)")
 	}
 
 	if len(output.Items) == 0 {
@@ -744,10 +831,15 @@ type sqsJobMessage struct {
 }
 
 // extractJobIDFromMessage parses the SQS message body to extract job_id
+// Returns empty string if the message is invalid or missing job_id
 func (s *SQSJobStore) extractJobIDFromMessage(body string) string {
 	var msg sqsJobMessage
 	if err := json.Unmarshal([]byte(body), &msg); err != nil {
+		log.Debug().Err(err).Str("body", body).Msg("Failed to unmarshal SQS message")
 		return ""
+	}
+	if msg.JobID == "" {
+		log.Debug().Str("body", body).Msg("SQS message missing job_id field")
 	}
 	return msg.JobID
 }

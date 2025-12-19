@@ -60,7 +60,7 @@ func TestTaskTokenInvalid(t *testing.T) {
 		{
 			name:   "invalid base64",
 			token:  "!!!invalid!!!",
-			errMsg: "invalid task token encoding",
+			errMsg: "invalid task token",
 		},
 	}
 

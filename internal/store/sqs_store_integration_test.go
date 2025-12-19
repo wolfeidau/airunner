@@ -23,6 +23,11 @@ const (
 	testDefaultQueueName = "airunner-test-default"
 )
 
+var (
+	// Test signing secret for HMAC task tokens
+	testTokenSigningSecret = []byte("integration-test-secret-key-do-not-use-in-production")
+)
+
 // getSQSClient creates an SQS client for testing with LocalStack
 func getSQSClient(t *testing.T, ctx context.Context) *sqs.Client {
 	cfg, err := config.LoadDefaultConfig(ctx,
@@ -146,6 +151,7 @@ func TestIntegration_EnqueueJob(t *testing.T) {
 			"default": queueURL,
 		},
 		DefaultVisibilityTimeoutSeconds: 30,
+		TokenSigningSecret:              testTokenSigningSecret,
 	})
 
 	// Enqueue a job
@@ -197,10 +203,11 @@ func TestIntegration_EnqueueIdempotency(t *testing.T) {
 	purgeQueue(t, ctx, sqsClient, queueURL)
 
 	store := NewSQSJobStore(sqsClient, dynamoClient, SQSJobStoreConfig{
-		JobsTableName: tableName,
-		QueueURLs: map[string]string{
+		JobsTableName:      tableName,
+		QueueURLs:          map[string]string{
 			"default": queueURL,
 		},
+		TokenSigningSecret: testTokenSigningSecret,
 	})
 
 	req := &jobv1.EnqueueJobRequest{
@@ -243,6 +250,7 @@ func TestIntegration_FullJobLifecycle(t *testing.T) {
 			"default": queueURL,
 		},
 		DefaultVisibilityTimeoutSeconds: 30,
+		TokenSigningSecret:              testTokenSigningSecret,
 	})
 
 	// 1. Enqueue a job
@@ -315,10 +323,11 @@ func TestIntegration_DequeueNoJobs(t *testing.T) {
 	purgeQueue(t, ctx, sqsClient, queueURL)
 
 	store := NewSQSJobStore(sqsClient, dynamoClient, SQSJobStoreConfig{
-		JobsTableName: tableName,
-		QueueURLs: map[string]string{
+		JobsTableName:      tableName,
+		QueueURLs:          map[string]string{
 			"default": queueURL,
 		},
+		TokenSigningSecret: testTokenSigningSecret,
 	})
 
 	// Dequeue from empty queue
@@ -342,10 +351,11 @@ func TestIntegration_CompleteJobFailed(t *testing.T) {
 	purgeQueue(t, ctx, sqsClient, queueURL)
 
 	store := NewSQSJobStore(sqsClient, dynamoClient, SQSJobStoreConfig{
-		JobsTableName: tableName,
-		QueueURLs: map[string]string{
+		JobsTableName:      tableName,
+		QueueURLs:          map[string]string{
 			"default": queueURL,
 		},
+		TokenSigningSecret: testTokenSigningSecret,
 	})
 
 	// Enqueue and dequeue
@@ -392,10 +402,11 @@ func TestIntegration_UpdateVisibility(t *testing.T) {
 	purgeQueue(t, ctx, sqsClient, queueURL)
 
 	store := NewSQSJobStore(sqsClient, dynamoClient, SQSJobStoreConfig{
-		JobsTableName: tableName,
-		QueueURLs: map[string]string{
+		JobsTableName:      tableName,
+		QueueURLs:          map[string]string{
 			"default": queueURL,
 		},
+		TokenSigningSecret: testTokenSigningSecret,
 	})
 
 	// Enqueue and dequeue with short visibility

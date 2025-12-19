@@ -2,7 +2,10 @@ package store
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,6 +42,7 @@ const (
 	sqsMaxVisibilitySeconds = 43200 // SQS maximum visibility timeout (12 hours)
 	eventChannelBufferSize  = 100   // Buffer size for event streaming channels
 	defaultListJobsPageSize = 50    // Default page size for ListJobs
+	taskTokenVersion        = "v1"  // Task token format version for future compatibility
 )
 
 // SQSJobStoreConfig holds the configuration for SQSJobStore
@@ -47,6 +51,7 @@ type SQSJobStoreConfig struct {
 	JobsTableName                   string
 	JobEventsTableName              string
 	DefaultVisibilityTimeoutSeconds int32
+	TokenSigningSecret              []byte // Secret key for HMAC signing task tokens (required for security)
 }
 
 // jobRecord is the DynamoDB representation of a job
@@ -148,7 +153,8 @@ func (s *SQSJobStore) Stop() error {
 }
 
 // taskToken is a stateless token containing job_id, queue, and receipt_handle
-// Format: base64url(job_id + "|" + queue_name + "|" + sqs_receipt_handle)
+// Format: base64url(version|job_id|queue|receipt_handle|hmac_signature)
+// The HMAC signature provides integrity protection against tampering
 // This is an internal implementation detail and should not be exported
 type taskToken struct {
 	JobID         string
@@ -156,37 +162,70 @@ type taskToken struct {
 	ReceiptHandle string
 }
 
-// encodeTaskToken creates a stateless task token
-func encodeTaskToken(jobID, queue, receiptHandle string) string {
-	data := fmt.Sprintf("%s|%s|%s", jobID, queue, receiptHandle)
-	return base64.URLEncoding.EncodeToString([]byte(data))
+// encodeTaskToken creates a signed stateless task token
+// Format: base64url(v1|job_id|queue|receipt_handle|hmac_sha256_signature)
+// The HMAC signature prevents token tampering and provides defense in depth
+func (s *SQSJobStore) encodeTaskToken(jobID, queue, receiptHandle string) string {
+	// Build the data payload with version prefix
+	data := fmt.Sprintf("%s|%s|%s|%s", taskTokenVersion, jobID, queue, receiptHandle)
+
+	// Compute HMAC-SHA256 signature
+	h := hmac.New(sha256.New, s.cfg.TokenSigningSecret)
+	h.Write([]byte(data))
+	sig := hex.EncodeToString(h.Sum(nil))
+
+	// Append signature to data
+	signed := fmt.Sprintf("%s|%s", data, sig)
+
+	return base64.URLEncoding.EncodeToString([]byte(signed))
 }
 
-// decodeTaskToken extracts components from a task token
-func decodeTaskToken(token string) (*taskToken, error) {
+// decodeTaskToken extracts and verifies components from a signed task token
+// Validates HMAC signature to prevent tampering using constant-time comparison
+func (s *SQSJobStore) decodeTaskToken(token string) (*taskToken, error) {
 	if token == "" {
 		return nil, fmt.Errorf("%w: token cannot be empty", ErrInvalidTaskToken)
 	}
 
+	// Base64 decode
 	data, err := base64.URLEncoding.DecodeString(token)
 	if err != nil {
 		return nil, fmt.Errorf("%w: invalid encoding: %v", ErrInvalidTaskToken, err)
 	}
 
+	// Split into components: version|job_id|queue|receipt_handle|signature
 	parts := strings.Split(string(data), "|")
-	if len(parts) != 3 {
-		return nil, fmt.Errorf("%w: expected 3 parts, got %d", ErrInvalidTaskToken, len(parts))
+	if len(parts) != 5 {
+		return nil, fmt.Errorf("%w: expected 5 parts (version|job_id|queue|receipt|sig), got %d", ErrInvalidTaskToken, len(parts))
+	}
+
+	version, jobID, queue, receiptHandle, providedSig := parts[0], parts[1], parts[2], parts[3], parts[4]
+
+	// Validate version
+	if version != taskTokenVersion {
+		return nil, fmt.Errorf("%w: unsupported version %s (expected %s)", ErrInvalidTaskToken, version, taskTokenVersion)
 	}
 
 	// Validate non-empty components
-	if parts[0] == "" || parts[1] == "" || parts[2] == "" {
+	if jobID == "" || queue == "" || receiptHandle == "" {
 		return nil, fmt.Errorf("%w: empty component in token", ErrInvalidTaskToken)
 	}
 
+	// Recompute HMAC signature
+	payload := fmt.Sprintf("%s|%s|%s|%s", version, jobID, queue, receiptHandle)
+	h := hmac.New(sha256.New, s.cfg.TokenSigningSecret)
+	h.Write([]byte(payload))
+	expectedSig := hex.EncodeToString(h.Sum(nil))
+
+	// Constant-time comparison to prevent timing attacks
+	if !hmac.Equal([]byte(expectedSig), []byte(providedSig)) {
+		return nil, fmt.Errorf("%w: invalid signature", ErrInvalidTaskToken)
+	}
+
 	return &taskToken{
-		JobID:         parts[0],
-		Queue:         parts[1],
-		ReceiptHandle: parts[2],
+		JobID:         jobID,
+		Queue:         queue,
+		ReceiptHandle: receiptHandle,
 	}, nil
 }
 
@@ -349,8 +388,8 @@ func (s *SQSJobStore) DequeueJobs(ctx context.Context, queue string, maxJobs int
 			continue
 		}
 
-		// Create task token
-		taskToken := encodeTaskToken(jobID, queue, aws.ToString(message.ReceiptHandle))
+		// Create task token with HMAC signature
+		taskToken := s.encodeTaskToken(jobID, queue, aws.ToString(message.ReceiptHandle))
 
 		results = append(results, &JobWithToken{
 			Job:       job,
@@ -364,11 +403,11 @@ func (s *SQSJobStore) DequeueJobs(ctx context.Context, queue string, maxJobs int
 
 // UpdateJobVisibility extends the visibility timeout for a job
 func (s *SQSJobStore) UpdateJobVisibility(ctx context.Context, queue string, taskToken string, timeoutSeconds int) error {
-	// Decode task token
-	tt, err := decodeTaskToken(taskToken)
+	// Decode and verify task token
+	tt, err := s.decodeTaskToken(taskToken)
 	if err != nil {
 		log.Warn().Err(err).Msg("Invalid task token")
-		return err // already a status error from decodeTaskToken
+		return err
 	}
 
 	// Verify queue matches
@@ -404,11 +443,11 @@ func (s *SQSJobStore) UpdateJobVisibility(ctx context.Context, queue string, tas
 
 // CompleteJob marks a job as completed and removes it from the queue
 func (s *SQSJobStore) CompleteJob(ctx context.Context, taskToken string, result *jobv1.JobResult) error {
-	// Decode task token
-	tt, err := decodeTaskToken(taskToken)
+	// Decode and verify task token
+	tt, err := s.decodeTaskToken(taskToken)
 	if err != nil {
 		log.Warn().Err(err).Msg("Invalid task token")
-		return err // already a status error from decodeTaskToken
+		return err
 	}
 
 	// Verify job ID matches
@@ -629,9 +668,9 @@ func (s *SQSJobStore) ListJobs(ctx context.Context, req *jobv1.ListJobsRequest) 
 
 // PublishEvents publishes events for a job (Phase 2)
 func (s *SQSJobStore) PublishEvents(ctx context.Context, taskToken string, events []*jobv1.JobEvent) error {
-	tt, err := decodeTaskToken(taskToken)
+	tt, err := s.decodeTaskToken(taskToken)
 	if err != nil {
-		return err // already a status error from decodeTaskToken
+		return err
 	}
 
 	// Verify job exists

@@ -96,7 +96,8 @@ func TestDynamoDB_JobStoreGetPut(t *testing.T) {
 	defer deleteTestTable(t, ctx, client, testJobsTable)
 
 	store := NewSQSJobStore(nil, client, SQSJobStoreConfig{
-		JobsTableName: testJobsTable,
+		JobsTableName:      testJobsTable,
+		TokenSigningSecret: []byte("dynamodb-test-secret"),
 	})
 
 	// Create a job record using the proper format
@@ -134,7 +135,8 @@ func TestDynamoDB_UpdateJobState(t *testing.T) {
 	defer deleteTestTable(t, ctx, client, testJobsTable)
 
 	store := NewSQSJobStore(nil, client, SQSJobStoreConfig{
-		JobsTableName: testJobsTable,
+		JobsTableName:      testJobsTable,
+		TokenSigningSecret: []byte("dynamodb-test-secret"),
 	})
 
 	// Create a job record
@@ -179,7 +181,8 @@ func TestDynamoDB_NotFound(t *testing.T) {
 	defer deleteTestTable(t, ctx, client, testJobsTable)
 
 	store := NewSQSJobStore(nil, client, SQSJobStoreConfig{
-		JobsTableName: testJobsTable,
+		JobsTableName:      testJobsTable,
+		TokenSigningSecret: []byte("dynamodb-test-secret"),
 	})
 
 	// Try to get non-existent job
@@ -196,7 +199,8 @@ func TestDynamoDB_JobParamsMarshaling(t *testing.T) {
 	defer deleteTestTable(t, ctx, client, testJobsTable)
 
 	store := NewSQSJobStore(nil, client, SQSJobStoreConfig{
-		JobsTableName: testJobsTable,
+		JobsTableName:      testJobsTable,
+		TokenSigningSecret: []byte("dynamodb-test-secret"),
 	})
 
 	// Create a job with complex parameters

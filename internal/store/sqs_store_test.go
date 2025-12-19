@@ -9,6 +9,13 @@ import (
 )
 
 func TestTaskTokenEncodeDecode(t *testing.T) {
+	// Create store with test signing secret
+	store := &SQSJobStore{
+		cfg: SQSJobStoreConfig{
+			TokenSigningSecret: []byte("test-secret-key-for-hmac-signing"),
+		},
+	}
+
 	tests := []struct {
 		name          string
 		jobID         string
@@ -37,10 +44,10 @@ func TestTaskTokenEncodeDecode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoded := encodeTaskToken(tt.jobID, tt.queue, tt.receiptHandle)
+			encoded := store.encodeTaskToken(tt.jobID, tt.queue, tt.receiptHandle)
 			require.NotEmpty(t, encoded)
 
-			decoded, err := decodeTaskToken(encoded)
+			decoded, err := store.decodeTaskToken(encoded)
 			require.NoError(t, err)
 			require.NotNil(t, decoded)
 
@@ -52,6 +59,12 @@ func TestTaskTokenEncodeDecode(t *testing.T) {
 }
 
 func TestTaskTokenInvalid(t *testing.T) {
+	store := &SQSJobStore{
+		cfg: SQSJobStoreConfig{
+			TokenSigningSecret: []byte("test-secret-key"),
+		},
+	}
+
 	tests := []struct {
 		name   string
 		token  string
@@ -62,17 +75,58 @@ func TestTaskTokenInvalid(t *testing.T) {
 			token:  "!!!invalid!!!",
 			errMsg: "invalid task token",
 		},
+		{
+			name:   "empty token",
+			token:  "",
+			errMsg: "token cannot be empty",
+		},
+		{
+			name:   "wrong number of parts",
+			token:  "djF8am9ifHF1ZXVl", // base64("v1|job|queue") - missing receipt and signature
+			errMsg: "expected 5 parts",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := decodeTaskToken(tt.token)
+			_, err := store.decodeTaskToken(tt.token)
 			require.Error(t, err)
 			if tt.errMsg != "" {
 				require.Contains(t, err.Error(), tt.errMsg)
 			}
 		})
 	}
+}
+
+func TestTaskTokenSignatureValidation(t *testing.T) {
+	store1 := &SQSJobStore{
+		cfg: SQSJobStoreConfig{
+			TokenSigningSecret: []byte("secret-key-1"),
+		},
+	}
+	store2 := &SQSJobStore{
+		cfg: SQSJobStoreConfig{
+			TokenSigningSecret: []byte("secret-key-2"), // Different secret
+		},
+	}
+
+	t.Run("tampering detection", func(t *testing.T) {
+		// Create a valid token
+		token := store1.encodeTaskToken("job-123", "default", "receipt-abc")
+
+		// Try to decode with wrong secret - should fail
+		_, err := store2.decodeTaskToken(token)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "invalid signature")
+	})
+
+	t.Run("valid signature", func(t *testing.T) {
+		// Create and decode with same secret - should succeed
+		token := store1.encodeTaskToken("job-456", "priority", "receipt-xyz")
+		decoded, err := store1.decodeTaskToken(token)
+		require.NoError(t, err)
+		require.Equal(t, "job-456", decoded.JobID)
+	})
 }
 
 func TestExtractJobIDFromMessage(t *testing.T) {
@@ -159,6 +213,12 @@ func TestSQSJobStoreConfigValidation(t *testing.T) {
 }
 
 func TestTaskTokenRoundTrip(t *testing.T) {
+	store := &SQSJobStore{
+		cfg: SQSJobStoreConfig{
+			TokenSigningSecret: []byte("test-round-trip-secret"),
+		},
+	}
+
 	// Test that encoding and decoding are inverses
 	const iterations = 100
 	for i := 0; i < iterations; i++ {
@@ -166,8 +226,8 @@ func TestTaskTokenRoundTrip(t *testing.T) {
 		queue := "queue-" + string(rune(i%5))
 		handle := "handle-" + string(rune(i%10))
 
-		encoded := encodeTaskToken(jobID, queue, handle)
-		decoded, err := decodeTaskToken(encoded)
+		encoded := store.encodeTaskToken(jobID, queue, handle)
+		decoded, err := store.decodeTaskToken(encoded)
 		require.NoError(t, err)
 		require.Equal(t, jobID, decoded.JobID)
 		require.Equal(t, queue, decoded.Queue)
@@ -176,6 +236,12 @@ func TestTaskTokenRoundTrip(t *testing.T) {
 }
 
 func TestDecodeTaskTokenErrorCases(t *testing.T) {
+	store := &SQSJobStore{
+		cfg: SQSJobStoreConfig{
+			TokenSigningSecret: []byte("test-error-cases-secret"),
+		},
+	}
+
 	tests := []struct {
 		name  string
 		token string
@@ -190,17 +256,13 @@ func TestDecodeTaskTokenErrorCases(t *testing.T) {
 		},
 		{
 			name:  "wrong number of parts",
-			token: encodeTaskToken("job1", "queue1", "handle1"), // valid to get structure, then manually test wrong format
+			token: "aGFuZGxlMXxoYW5kbGUx", // base64("handle1|handle1") - only 2 parts
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.name == "wrong number of parts" {
-				// Create a token with wrong format
-				tt.token = "aGFuZGxlMXxoYW5kbGUx" // "handle1|handle1" in base64
-			}
-			_, err := decodeTaskToken(tt.token)
+			_, err := store.decodeTaskToken(tt.token)
 			require.Error(t, err)
 		})
 	}

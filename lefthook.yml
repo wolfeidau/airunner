@@ -4,6 +4,6 @@ pre-commit:
   parallel: true
   jobs:
     - name: lint
-      run: golangci-lint run
+      run: golangci-lint run --fix
     - name: go mod tidy
       run: go mod tidy -diff

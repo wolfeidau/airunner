@@ -51,6 +51,7 @@ type SQSJobStoreConfig struct {
 	JobsTableName                   string
 	JobEventsTableName              string
 	DefaultVisibilityTimeoutSeconds int32
+	EventsTTLDays                   int32  // Optional: TTL for event retention in days (0 = no TTL)
 	TokenSigningSecret              []byte // Secret key for HMAC signing task tokens (required for security)
 }
 
@@ -666,7 +667,7 @@ func (s *SQSJobStore) ListJobs(ctx context.Context, req *jobv1.ListJobsRequest) 
 	}, nil
 }
 
-// PublishEvents publishes events for a job (Phase 2)
+// PublishEvents publishes events for a job
 func (s *SQSJobStore) PublishEvents(ctx context.Context, taskToken string, events []*jobv1.JobEvent) error {
 	tt, err := s.decodeTaskToken(taskToken)
 	if err != nil {
@@ -689,8 +690,11 @@ func (s *SQSJobStore) PublishEvents(ctx context.Context, taskToken string, event
 		}
 	}
 
-	// TODO: Phase 2 - BatchWriteItem events to JobEvents table
-	_ = events
+	// Write events to DynamoDB in batches
+	if err := s.batchWriteEvents(ctx, tt.JobID, events); err != nil {
+		// Log error but continue with local fanout
+		log.Warn().Err(err).Str("job_id", tt.JobID).Int("event_count", len(events)).Msg("Failed to persist events to DynamoDB")
+	}
 
 	// Local fanout to active streams
 	s.mu.RLock()
@@ -702,7 +706,7 @@ func (s *SQSJobStore) PublishEvents(ctx context.Context, taskToken string, event
 	return nil
 }
 
-// StreamEvents creates a stream of events for a job (Phase 2)
+// StreamEvents creates a stream of events for a job
 func (s *SQSJobStore) StreamEvents(ctx context.Context, jobId string, fromSequence int64, fromTimestamp int64, eventFilter []jobv1.EventType) (<-chan *jobv1.JobEvent, error) {
 	// Verify job exists
 	job, err := s.getJobByID(ctx, jobId)
@@ -713,10 +717,11 @@ func (s *SQSJobStore) StreamEvents(ctx context.Context, jobId string, fromSequen
 		return nil, fmt.Errorf("%w: %s", ErrJobNotFound, jobId)
 	}
 
-	// TODO: Phase 2 - Query historical events from JobEvents table
-	_ = fromSequence
-	_ = fromTimestamp
-	_ = eventFilter
+	// Create event filter map for efficient lookup
+	filterMap := make(map[jobv1.EventType]bool)
+	for _, eventType := range eventFilter {
+		filterMap[eventType] = true
+	}
 
 	// Create channel for streaming
 	eventChan := make(chan *jobv1.JobEvent, eventChannelBufferSize)
@@ -726,7 +731,7 @@ func (s *SQSJobStore) StreamEvents(ctx context.Context, jobId string, fromSequen
 	s.eventStreams[jobId] = append(s.eventStreams[jobId], eventChan)
 	s.mu.Unlock()
 
-	// Spawn goroutine to manage cleanup
+	// Spawn goroutine to handle historical replay and real-time streaming
 	go func() {
 		defer func() {
 			s.mu.Lock()
@@ -741,7 +746,12 @@ func (s *SQSJobStore) StreamEvents(ctx context.Context, jobId string, fromSequen
 			close(eventChan)
 		}()
 
-		// Wait for context cancellation
+		// Query and send historical events
+		if err := s.replayHistoricalEvents(ctx, jobId, fromSequence, fromTimestamp, filterMap, eventChan); err != nil {
+			log.Warn().Err(err).Str("job_id", jobId).Msg("Failed to replay historical events")
+		}
+
+		// Wait for context cancellation (real-time events arrive via fanoutEvent)
 		<-ctx.Done()
 	}()
 
@@ -764,6 +774,200 @@ func (s *SQSJobStore) fanoutEvent(jobId string, event *jobv1.JobEvent) {
 }
 
 // Helper methods
+
+// replayHistoricalEvents queries historical events from DynamoDB and sends them to the channel
+// Events are automatically sorted by sequence (sort key) in DynamoDB
+func (s *SQSJobStore) replayHistoricalEvents(ctx context.Context, jobID string, fromSequence int64, fromTimestamp int64, filterMap map[jobv1.EventType]bool, eventChan chan *jobv1.JobEvent) error {
+	// Build query with job_id and optional sequence range
+	keyCond := expression.Key("job_id").Equal(expression.Value(jobID))
+
+	// Add sequence filter if specified
+	if fromSequence > 0 {
+		keyCond = keyCond.And(expression.Key("sequence").GreaterThanEqual(expression.Value(fromSequence)))
+	}
+
+	expr, err := expression.NewBuilder().WithKeyCondition(keyCond).Build()
+	if err != nil {
+		return fmt.Errorf("failed to build query expression: %w", err)
+	}
+
+	queryInput := &dynamodb.QueryInput{
+		TableName:                 aws.String(s.cfg.JobEventsTableName),
+		KeyConditionExpression:    expr.KeyCondition(),
+		ExpressionAttributeNames:  expr.Names(),
+		ExpressionAttributeValues: expr.Values(),
+	}
+
+	// Use paginator to handle large result sets
+	paginator := dynamodb.NewQueryPaginator(s.dynamoClient, queryInput)
+
+	for paginator.HasMorePages() {
+		// Check for context cancellation
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return wrapAWSError(err, "failed to query historical events")
+		}
+
+		// Process each event in this page
+		for _, item := range page.Items {
+			event, err := s.unmarshalEventItem(item)
+			if err != nil {
+				log.Warn().Err(err).Msg("Failed to unmarshal event, skipping")
+				continue
+			}
+
+			// Apply timestamp filter
+			if fromTimestamp > 0 && event.Timestamp.AsTime().UnixMilli() < fromTimestamp {
+				continue
+			}
+
+			// Apply event type filter
+			if len(filterMap) > 0 && !filterMap[event.EventType] {
+				continue
+			}
+
+			// Send event to channel (non-blocking)
+			select {
+			case eventChan <- event:
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+				log.Warn().Str("job_id", jobID).Int64("sequence", event.Sequence).Msg("Event channel full, dropping historical event")
+			}
+		}
+	}
+
+	log.Debug().Str("job_id", jobID).Msg("Finished replaying historical events")
+	return nil
+}
+
+// unmarshalEventItem unmarshals a DynamoDB item to a JobEvent
+func (s *SQSJobStore) unmarshalEventItem(item map[string]types.AttributeValue) (*jobv1.JobEvent, error) {
+	// Extract event_payload binary data
+	payloadAttr, ok := item["event_payload"].(*types.AttributeValueMemberB)
+	if !ok {
+		return nil, fmt.Errorf("event_payload not found or wrong type")
+	}
+
+	// Unmarshal protobuf binary to JobEvent
+	event := &jobv1.JobEvent{}
+	if err := util.UnmarshalProto(payloadAttr.Value, event); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal event: %w", err)
+	}
+
+	return event, nil
+}
+
+// batchWriteEvents writes events to DynamoDB JobEvents table in batches
+// Handles chunking (max 25 items per BatchWriteItem) and partial failure retries
+func (s *SQSJobStore) batchWriteEvents(ctx context.Context, jobID string, events []*jobv1.JobEvent) error {
+	const maxBatchSize = 25 // DynamoDB BatchWriteItem limit
+
+	// Calculate TTL if configured
+	var ttl *int64
+	if s.cfg.EventsTTLDays > 0 {
+		ttlSeconds := time.Now().Add(time.Duration(s.cfg.EventsTTLDays) * 24 * time.Hour).Unix()
+		ttl = &ttlSeconds
+	}
+
+	// Process events in chunks of 25
+	for i := 0; i < len(events); i += maxBatchSize {
+		end := i + maxBatchSize
+		if end > len(events) {
+			end = len(events)
+		}
+		batch := events[i:end]
+
+		// Build write requests for this batch
+		var writeRequests []types.WriteRequest
+		for _, event := range batch {
+			// Marshal entire JobEvent to protobuf binary
+			eventBytes, err := util.MarshalProto(event)
+			if err != nil {
+				log.Error().Err(err).Int64("sequence", event.Sequence).Msg("Failed to marshal event")
+				continue
+			}
+
+			// Build DynamoDB item
+			item := map[string]types.AttributeValue{
+				"job_id":        &types.AttributeValueMemberS{Value: jobID},
+				"sequence":      &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", event.Sequence)},
+				"timestamp":     &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", event.Timestamp.AsTime().UnixMilli())},
+				"event_type":    &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", event.EventType)},
+				"event_payload": &types.AttributeValueMemberB{Value: eventBytes},
+			}
+
+			// Add TTL if configured
+			if ttl != nil {
+				item["ttl"] = &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", *ttl)}
+			}
+
+			writeRequests = append(writeRequests, types.WriteRequest{
+				PutRequest: &types.PutRequest{Item: item},
+			})
+		}
+
+		if len(writeRequests) == 0 {
+			continue
+		}
+
+		// Write batch to DynamoDB with retry for unprocessed items
+		if err := s.batchWriteWithRetry(ctx, writeRequests); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// batchWriteWithRetry writes items to DynamoDB with exponential backoff retry for unprocessed items
+func (s *SQSJobStore) batchWriteWithRetry(ctx context.Context, writeRequests []types.WriteRequest) error {
+	const maxRetries = 3
+	backoff := 100 * time.Millisecond
+
+	requestItems := map[string][]types.WriteRequest{
+		s.cfg.JobEventsTableName: writeRequests,
+	}
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if len(requestItems[s.cfg.JobEventsTableName]) == 0 {
+			return nil
+		}
+
+		output, err := s.dynamoClient.BatchWriteItem(ctx, &dynamodb.BatchWriteItemInput{
+			RequestItems: requestItems,
+		})
+		if err != nil {
+			log.Error().Err(err).Int("attempt", attempt+1).Msg("BatchWriteItem failed")
+			return wrapAWSError(err, "failed to batch write events")
+		}
+
+		// Check for unprocessed items
+		unprocessed := output.UnprocessedItems[s.cfg.JobEventsTableName]
+		if len(unprocessed) == 0 {
+			log.Debug().Int("items_written", len(writeRequests)).Msg("Successfully wrote event batch")
+			return nil
+		}
+
+		// Retry unprocessed items with exponential backoff
+		log.Warn().Int("unprocessed_count", len(unprocessed)).Int("attempt", attempt+1).Msg("Retrying unprocessed items")
+		requestItems[s.cfg.JobEventsTableName] = unprocessed
+
+		if attempt < maxRetries-1 {
+			time.Sleep(backoff)
+			backoff *= 2
+		}
+	}
+
+	return fmt.Errorf("failed to write all events after %d retries, %d items unprocessed",
+		maxRetries, len(requestItems[s.cfg.JobEventsTableName]))
+}
 
 // getJobByID retrieves a job from DynamoDB by job ID
 func (s *SQSJobStore) getJobByID(ctx context.Context, jobID string) (*jobv1.Job, error) {

@@ -453,3 +453,237 @@ func TestIntegration_QueueNotConfigured(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "queue not configured")
 }
+
+// createTestEventsTable creates the JobEvents table for testing
+func createTestEventsTable(t *testing.T, ctx context.Context, client *dynamodb.Client, tableName string) {
+	// Try to delete the table first
+	_, _ = client.DeleteTable(ctx, &dynamodb.DeleteTableInput{TableName: aws.String(tableName)})
+
+	deleteWaiter := dynamodb.NewTableNotExistsWaiter(client)
+	_ = deleteWaiter.Wait(ctx, &dynamodb.DescribeTableInput{TableName: aws.String(tableName)}, 10*time.Second)
+
+	input := &dynamodb.CreateTableInput{
+		TableName: aws.String(tableName),
+		KeySchema: []types.KeySchemaElement{
+			{AttributeName: aws.String("job_id"), KeyType: types.KeyTypeHash},
+			{AttributeName: aws.String("sequence"), KeyType: types.KeyTypeRange},
+		},
+		AttributeDefinitions: []types.AttributeDefinition{
+			{AttributeName: aws.String("job_id"), AttributeType: types.ScalarAttributeTypeS},
+			{AttributeName: aws.String("sequence"), AttributeType: types.ScalarAttributeTypeN},
+		},
+		BillingMode: types.BillingModeProvisioned,
+		ProvisionedThroughput: &types.ProvisionedThroughput{
+			ReadCapacityUnits:  aws.Int64(5),
+			WriteCapacityUnits: aws.Int64(5),
+		},
+	}
+
+	_, err := client.CreateTable(ctx, input)
+	require.NoError(t, err)
+
+	createWaiter := dynamodb.NewTableExistsWaiter(client)
+	err = createWaiter.Wait(ctx, &dynamodb.DescribeTableInput{TableName: aws.String(tableName)}, 30*time.Second)
+	require.NoError(t, err)
+}
+
+// TestIntegration_EventPersistence tests publishing and querying events
+func TestIntegration_EventPersistence(t *testing.T) {
+	ctx := context.Background()
+
+	sqsClient := getSQSClient(t, ctx)
+	dynamoClient := getDynamoDBClientV2(t, ctx)
+
+	jobsTableName := "test_events_jobs_" + time.Now().Format("20060102150405")
+	eventsTableName := "test_events_" + time.Now().Format("20060102150405")
+
+	createTestTableWithGSIs(t, ctx, dynamoClient, jobsTableName)
+	defer deleteTestTable(t, ctx, dynamoClient, jobsTableName)
+
+	createTestEventsTable(t, ctx, dynamoClient, eventsTableName)
+	defer deleteTestTable(t, ctx, dynamoClient, eventsTableName)
+
+	queueURL := getQueueURL(t, ctx, sqsClient, testDefaultQueueName)
+	purgeQueue(t, ctx, sqsClient, queueURL)
+
+	store := NewSQSJobStore(sqsClient, dynamoClient, SQSJobStoreConfig{
+		JobsTableName:      jobsTableName,
+		JobEventsTableName: eventsTableName,
+		EventsTTLDays:      7,
+		QueueURLs: map[string]string{
+			"default": queueURL,
+		},
+		TokenSigningSecret: testTokenSigningSecret,
+	})
+
+	// Enqueue a job
+	enqueueResp, err := store.EnqueueJob(ctx, &jobv1.EnqueueJobRequest{
+		Queue:     "default",
+		RequestId: "test-event-persistence",
+		JobParams: &jobv1.JobParams{Repository: "github.com/test/repo"},
+	})
+	require.NoError(t, err)
+
+	// Dequeue the job to get a task token
+	jobs, err := store.DequeueJobs(ctx, "default", 1, 300)
+	require.NoError(t, err)
+	require.Len(t, jobs, 1)
+
+	taskToken := jobs[0].TaskToken
+
+	// Publish events with client-provided sequences
+	events := []*jobv1.JobEvent{
+		{
+			Sequence:  1,
+			EventType: jobv1.EventType_EVENT_TYPE_PROCESS_START,
+			EventData: &jobv1.JobEvent_ProcessStart{
+				ProcessStart: &jobv1.ProcessStartEvent{Pid: 12345},
+			},
+		},
+		{
+			Sequence:  2,
+			EventType: jobv1.EventType_EVENT_TYPE_OUTPUT,
+			EventData: &jobv1.JobEvent_Output{
+				Output: &jobv1.OutputEvent{Output: []byte("test output")},
+			},
+		},
+		{
+			Sequence:  3,
+			EventType: jobv1.EventType_EVENT_TYPE_PROCESS_END,
+			EventData: &jobv1.JobEvent_ProcessEnd{
+				ProcessEnd: &jobv1.ProcessEndEvent{Pid: 12345, ExitCode: 0},
+			},
+		},
+	}
+
+	err = store.PublishEvents(ctx, taskToken, events)
+	require.NoError(t, err)
+
+	// Give DynamoDB time to persist
+	time.Sleep(500 * time.Millisecond)
+
+	// Stream events and verify
+	eventChan, err := store.StreamEvents(ctx, enqueueResp.JobId, 0, 0, nil)
+	require.NoError(t, err)
+
+	receivedEvents := []*jobv1.JobEvent{}
+	timeout := time.After(2 * time.Second)
+
+	for i := 0; i < len(events); i++ {
+		select {
+		case event := <-eventChan:
+			receivedEvents = append(receivedEvents, event)
+		case <-timeout:
+			t.Fatal("Timeout waiting for events")
+		}
+	}
+
+	// Verify events match
+	require.Len(t, receivedEvents, len(events))
+	for i, event := range receivedEvents {
+		require.Equal(t, events[i].Sequence, event.Sequence)
+		require.Equal(t, events[i].EventType, event.EventType)
+	}
+}
+
+// TestIntegration_EventFiltering tests event filtering by sequence, timestamp, and type
+func TestIntegration_EventFiltering(t *testing.T) {
+	ctx := context.Background()
+
+	sqsClient := getSQSClient(t, ctx)
+	dynamoClient := getDynamoDBClientV2(t, ctx)
+
+	jobsTableName := "test_filter_jobs_" + time.Now().Format("20060102150405")
+	eventsTableName := "test_filter_events_" + time.Now().Format("20060102150405")
+
+	createTestTableWithGSIs(t, ctx, dynamoClient, jobsTableName)
+	defer deleteTestTable(t, ctx, dynamoClient, jobsTableName)
+
+	createTestEventsTable(t, ctx, dynamoClient, eventsTableName)
+	defer deleteTestTable(t, ctx, dynamoClient, eventsTableName)
+
+	queueURL := getQueueURL(t, ctx, sqsClient, testDefaultQueueName)
+	purgeQueue(t, ctx, sqsClient, queueURL)
+
+	store := NewSQSJobStore(sqsClient, dynamoClient, SQSJobStoreConfig{
+		JobsTableName:      jobsTableName,
+		JobEventsTableName: eventsTableName,
+		EventsTTLDays:      0, // No TTL for this test
+		QueueURLs: map[string]string{
+			"default": queueURL,
+		},
+		TokenSigningSecret: testTokenSigningSecret,
+	})
+
+	// Enqueue and dequeue a job
+	enqueueResp, err := store.EnqueueJob(ctx, &jobv1.EnqueueJobRequest{
+		Queue:     "default",
+		RequestId: "test-event-filtering",
+		JobParams: &jobv1.JobParams{Repository: "github.com/test/repo"},
+	})
+	require.NoError(t, err)
+
+	jobs, err := store.DequeueJobs(ctx, "default", 1, 300)
+	require.NoError(t, err)
+	require.Len(t, jobs, 1)
+
+	// Publish events
+	events := []*jobv1.JobEvent{
+		{Sequence: 1, EventType: jobv1.EventType_EVENT_TYPE_PROCESS_START},
+		{Sequence: 2, EventType: jobv1.EventType_EVENT_TYPE_OUTPUT},
+		{Sequence: 3, EventType: jobv1.EventType_EVENT_TYPE_OUTPUT},
+		{Sequence: 4, EventType: jobv1.EventType_EVENT_TYPE_HEARTBEAT},
+		{Sequence: 5, EventType: jobv1.EventType_EVENT_TYPE_PROCESS_END},
+	}
+
+	err = store.PublishEvents(ctx, jobs[0].TaskToken, events)
+	require.NoError(t, err)
+
+	time.Sleep(500 * time.Millisecond)
+
+	// Test 1: Filter by sequence (from sequence 3)
+	eventChan, err := store.StreamEvents(ctx, enqueueResp.JobId, 3, 0, nil)
+	require.NoError(t, err)
+
+	receivedCount := 0
+	timeout := time.After(1 * time.Second)
+	for {
+		select {
+		case event := <-eventChan:
+			require.GreaterOrEqual(t, event.Sequence, int64(3))
+			receivedCount++
+			if receivedCount == 3 { // Should get sequences 3, 4, 5
+				goto test2
+			}
+		case <-timeout:
+			goto test2
+		}
+	}
+
+test2:
+	require.Equal(t, 3, receivedCount, "Should receive 3 events from sequence 3")
+
+	// Test 2: Filter by event type (only OUTPUT events)
+	eventChan, err = store.StreamEvents(ctx, enqueueResp.JobId, 0, 0, []jobv1.EventType{
+		jobv1.EventType_EVENT_TYPE_OUTPUT,
+	})
+	require.NoError(t, err)
+
+	receivedCount = 0
+	timeout = time.After(1 * time.Second)
+	for {
+		select {
+		case event := <-eventChan:
+			require.Equal(t, jobv1.EventType_EVENT_TYPE_OUTPUT, event.EventType)
+			receivedCount++
+			if receivedCount == 2 { // Should get 2 OUTPUT events
+				goto done
+			}
+		case <-timeout:
+			goto done
+		}
+	}
+
+done:
+	require.Equal(t, 2, receivedCount, "Should receive 2 OUTPUT events")
+}

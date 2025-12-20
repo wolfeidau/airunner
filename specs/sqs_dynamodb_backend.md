@@ -8,9 +8,9 @@ This document outlines the implementation plan for adding production-ready AWS b
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                           SQSJobStore                                    │
+│                           SQSJobStore                                   │
 ├─────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
+│                                                                         │
 │   ┌──────────────┐    ┌──────────────┐    ┌──────────────┐              │
 │   │     SQS      │    │   DynamoDB   │    │   DynamoDB   │              │
 │   │   Queues     │    │  Jobs Table  │    │ Events Table │              │
@@ -19,7 +19,7 @@ This document outlines the implementation plan for adding production-ready AWS b
 │   │ • Visibility │    │ • Metadata   │    │ • Streaming  │              │
 │   │ • Delete     │    │ • Idempotency│    │ • Replay     │              │
 │   └──────────────┘    └──────────────┘    └──────────────┘              │
-│                                                                          │
+│                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -249,8 +249,28 @@ func (s *SQSJobStore) DequeueJobs(ctx context.Context, queue string, maxJobs int
 
 **Error Handling:**
 - Return error if job doesn't exist
-- Log warnings for BatchWriteItem failures but continue with local fanout
-- Retry failed items with exponential backoff
+- Return error if event marshaling fails (fail-fast on data corruption)
+- **Persistence failures**: Return error if DynamoDB BatchWriteItem fails after retries
+  - Retries unprocessed items with exponential backoff (up to 3 attempts)
+  - Detects retryable AWS errors (throttling, service unavailable)
+  - Returns error to caller on persistent failure
+- **Local fanout**: Always attempted, even if persistence fails (availability over consistency for real-time streaming)
+- **Metrics**: Records publish attempts, errors, duration, and persistence success/failure
+
+**Event Criticality (Worker Perspective):**
+
+Workers classify events by criticality when publishing:
+- **Critical Events** (ProcessStart, ProcessEnd): Worker fails job if publishing fails
+  - Rationale: These structural events are essential for job lifecycle tracking
+  - Impact: Communication failure prevents job completion
+- **Best-Effort Events** (OutputData): Worker logs warning and continues if publishing fails
+  - Rationale: Losing individual output lines shouldn't terminate job execution
+  - Impact: Partial output delivered to client
+- **Error Events** (ProcessError): Best-effort when published during error handling
+  - Rationale: Already in failure state, don't mask original error
+  - Impact: Original error always returned to caller
+
+This two-level error handling strategy (server persistence + worker criticality) balances reliability with availability.
 
 #### StreamEvents
 
@@ -320,11 +340,90 @@ This single-worker guarantee is critical for the event sequencing design, as it 
 
 ### Monitoring
 
-Emit metrics for:
-- SQS operations: SendMessage, ReceiveMessage, DeleteMessage latency/errors
-- DynamoDB: RCU/WCU usage, throttling events
-- Job lifecycle: enqueue rate, completion rate, failure rate
-- Event streaming: active streams, events/second
+The system emits comprehensive OpenTelemetry metrics and traces for observability. Telemetry is configured via environment variables and exports to OTLP-compatible backends (Honeycomb, Datadog, Grafana Cloud, etc.).
+
+#### OpenTelemetry Configuration
+
+Set the following environment variables:
+
+```bash
+# OTLP endpoint (e.g., Honeycomb, Grafana Cloud)
+OTEL_EXPORTER_OTLP_ENDPOINT=https://api.honeycomb.io
+
+# Authentication headers
+OTEL_EXPORTER_OTLP_HEADERS=x-honeycomb-team=YOUR_API_KEY
+
+# Service identification (optional, overrides default)
+OTEL_SERVICE_NAME=airunner-server
+
+# Additional resource attributes (optional)
+OTEL_RESOURCE_ATTRIBUTES=deployment.environment=production,service.version=1.0.0
+```
+
+#### Metrics Reference
+
+**Event Metrics:**
+- `airunner.events.publish.total` (counter): Total event publish attempts
+  - Attributes: `job_id`, `success` (bool)
+- `airunner.events.publish.errors.total` (counter): Event publish errors
+  - Attributes: `job_id`, `error_type`
+- `airunner.events.publish.duration` (histogram): Event publish duration in milliseconds
+  - Attributes: `job_id`
+- `airunner.events.persisted.total` (counter): Events successfully persisted to DynamoDB
+  - Attributes: `job_id`
+- `airunner.events.dropped.total` (counter): Events dropped due to errors or overflow
+  - Attributes: `job_id`, `reason`
+
+**Stream Metrics:**
+- `airunner.streams.active` (up-down counter): Number of active event streams
+- `airunner.streams.historical_replay.duration` (histogram): Historical replay duration in milliseconds
+- `airunner.streams.historical_replay.events.total` (counter): Historical events replayed
+
+**Store Operation Metrics:**
+- `airunner.jobs.enqueued.total` (counter): Jobs enqueued
+  - Attributes: `queue`
+- `airunner.jobs.dequeued.total` (counter): Jobs dequeued
+  - Attributes: `queue`
+- `airunner.jobs.completed.total` (counter): Jobs completed
+  - Attributes: `queue`, `state` (COMPLETED/FAILED)
+- `airunner.jobs.visibility_updates.total` (counter): Visibility timeout updates
+
+**DynamoDB Metrics:**
+- `airunner.dynamodb.operations.total` (counter): DynamoDB operations
+  - Attributes: `operation` (PutItem, Query, BatchWriteItem, etc.)
+- `airunner.dynamodb.throttles.total` (counter): DynamoDB throttling events
+  - Attributes: `operation`
+- `airunner.dynamodb.batch_retries.total` (counter): Batch write retries
+
+**Channel Metrics:**
+- `airunner.channels.overflow.total` (counter): Channel overflow events (data loss indicator)
+  - Attributes: `job_id`
+
+#### Traces
+
+Distributed tracing is enabled for all gRPC operations using OpenTelemetry's W3C TraceContext propagation. Traces include:
+- Job lifecycle spans (enqueue → dequeue → execute → complete)
+- DynamoDB operations with request/response sizes
+- SQS operations with queue names and message counts
+- Event publishing with batch sizes
+
+#### Alerting Recommendations
+
+Monitor these metrics for operational health:
+
+1. **Event Loss**: Alert if `airunner.events.dropped.total` or `airunner.channels.overflow.total` increases
+2. **Persistence Failures**: Alert if `airunner.events.publish.errors.total` with `error_type=persistence_failed` is sustained
+3. **DynamoDB Throttling**: Alert if `airunner.dynamodb.throttles.total` rate exceeds acceptable threshold
+4. **Channel Overflow**: Alert on any `airunner.channels.overflow.total` events (indicates slow consumers)
+5. **Job Completion Rate**: Alert if `airunner.jobs.completed.total{state=FAILED}` ratio increases
+
+#### Implementation
+
+Telemetry is implemented in `internal/telemetry/`:
+- `telemetry.go`: OTLP exporter initialization for traces and metrics
+- `metrics.go`: Metric instrument definitions
+
+The server initializes telemetry on startup with graceful degradation if the OTLP endpoint is unreachable.
 
 ## Implementation Phases
 
@@ -339,12 +438,14 @@ Emit metrics for:
 - [x] Implement `ListJobs` via GSI1
 - [x] Add task token encoding/decoding utilities
 
-### Phase 2: Event Streaming (1-2 days)
+### Phase 2: Event Streaming (Completed December 20, 2025)
 
-- [ ] Implement `PublishEvents` with DynamoDB writes
-- [ ] Implement `StreamEvents` with historical replay
-- [ ] Implement local `fanoutEvent` for real-time streaming
-- [ ] Add TTL support for event retention
+- [x] Implement `PublishEvents` with DynamoDB writes
+- [x] Implement `StreamEvents` with historical replay
+- [x] Implement local `fanoutEvent` for real-time streaming
+- [x] Add TTL support for event retention
+- [x] Add comprehensive integration tests
+- [x] Add protobuf marshaling utilities
 
 ### Phase 3: Infrastructure & Testing (1-2 days)
 
@@ -354,11 +455,13 @@ Emit metrics for:
 - [ ] Update orchestrator cmd to use SQSJobStore
 - [ ] Document deployment and configuration
 
-### Phase 4: Production Hardening (1-2 days)
+### Phase 4: Production Hardening
 
-- [ ] Add structured logging with zerolog
-- [ ] Add metrics emission (CloudWatch/OpenTelemetry)
-- [ ] Implement retry policies with exponential backoff
+- [x] Add structured logging with zerolog
+- [x] Add metrics emission (OpenTelemetry)
+- [x] Add distributed tracing (OpenTelemetry)
+- [x] Implement retry policies with exponential backoff
+- [x] Add retryable AWS error detection
 - [ ] Add health checks for AWS connectivity
 - [ ] Load testing and capacity planning
 
@@ -390,6 +493,8 @@ Replace page/page_size with cursor-based pagination:
 
 ## Configuration Example
 
+### Application Configuration (YAML)
+
 ```yaml
 store:
   type: sqs
@@ -406,8 +511,44 @@ store:
     events_ttl_days: 30  # Event retention period (0 = no TTL)
 ```
 
+### Environment Variables
+
+**AWS Configuration:**
+```bash
+AWS_REGION=us-west-2
+AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
+AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+```
+
+**OpenTelemetry Configuration:**
+```bash
+# OTLP endpoint (required for telemetry)
+OTEL_EXPORTER_OTLP_ENDPOINT=https://api.honeycomb.io
+
+# Authentication (varies by provider)
+OTEL_EXPORTER_OTLP_HEADERS=x-honeycomb-team=YOUR_API_KEY
+
+# Service identification (optional)
+OTEL_SERVICE_NAME=airunner-server
+OTEL_RESOURCE_ATTRIBUTES=deployment.environment=production,service.version=1.0.0
+```
+
+**Note**: Telemetry is optional. If OTLP endpoint is not configured, the server will start without metrics/tracing.
+
 ## References
 
+### Specifications
 - [specs/job_api.md](job_api.md) - Original job API design
+- [PHASE2_IMPLEMENTATION_SUMMARY.md](../PHASE2_IMPLEMENTATION_SUMMARY.md) - Phase 2 implementation details
+
+### Core Implementation
 - [internal/store/store.go](../internal/store/store.go) - JobStore interface and MemoryJobStore
-- [api/job/v1/job.proto](../api/job/v1/job.proto) - Protobuf definitions
+- [internal/store/sqs_store.go](../internal/store/sqs_store.go) - SQS/DynamoDB implementation
+- [internal/worker/worker.go](../internal/worker/worker.go) - Worker job executor with event publishing
+
+### Telemetry & Observability
+- [internal/telemetry/telemetry.go](../internal/telemetry/telemetry.go) - OTLP exporter initialization
+- [internal/telemetry/metrics.go](../internal/telemetry/metrics.go) - Metric instrument definitions
+
+### Protocol Definitions
+- [api/job/v1/job.proto](../api/job/v1/job.proto) - Protobuf definitions for Job API

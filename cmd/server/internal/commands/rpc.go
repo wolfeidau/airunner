@@ -17,6 +17,7 @@ import (
 	"github.com/wolfeidau/airunner/internal/logger"
 	"github.com/wolfeidau/airunner/internal/server"
 	"github.com/wolfeidau/airunner/internal/store"
+	"github.com/wolfeidau/airunner/internal/telemetry"
 )
 
 type RPCServerCmd struct {
@@ -33,6 +34,20 @@ func (s *RPCServerCmd) Run(ctx context.Context, globals *Globals) error {
 
 	log.Info().Str("version", globals.Version).Msg("Starting RPC server")
 	log.Info().Str("url", fmt.Sprintf("https://%s", s.Listen)).Msg("Listening for RPC connections")
+
+	// Initialize OpenTelemetry (metrics and traces exported to Honeycomb via env vars)
+	shutdown, err := telemetry.InitTelemetry(ctx, "airunner-server", globals.Version)
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to initialize telemetry, continuing without metrics")
+		shutdown = func(ctx context.Context) error { return nil }
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err = shutdown(shutdownCtx); err != nil {
+			log.Error().Err(err).Msg("Failed to shutdown telemetry")
+		}
+	}()
 
 	// setup OTEL
 	otelInterceptor, err := otelconnect.NewInterceptor()

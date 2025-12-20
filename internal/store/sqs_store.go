@@ -23,7 +23,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
+	"github.com/wolfeidau/airunner/internal/telemetry"
 	"github.com/wolfeidau/airunner/internal/util"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -112,6 +115,42 @@ func wrapAWSError(err error, msg string) error {
 
 	// Wrap other AWS errors
 	return fmt.Errorf("%s: %w", msg, err)
+}
+
+// isRetryableAWSError checks if an AWS error should be retried with exponential backoff
+// Returns true for transient errors like throttling and service unavailability
+func isRetryableAWSError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// Check for typed throttling error
+	var provisionedErr *types.ProvisionedThroughputExceededException
+	if errors.As(err, &provisionedErr) {
+		return true
+	}
+
+	errMsg := err.Error()
+
+	// Retryable error patterns
+	retryable := []string{
+		"ThrottlingException",
+		"ProvisionedThroughputExceededException",
+		"RequestLimitExceeded",
+		"TooManyRequestsException",
+		"ServiceUnavailable",
+		"InternalServerError",
+		"InternalError",
+		"Throttling",
+	}
+
+	for _, pattern := range retryable {
+		if strings.Contains(errMsg, pattern) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // SQSJobStore implements JobStore using AWS SQS and DynamoDB
@@ -305,6 +344,10 @@ func (s *SQSJobStore) EnqueueJob(ctx context.Context, req *jobv1.EnqueueJobReque
 	}
 
 	log.Info().Str("job_id", jobID).Str("queue", req.Queue).Msg("Message sent to SQS queue")
+
+	// Record job enqueued metric
+	telemetry.GetMetrics().JobsEnqueuedTotal.Add(ctx, 1,
+		metric.WithAttributes(attribute.String("queue", req.Queue)))
 
 	return &jobv1.EnqueueJobResponse{
 		JobId:     jobID,
@@ -669,6 +712,9 @@ func (s *SQSJobStore) ListJobs(ctx context.Context, req *jobv1.ListJobsRequest) 
 
 // PublishEvents publishes events for a job
 func (s *SQSJobStore) PublishEvents(ctx context.Context, taskToken string, events []*jobv1.JobEvent) error {
+	start := time.Now()
+	metrics := telemetry.GetMetrics()
+
 	tt, err := s.decodeTaskToken(taskToken)
 	if err != nil {
 		return err
@@ -691,11 +737,41 @@ func (s *SQSJobStore) PublishEvents(ctx context.Context, taskToken string, event
 	}
 
 	// Write events to DynamoDB in batches
+	var publishErr error
 	if s.cfg.JobEventsTableName == "" {
 		log.Debug().Str("job_id", tt.JobID).Msg("JobEventsTableName not configured, skipping event persistence")
 	} else if err := s.batchWriteEvents(ctx, tt.JobID, events); err != nil {
-		// Log error but continue with local fanout
-		log.Warn().Err(err).Str("job_id", tt.JobID).Int("event_count", len(events)).Msg("Failed to persist events to DynamoDB")
+		// CRITICAL: Event persistence failed - return error to caller
+		log.Error().Err(err).Str("job_id", tt.JobID).Int("event_count", len(events)).Msg("Failed to persist events to DynamoDB")
+		publishErr = fmt.Errorf("failed to persist events: %w", err)
+
+		// Record error metrics
+		metrics.EventPublishErrorsTotal.Add(ctx, int64(len(events)),
+			metric.WithAttributes(
+				attribute.String("job_id", tt.JobID),
+				attribute.String("error_type", "persistence_failed"),
+			))
+	} else {
+		// Record successful persistence
+		metrics.EventsPersistedTotal.Add(ctx, int64(len(events)),
+			metric.WithAttributes(attribute.String("job_id", tt.JobID)))
+	}
+
+	// Record publish duration
+	duration := time.Since(start).Milliseconds()
+	metrics.EventPublishDuration.Record(ctx, float64(duration),
+		metric.WithAttributes(attribute.String("job_id", tt.JobID)))
+
+	// Record total publish attempts
+	success := publishErr == nil
+	metrics.EventPublishTotal.Add(ctx, int64(len(events)),
+		metric.WithAttributes(
+			attribute.String("job_id", tt.JobID),
+			attribute.Bool("success", success),
+		))
+
+	if publishErr != nil {
+		return publishErr
 	}
 
 	// Local fanout to active streams
@@ -757,7 +833,9 @@ func (s *SQSJobStore) StreamEvents(ctx context.Context, jobId string, fromSequen
 		if s.cfg.JobEventsTableName == "" {
 			log.Debug().Str("job_id", jobId).Msg("JobEventsTableName not configured, historical replay disabled")
 		} else if err := s.replayHistoricalEvents(ctx, jobId, fromSequence, fromTimestamp, filterMap, eventChan); err != nil {
-			log.Warn().Err(err).Str("job_id", jobId).Msg("Failed to replay historical events")
+			log.Error().Err(err).Str("job_id", jobId).Msg("Failed to replay historical events")
+			// Note: Don't fail the stream - historical replay is best-effort
+			// Client will still receive real-time events
 		}
 
 		// Wait for context cancellation (real-time events arrive via fanoutEvent)
@@ -771,13 +849,23 @@ func (s *SQSJobStore) StreamEvents(ctx context.Context, jobId string, fromSequen
 // Must be called with at least a read lock (RLock) held on s.mu to safely access eventStreams
 // Uses non-blocking sends to prevent slow consumers from blocking event publishing
 func (s *SQSJobStore) fanoutEvent(jobId string, event *jobv1.JobEvent) {
+	metrics := telemetry.GetMetrics()
 	streams := s.eventStreams[jobId]
 	for _, ch := range streams {
 		select {
 		case ch <- event:
 		default:
-			// Channel full, skip this stream
-			log.Warn().Str("job_id", jobId).Msg("Event channel full, dropping event")
+			// Channel full, skip this stream - DATA LOSS
+			log.Error().Str("job_id", jobId).Int64("sequence", event.Sequence).Msg("Event channel full, dropping event")
+
+			// Record channel overflow metric
+			metrics.ChannelOverflowTotal.Add(context.Background(), 1,
+				metric.WithAttributes(attribute.String("job_id", jobId)))
+			metrics.EventsDroppedTotal.Add(context.Background(), 1,
+				metric.WithAttributes(
+					attribute.String("job_id", jobId),
+					attribute.String("reason", "channel_full"),
+				))
 		}
 	}
 }
@@ -900,7 +988,7 @@ func (s *SQSJobStore) batchWriteEvents(ctx context.Context, jobID string, events
 			eventBytes, err := util.MarshalProto(event)
 			if err != nil {
 				log.Error().Err(err).Int64("sequence", event.Sequence).Msg("Failed to marshal event")
-				continue
+				return fmt.Errorf("failed to marshal event seq=%d: %w", event.Sequence, err)
 			}
 
 			// Build DynamoDB item
@@ -954,6 +1042,15 @@ func (s *SQSJobStore) batchWriteWithRetry(ctx context.Context, writeRequests []t
 		})
 		if err != nil {
 			log.Error().Err(err).Int("attempt", attempt+1).Msg("BatchWriteItem failed")
+
+			// Check if error is retryable (throttling, service errors)
+			if isRetryableAWSError(err) && attempt < maxRetries-1 {
+				log.Warn().Err(err).Int("attempt", attempt+1).Msg("Retrying BatchWriteItem due to retryable error")
+				time.Sleep(backoff)
+				backoff *= 2
+				continue
+			}
+
 			return wrapAWSError(err, "failed to batch write events")
 		}
 

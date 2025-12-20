@@ -98,3 +98,16 @@ variable "domain_name" {
   description = "Domain name for HTTPS certificate"
   type        = string
 }
+
+variable "otel_exporter_endpoint" {
+  description = "OpenTelemetry OTLP exporter endpoint (e.g., https://api.honeycomb.io)"
+  type        = string
+  default     = ""
+}
+
+variable "otel_exporter_headers" {
+  description = "OpenTelemetry OTLP exporter headers (e.g., x-honeycomb-team=API_KEY)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}

@@ -10,6 +10,10 @@ terraform {
       source  = "hashicorp/tls"
       version = "~> 4.0"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.6"
+    }
   }
 }
 
@@ -228,9 +232,14 @@ resource "aws_iam_role_policy" "execution" {
           "ssm:GetParameters",
           "ssm:GetParameter"
         ]
-        Resource = [
-          aws_ssm_parameter.jwt_public_key.arn
-        ]
+        Resource = concat(
+          [
+            aws_ssm_parameter.jwt_public_key.arn,
+            aws_ssm_parameter.token_signing_secret.arn
+          ],
+          var.otel_exporter_endpoint != "" ? [aws_ssm_parameter.otel_exporter_endpoint[0].arn] : [],
+          var.otel_exporter_headers != "" ? [aws_ssm_parameter.otel_exporter_headers[0].arn] : []
+        )
       }
     ]
   })

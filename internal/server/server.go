@@ -4,9 +4,7 @@ import (
 	"net/http"
 
 	"connectrpc.com/connect"
-	"github.com/rs/zerolog"
 	"github.com/wolfeidau/airunner/api/gen/proto/go/job/v1/jobv1connect"
-	"github.com/wolfeidau/airunner/internal/logger"
 	"github.com/wolfeidau/airunner/internal/store"
 )
 
@@ -27,7 +25,7 @@ func NewServer(store store.JobStore) *Server {
 }
 
 // Handler returns the HTTP handler for the server
-func (s *Server) Handler(log zerolog.Logger) http.Handler {
+func (s *Server) Handler(otelInterceptor ...connect.Interceptor) http.Handler {
 	mux := http.NewServeMux()
 
 	// Health check endpoint for load balancer
@@ -41,7 +39,7 @@ func (s *Server) Handler(log zerolog.Logger) http.Handler {
 	jobPath, jobHandler := jobv1connect.NewJobServiceHandler(
 		s.jobServer,
 		connect.WithInterceptors(
-			logger.NewConnectRequests(log),
+			otelInterceptor...,
 		),
 	)
 	mux.Handle(jobPath, jobHandler)
@@ -50,7 +48,7 @@ func (s *Server) Handler(log zerolog.Logger) http.Handler {
 	eventsPath, eventsHandler := jobv1connect.NewJobEventsServiceHandler(
 		s.eventServer,
 		connect.WithInterceptors(
-			logger.NewConnectRequests(log),
+			otelInterceptor...,
 		),
 	)
 	mux.Handle(eventsPath, eventsHandler)

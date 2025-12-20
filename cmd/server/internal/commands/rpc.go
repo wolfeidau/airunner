@@ -10,6 +10,7 @@ import (
 
 	"connectrpc.com/authn"
 	connectcors "connectrpc.com/cors"
+	"connectrpc.com/otelconnect"
 	"github.com/rs/cors"
 	"github.com/wolfeidau/airunner/internal/auth"
 	"github.com/wolfeidau/airunner/internal/autossl"
@@ -33,13 +34,19 @@ func (s *RPCServerCmd) Run(ctx context.Context, globals *Globals) error {
 	log.Info().Str("version", globals.Version).Msg("Starting RPC server")
 	log.Info().Str("url", fmt.Sprintf("https://%s", s.Listen)).Msg("Listening for RPC connections")
 
+	// setup OTEL
+	otelInterceptor, err := otelconnect.NewInterceptor()
+	if err != nil {
+		return fmt.Errorf("failed to create OTEL interceptor: %w", err)
+	}
+
 	// Create and start the memory store
 	memStore := store.NewMemoryJobStore()
-	if err := memStore.Start(); err != nil {
+	if err = memStore.Start(); err != nil {
 		return err
 	}
 	defer func() {
-		if err := memStore.Stop(); err != nil {
+		if err = memStore.Stop(); err != nil {
 			log.Error().Err(err).Msg("Failed to stop memory store")
 		}
 	}()
@@ -48,7 +55,7 @@ func (s *RPCServerCmd) Run(ctx context.Context, globals *Globals) error {
 	jobServer := server.NewServer(memStore)
 
 	// Build handler chain: CORS -> Auth -> Connect handlers
-	handler := jobServer.Handler(log)
+	handler := jobServer.Handler(logger.NewConnectRequests(log), otelInterceptor)
 
 	// Add JWT auth middleware unless disabled
 	if !s.NoAuth {

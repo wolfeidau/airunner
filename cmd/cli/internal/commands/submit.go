@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"connectrpc.com/otelconnect"
 	"github.com/google/uuid"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 	"github.com/wolfeidau/airunner/internal/client"
@@ -64,6 +65,11 @@ func (s *SubmitCmd) Run(ctx context.Context, globals *Globals) error {
 
 	fmt.Printf("Submitting job for repository %s to server %s\n", s.Repository, s.Server)
 
+	otelInterceptor, err := otelconnect.NewInterceptor()
+	if err != nil {
+		return fmt.Errorf("failed to create interceptor: %w", err)
+	}
+
 	// Create clients
 	config := client.Config{
 		ServerURL: s.Server,
@@ -71,7 +77,7 @@ func (s *SubmitCmd) Run(ctx context.Context, globals *Globals) error {
 		Debug:     globals.Debug,
 		Token:     s.Token,
 	}
-	clients := client.NewClients(config)
+	clients := client.NewClients(config, connect.WithInterceptors(otelInterceptor))
 
 	// Submit job
 	jobID, err := s.submitJob(ctx, clients)

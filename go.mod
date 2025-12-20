@@ -6,6 +6,7 @@ require (
 	connectrpc.com/authn v0.2.0
 	connectrpc.com/connect v1.19.1
 	connectrpc.com/cors v0.1.0
+	connectrpc.com/otelconnect v0.8.0
 	github.com/alecthomas/kong v1.13.0
 	github.com/aws/aws-sdk-go-v2 v1.40.1
 	github.com/aws/aws-sdk-go-v2/config v1.32.3
@@ -22,7 +23,7 @@ require (
 	github.com/stretchr/testify v1.11.1
 	github.com/wolfeidau/console-stream v0.3.1
 	golang.org/x/net v0.43.0
-	google.golang.org/protobuf v1.36.10
+	google.golang.org/protobuf v1.36.11
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -44,10 +45,13 @@ require (
 	github.com/aws/smithy-go v1.24.0 // indirect
 	github.com/bep/godartsass/v2 v2.5.0 // indirect
 	github.com/bep/golibsass v1.2.0 // indirect
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/creack/pty v1.1.24 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/fatih/color v1.18.0 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
+	github.com/go-logr/logr v1.4.3 // indirect
+	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/gobwas/glob v0.2.3 // indirect
 	github.com/gohugoio/hugo v0.150.1 // indirect
 	github.com/lucasb-eyer/go-colorful v1.2.0 // indirect
@@ -61,8 +65,10 @@ require (
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/tdewolff/parse/v2 v2.8.3 // indirect
-	go.opentelemetry.io/otel v1.38.0 // indirect
-	go.opentelemetry.io/otel/metric v1.38.0 // indirect
+	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
+	go.opentelemetry.io/otel v1.39.0 // indirect
+	go.opentelemetry.io/otel/metric v1.39.0 // indirect
+	go.opentelemetry.io/otel/trace v1.39.0 // indirect
 	golang.org/x/sys v0.36.0 // indirect
 	golang.org/x/text v0.29.0 // indirect
 	golang.org/x/tools v0.36.0 // indirect

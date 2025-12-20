@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/wolfeidau/airunner/api/gen/proto/go/job/v1/jobv1connect"
 	"golang.org/x/net/http2"
 )
@@ -23,7 +24,7 @@ type Clients struct {
 }
 
 // NewClients creates new gRPC clients with the given configuration
-func NewClients(config Config) *Clients {
+func NewClients(config Config, opts ...connect.ClientOption) *Clients {
 	var transport = http.DefaultTransport
 
 	// Add auth header if token is provided
@@ -43,8 +44,8 @@ func NewClients(config Config) *Clients {
 	}
 
 	return &Clients{
-		Job:    jobv1connect.NewJobServiceClient(httpClient, config.ServerURL),
-		Events: jobv1connect.NewJobEventsServiceClient(httpClient, config.ServerURL),
+		Job:    jobv1connect.NewJobServiceClient(httpClient, config.ServerURL, opts...),
+		Events: jobv1connect.NewJobEventsServiceClient(httpClient, config.ServerURL, opts...),
 	}
 }
 

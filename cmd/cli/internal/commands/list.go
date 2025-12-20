@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"connectrpc.com/otelconnect"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 	"github.com/wolfeidau/airunner/internal/client"
 )
@@ -22,6 +23,11 @@ type ListCmd struct {
 }
 
 func (l *ListCmd) Run(ctx context.Context, globals *Globals) error {
+	otelInterceptor, err := otelconnect.NewInterceptor()
+	if err != nil {
+		return fmt.Errorf("failed to create interceptor: %w", err)
+	}
+
 	// Create clients
 	config := client.Config{
 		ServerURL: l.Server,
@@ -29,7 +35,7 @@ func (l *ListCmd) Run(ctx context.Context, globals *Globals) error {
 		Token:     l.Token,
 		Debug:     globals.Debug,
 	}
-	clients := client.NewClients(config)
+	clients := client.NewClients(config, connect.WithInterceptors(otelInterceptor))
 
 	if l.Watch {
 		return l.watchJobs(ctx, clients)

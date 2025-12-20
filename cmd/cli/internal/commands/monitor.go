@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"connectrpc.com/otelconnect"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 	"github.com/wolfeidau/airunner/internal/client"
 )
@@ -28,6 +29,11 @@ type MonitorCmd struct {
 func (m *MonitorCmd) Run(ctx context.Context, globals *Globals) error {
 	fmt.Printf("Monitoring job %s on server %s\n", m.JobID, m.Server)
 
+	otelInterceptor, err := otelconnect.NewInterceptor()
+	if err != nil {
+		return fmt.Errorf("failed to create interceptor: %w", err)
+	}
+
 	// Create clients
 	config := client.Config{
 		ServerURL: m.Server,
@@ -35,7 +41,7 @@ func (m *MonitorCmd) Run(ctx context.Context, globals *Globals) error {
 		Token:     m.Token,
 		Debug:     globals.Debug,
 	}
-	clients := client.NewClients(config)
+	clients := client.NewClients(config, connect.WithInterceptors(otelInterceptor))
 
 	// Set up context for graceful shutdown
 	ctx, cancel := context.WithCancel(ctx)

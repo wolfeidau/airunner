@@ -63,20 +63,32 @@ func (je *JobExecutor) Execute(ctx context.Context, job *jobv1.Job) error {
 	for event, err := range process.ExecuteAndStream(ctx) {
 		if err != nil {
 			log.Error().Err(err).Str("job_id", job.JobId).Msg("Job execution failed")
-			je.publishErrorEvent(err.Error())
+
+			// Attempt to publish error event - if this fails, log but continue to return original error
+			if publishErr := je.publishErrorEvent(err.Error()); publishErr != nil {
+				log.Error().Err(publishErr).Msg("Failed to publish error event after job failure")
+			}
+
 			return fmt.Errorf("job execution failed: %w", err)
 		}
 
 		// Handle different event types
 		switch e := event.Event.(type) {
 		case *consolestream.ProcessStart:
-			je.publishProcessStartEvent(e)
+			if err := je.publishProcessStartEvent(e); err != nil {
+				log.Error().Err(err).Str("job_id", job.JobId).Msg("Failed to publish process start event")
+				return fmt.Errorf("event publishing failed: %w", err)
+			}
 
 		case *consolestream.OutputData:
+			// Output events are best-effort, no error handling needed
 			je.publishOutputEvent(e.Data)
 
 		case *consolestream.ProcessEnd:
-			je.publishProcessEndEvent(e)
+			if err := je.publishProcessEndEvent(e); err != nil {
+				log.Error().Err(err).Str("job_id", job.JobId).Msg("Failed to publish process end event")
+				return fmt.Errorf("event publishing failed: %w", err)
+			}
 			return nil
 
 		default:
@@ -98,7 +110,7 @@ func (je *JobExecutor) assignSequence(event *jobv1.JobEvent) {
 	}
 }
 
-func (je *JobExecutor) publishProcessStartEvent(event *consolestream.ProcessStart) {
+func (je *JobExecutor) publishProcessStartEvent(event *consolestream.ProcessStart) error {
 	// Store PID for use in ProcessEnd event
 	je.pid = util.AsInt32(event.PID)
 
@@ -119,7 +131,10 @@ func (je *JobExecutor) publishProcessStartEvent(event *consolestream.ProcessStar
 		Events:    []*jobv1.JobEvent{startEvent},
 	}); err != nil {
 		log.Error().Err(err).Msg("Failed to send process start event")
+		return fmt.Errorf("failed to publish process start event: %w", err)
 	}
+
+	return nil
 }
 
 func (je *JobExecutor) publishOutputEvent(output []byte) {
@@ -138,11 +153,13 @@ func (je *JobExecutor) publishOutputEvent(output []byte) {
 		TaskToken: je.taskToken,
 		Events:    []*jobv1.JobEvent{outputEvent},
 	}); err != nil {
-		log.Error().Err(err).Msg("Failed to send output event")
+		// Log but don't fail the job - output events are best-effort
+		// Losing individual output lines shouldn't terminate job execution
+		log.Warn().Err(err).Msg("Failed to send output event - continuing execution")
 	}
 }
 
-func (je *JobExecutor) publishProcessEndEvent(event *consolestream.ProcessEnd) {
+func (je *JobExecutor) publishProcessEndEvent(event *consolestream.ProcessEnd) error {
 	endEvent := &jobv1.JobEvent{
 		EventType: jobv1.EventType_EVENT_TYPE_PROCESS_END,
 		EventData: &jobv1.JobEvent_ProcessEnd{
@@ -161,10 +178,13 @@ func (je *JobExecutor) publishProcessEndEvent(event *consolestream.ProcessEnd) {
 		Events:    []*jobv1.JobEvent{endEvent},
 	}); err != nil {
 		log.Error().Err(err).Msg("Failed to send process end event")
+		return fmt.Errorf("failed to publish process end event: %w", err)
 	}
+
+	return nil
 }
 
-func (je *JobExecutor) publishErrorEvent(errorMessage string) {
+func (je *JobExecutor) publishErrorEvent(errorMessage string) error {
 	errorEvent := &jobv1.JobEvent{
 		EventType: jobv1.EventType_EVENT_TYPE_PROCESS_ERROR,
 		EventData: &jobv1.JobEvent_ProcessError{
@@ -181,5 +201,8 @@ func (je *JobExecutor) publishErrorEvent(errorMessage string) {
 		Events:    []*jobv1.JobEvent{errorEvent},
 	}); err != nil {
 		log.Error().Err(err).Msg("Failed to send error event")
+		return fmt.Errorf("failed to publish error event: %w", err)
 	}
+
+	return nil
 }

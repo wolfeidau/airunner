@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"connectrpc.com/otelconnect"
 	"github.com/cenkalti/backoff/v5"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -33,14 +34,18 @@ func (w *WorkerCmd) Run(ctx context.Context, globals *Globals) error {
 
 	log.Info().Str("queue", w.Queue).Str("server", w.Server).Msg("Worker starting")
 
-	// Create clients
+	otelInterceptor, err := otelconnect.NewInterceptor()
+	if err != nil {
+		return fmt.Errorf("failed to create interceptor: %w", err)
+	}
+
 	config := client.Config{
 		ServerURL: w.Server,
 		Timeout:   w.ClientTimeout,
 		Debug:     globals.Debug,
 		Token:     w.Token,
 	}
-	clients := client.NewClients(config)
+	clients := client.NewClients(config, connect.WithInterceptors(otelInterceptor))
 
 	bkoffStrategy := backoff.NewExponentialBackOff()
 	bkoffStrategy.InitialInterval = 1 * time.Second

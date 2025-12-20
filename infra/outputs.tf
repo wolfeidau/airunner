@@ -150,3 +150,60 @@ output "service_access_instructions" {
     check_service_status = "aws ecs describe-services --cluster ${aws_ecs_cluster.main.name} --services ${aws_ecs_service.airunner.name}"
   }
 }
+
+# SQS Queue Outputs
+output "sqs_queue_urls" {
+  description = "URLs of SQS queues"
+  value = {
+    default         = aws_sqs_queue.default.url
+    priority        = aws_sqs_queue.priority.url
+    default_dlq     = aws_sqs_queue.default_dlq.url
+    priority_dlq    = aws_sqs_queue.priority_dlq.url
+  }
+}
+
+output "sqs_queue_arns" {
+  description = "ARNs of SQS queues"
+  value = {
+    default         = aws_sqs_queue.default.arn
+    priority        = aws_sqs_queue.priority.arn
+    default_dlq     = aws_sqs_queue.default_dlq.arn
+    priority_dlq    = aws_sqs_queue.priority_dlq.arn
+  }
+}
+
+# DynamoDB Table Outputs
+output "dynamodb_tables" {
+  description = "DynamoDB table names"
+  value = {
+    jobs       = aws_dynamodb_table.jobs.name
+    job_events = aws_dynamodb_table.job_events.name
+  }
+}
+
+output "dynamodb_table_arns" {
+  description = "DynamoDB table ARNs"
+  value = {
+    jobs       = aws_dynamodb_table.jobs.arn
+    job_events = aws_dynamodb_table.job_events.arn
+  }
+}
+
+# SSM Parameter Outputs
+output "ssm_parameters" {
+  description = "SSM parameter names"
+  value = {
+    token_signing_secret         = aws_ssm_parameter.token_signing_secret.name
+    otel_exporter_endpoint       = try(aws_ssm_parameter.otel_exporter_endpoint[0].name, null)
+    otel_exporter_headers        = try(aws_ssm_parameter.otel_exporter_headers[0].name, null)
+  }
+}
+
+output "ssm_parameter_arns" {
+  description = "SSM parameter ARNs"
+  value = {
+    token_signing_secret         = aws_ssm_parameter.token_signing_secret.arn
+    otel_exporter_endpoint       = try(aws_ssm_parameter.otel_exporter_endpoint[0].arn, null)
+    otel_exporter_headers        = try(aws_ssm_parameter.otel_exporter_headers[0].arn, null)
+  }
+}

@@ -117,7 +117,7 @@ resource "aws_dynamodb_table" "jobs" {
 
   # GSI1: Query jobs by queue and creation time
   global_secondary_index {
-    name            = "queue-created-at-index"
+    name            = "GSI1"  # Changed from "queue-created-at-index"
     hash_key        = "queue"
     range_key       = "created_at"
     projection_type = "ALL"
@@ -125,7 +125,7 @@ resource "aws_dynamodb_table" "jobs" {
 
   # GSI2: Query jobs by request ID
   global_secondary_index {
-    name            = "request-id-index"
+    name            = "GSI2"  # Changed from "request-id-index"
     hash_key        = "request_id"
     projection_type = "KEYS_ONLY"
   }

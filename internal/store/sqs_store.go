@@ -691,7 +691,9 @@ func (s *SQSJobStore) PublishEvents(ctx context.Context, taskToken string, event
 	}
 
 	// Write events to DynamoDB in batches
-	if err := s.batchWriteEvents(ctx, tt.JobID, events); err != nil {
+	if s.cfg.JobEventsTableName == "" {
+		log.Debug().Str("job_id", tt.JobID).Msg("JobEventsTableName not configured, skipping event persistence")
+	} else if err := s.batchWriteEvents(ctx, tt.JobID, events); err != nil {
 		// Log error but continue with local fanout
 		log.Warn().Err(err).Str("job_id", tt.JobID).Int("event_count", len(events)).Msg("Failed to persist events to DynamoDB")
 	}
@@ -736,18 +738,25 @@ func (s *SQSJobStore) StreamEvents(ctx context.Context, jobId string, fromSequen
 		defer func() {
 			s.mu.Lock()
 			streams := s.eventStreams[jobId]
-			for i, ch := range streams {
-				if ch == eventChan {
-					s.eventStreams[jobId] = append(streams[:i], streams[i+1:]...)
-					break
+			newStreams := make([]chan *jobv1.JobEvent, 0, len(streams)-1)
+			for _, ch := range streams {
+				if ch != eventChan {
+					newStreams = append(newStreams, ch)
 				}
+			}
+			if len(newStreams) == 0 {
+				delete(s.eventStreams, jobId)
+			} else {
+				s.eventStreams[jobId] = newStreams
 			}
 			s.mu.Unlock()
 			close(eventChan)
 		}()
 
 		// Query and send historical events
-		if err := s.replayHistoricalEvents(ctx, jobId, fromSequence, fromTimestamp, filterMap, eventChan); err != nil {
+		if s.cfg.JobEventsTableName == "" {
+			log.Debug().Str("job_id", jobId).Msg("JobEventsTableName not configured, historical replay disabled")
+		} else if err := s.replayHistoricalEvents(ctx, jobId, fromSequence, fromTimestamp, filterMap, eventChan); err != nil {
 			log.Warn().Err(err).Str("job_id", jobId).Msg("Failed to replay historical events")
 		}
 

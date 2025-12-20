@@ -282,6 +282,52 @@ resource "aws_iam_role" "task" {
   })
 }
 
+# Task role policy for SQS and DynamoDB access
+resource "aws_iam_role_policy" "task_sqs_dynamodb" {
+  name = "ecs-task-sqs-dynamodb-${local.name_prefix}"
+  role = aws_iam_role.task.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowSQSOperations"
+        Effect = "Allow"
+        Action = [
+          "sqs:ReceiveMessage",
+          "sqs:SendMessage",
+          "sqs:DeleteMessage",
+          "sqs:ChangeMessageVisibility",
+          "sqs:GetQueueAttributes"
+        ]
+        Resource = [
+          aws_sqs_queue.default.arn,
+          aws_sqs_queue.default_dlq.arn,
+          aws_sqs_queue.priority.arn,
+          aws_sqs_queue.priority_dlq.arn
+        ]
+      },
+      {
+        Sid    = "AllowDynamoDBOperations"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:PutItem",
+          "dynamodb:GetItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:Query",
+          "dynamodb:Scan",
+          "dynamodb:BatchWriteItem"
+        ]
+        Resource = [
+          aws_dynamodb_table.jobs.arn,
+          "${aws_dynamodb_table.jobs.arn}/index/*",
+          aws_dynamodb_table.job_events.arn
+        ]
+      }
+    ]
+  })
+}
+
 # EC2 Instance IAM Role
 resource "aws_iam_role" "ec2_instance" {
   name = "ecs-ec2-instance-${local.name_prefix}"
@@ -561,12 +607,64 @@ resource "aws_ecs_task_definition" "airunner" {
           protocol      = "tcp"
         }
       ]
-      secrets = [
+      environment = [
         {
-          name      = "JWT_PUBLIC_KEY"
-          valueFrom = aws_ssm_parameter.jwt_public_key.arn
+          name  = "AIRUNNER_STORE_TYPE"
+          value = "sqs"
+        },
+        {
+          name  = "AIRUNNER_SQS_QUEUE_DEFAULT"
+          value = aws_sqs_queue.default.url
+        },
+        {
+          name  = "AIRUNNER_SQS_QUEUE_PRIORITY"
+          value = aws_sqs_queue.priority.url
+        },
+        {
+          name  = "AIRUNNER_DYNAMODB_JOBS_TABLE"
+          value = aws_dynamodb_table.jobs.name
+        },
+        {
+          name  = "AIRUNNER_DYNAMODB_EVENTS_TABLE"
+          value = aws_dynamodb_table.job_events.name
+        },
+        {
+          name  = "AIRUNNER_DEFAULT_VISIBILITY_TIMEOUT"
+          value = "300"
+        },
+        {
+          name  = "AIRUNNER_EVENTS_TTL_DAYS"
+          value = "30"
+        },
+        {
+          name  = "AWS_REGION"
+          value = data.aws_region.current.id
         }
       ]
+      secrets = concat(
+        [
+          {
+            name      = "JWT_PUBLIC_KEY"
+            valueFrom = aws_ssm_parameter.jwt_public_key.arn
+          },
+          {
+            name      = "AIRUNNER_TOKEN_SIGNING_SECRET"
+            valueFrom = aws_ssm_parameter.token_signing_secret.arn
+          }
+        ],
+        var.otel_exporter_endpoint != "" ? [
+          {
+            name      = "AIRUNNER_OTEL_EXPORTER_ENDPOINT"
+            valueFrom = aws_ssm_parameter.otel_exporter_endpoint[0].arn
+          }
+        ] : [],
+        var.otel_exporter_headers != "" ? [
+          {
+            name      = "AIRUNNER_OTEL_EXPORTER_HEADERS"
+            valueFrom = aws_ssm_parameter.otel_exporter_headers[0].arn
+          }
+        ] : []
+      )
       logConfiguration = {
         logDriver = "awslogs"
         options = {
@@ -582,7 +680,14 @@ resource "aws_ecs_task_definition" "airunner" {
     Name = "${local.name_prefix}-task-definition"
   }
 
-  depends_on = [aws_iam_role_policy.execution]
+  depends_on = [
+    aws_iam_role_policy.execution,
+    aws_sqs_queue.default,
+    aws_sqs_queue.priority,
+    aws_dynamodb_table.jobs,
+    aws_dynamodb_table.job_events,
+    aws_ssm_parameter.token_signing_secret
+  ]
 }
 
 # ECS Service

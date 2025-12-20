@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -11,6 +12,9 @@ import (
 	"connectrpc.com/authn"
 	connectcors "connectrpc.com/cors"
 	"connectrpc.com/otelconnect"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/rs/cors"
 	"github.com/wolfeidau/airunner/internal/auth"
 	"github.com/wolfeidau/airunner/internal/autossl"
@@ -21,12 +25,20 @@ import (
 )
 
 type RPCServerCmd struct {
-	Listen       string `help:"listen address" default:"localhost:8993"`
-	Cert         string `help:"path to TLS cert file" default:""`
-	Key          string `help:"path to TLS key file" default:""`
-	Hostname     string `help:"hostname for TLS cert" default:"localhost:8993"`
-	NoAuth       bool   `help:"disable JWT authentication (development only)" default:"false"`
-	JWTPublicKey string `help:"PEM-encoded JWT public key" env:"JWT_PUBLIC_KEY"`
+	Listen                   string `help:"listen address" default:"localhost:8993"`
+	Cert                     string `help:"path to TLS cert file" default:""`
+	Key                      string `help:"path to TLS key file" default:""`
+	Hostname                 string `help:"hostname for TLS cert" default:"localhost:8993"`
+	NoAuth                   bool   `help:"disable JWT authentication (development only)" default:"false"`
+	JWTPublicKey             string `help:"PEM-encoded JWT public key" env:"JWT_PUBLIC_KEY"`
+	StoreType                string `help:"job store type (memory or sqs)" default:"memory" env:"AIRUNNER_STORE_TYPE" enum:"memory,sqs"`
+	SQSQueueDefault          string `help:"SQS queue URL for default priority jobs" env:"AIRUNNER_SQS_QUEUE_DEFAULT"`
+	SQSQueuePriority         string `help:"SQS queue URL for priority jobs" env:"AIRUNNER_SQS_QUEUE_PRIORITY"`
+	DynamoDBJobsTable        string `help:"DynamoDB table name for jobs" env:"AIRUNNER_DYNAMODB_JOBS_TABLE"`
+	DynamoDBEventsTable      string `help:"DynamoDB table name for job events" env:"AIRUNNER_DYNAMODB_EVENTS_TABLE"`
+	DefaultVisibilityTimeout int32  `help:"default visibility timeout in seconds for SQS messages" default:"300"`
+	EventsTTLDays            int32  `help:"TTL in days for job events in DynamoDB" default:"30"`
+	TokenSigningSecret       string `help:"secret key for signing JWT tokens" env:"AIRUNNER_TOKEN_SIGNING_SECRET"`
 }
 
 func (s *RPCServerCmd) Run(ctx context.Context, globals *Globals) error {
@@ -55,19 +67,42 @@ func (s *RPCServerCmd) Run(ctx context.Context, globals *Globals) error {
 		return fmt.Errorf("failed to create OTEL interceptor: %w", err)
 	}
 
-	// Create and start the memory store
-	memStore := store.NewMemoryJobStore()
-	if err = memStore.Start(); err != nil {
-		return err
-	}
-	defer func() {
-		if err = memStore.Stop(); err != nil {
-			log.Error().Err(err).Msg("Failed to stop memory store")
+	// Determine store type and create appropriate store
+	var jobStore store.JobStore
+
+	switch s.StoreType {
+	case "sqs":
+		jobStore, err = createSQSJobStore(ctx, s)
+		if err != nil {
+			return err
 		}
-	}()
+		log.Info().Msg("Using SQS/DynamoDB job store")
+	default:
+		// Default to memory store for backward compatibility
+		memStore := store.NewMemoryJobStore()
+		if err = memStore.Start(); err != nil {
+			return err
+		}
+		jobStore = memStore
+		log.Info().Msg("Using in-memory job store")
+	}
+
+	// Start store if it has Start method
+	if startable, ok := jobStore.(interface{ Start() error }); ok {
+		if err = startable.Start(); err != nil {
+			return err
+		}
+		defer func() {
+			if stoppable, ok := jobStore.(interface{ Stop() error }); ok {
+				if err = stoppable.Stop(); err != nil {
+					log.Error().Err(err).Msg("Failed to stop job store")
+				}
+			}
+		}()
+	}
 
 	// Create server with store
-	jobServer := server.NewServer(memStore)
+	jobServer := server.NewServer(jobStore)
 
 	// Build handler chain: CORS -> Auth -> Connect handlers
 	handler := jobServer.Handler(logger.NewConnectRequests(log), otelInterceptor)
@@ -119,6 +154,59 @@ func (s *RPCServerCmd) Run(ctx context.Context, globals *Globals) error {
 	}
 
 	return httpServer.ListenAndServeTLS("", "")
+}
+
+// createSQSJobStore creates and configures an SQS/DynamoDB-backed job store
+func createSQSJobStore(ctx context.Context, cmd *RPCServerCmd) (store.JobStore, error) {
+	// Validate required parameters
+	if cmd.SQSQueueDefault == "" {
+		return nil, errors.New("SQS queue default URL is required (--sqs-queue-default or AIRUNNER_SQS_QUEUE_DEFAULT)")
+	}
+
+	if cmd.SQSQueuePriority == "" {
+		return nil, errors.New("SQS queue priority URL is required (--sqs-queue-priority or AIRUNNER_SQS_QUEUE_PRIORITY)")
+	}
+
+	if cmd.DynamoDBJobsTable == "" {
+		return nil, errors.New("DynamoDB jobs table name is required (--dynamodb-jobs-table or AIRUNNER_DYNAMODB_JOBS_TABLE)")
+	}
+
+	if cmd.DynamoDBEventsTable == "" {
+		return nil, errors.New("DynamoDB events table name is required (--dynamodb-events-table or AIRUNNER_DYNAMODB_EVENTS_TABLE)")
+	}
+
+	if cmd.TokenSigningSecret == "" {
+		return nil, errors.New("token signing secret is required (--token-signing-secret or AIRUNNER_TOKEN_SIGNING_SECRET)")
+	}
+
+	if len(cmd.TokenSigningSecret) < 32 {
+		return nil, errors.New("token signing secret must be at least 32 bytes (256 bits) for HMAC-SHA256")
+	}
+
+	// Load AWS configuration (uses default credential chain: IAM role, env vars, etc.)
+	awsConfig, err := config.LoadDefaultConfig(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load AWS config: %w", err)
+	}
+
+	// Create AWS SDK clients
+	sqsClient := sqs.NewFromConfig(awsConfig)
+	dynamoClient := dynamodb.NewFromConfig(awsConfig)
+
+	// Build store configuration
+	storeCfg := store.SQSJobStoreConfig{
+		QueueURLs: map[string]string{
+			"default":  cmd.SQSQueueDefault,
+			"priority": cmd.SQSQueuePriority,
+		},
+		JobsTableName:                   cmd.DynamoDBJobsTable,
+		JobEventsTableName:              cmd.DynamoDBEventsTable,
+		DefaultVisibilityTimeoutSeconds: cmd.DefaultVisibilityTimeout,
+		EventsTTLDays:                   cmd.EventsTTLDays,
+		TokenSigningSecret:              []byte(cmd.TokenSigningSecret),
+	}
+
+	return store.NewSQSJobStore(sqsClient, dynamoClient, storeCfg), nil
 }
 
 // withCORS adds CORS support to a Connect HTTP handler.

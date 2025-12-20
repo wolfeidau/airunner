@@ -130,6 +130,11 @@ resource "aws_dynamodb_table" "jobs" {
     projection_type = "KEYS_ONLY"
   }
 
+  # Enable point-in-time recovery for disaster recovery
+  point_in_time_recovery {
+    enabled = true
+  }
+
   tags = merge(
     local.common_tags,
     {
@@ -158,6 +163,11 @@ resource "aws_dynamodb_table" "job_events" {
   ttl {
     attribute_name = "ttl"
     enabled        = true
+  }
+
+  # Enable point-in-time recovery for disaster recovery
+  point_in_time_recovery {
+    enabled = true
   }
 
   tags = merge(

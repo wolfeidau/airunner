@@ -165,13 +165,76 @@ resource "aws_security_group" "airunner" {
   }
 }
 
+# Security Group for VPC Endpoints
+resource "aws_security_group" "vpc_endpoints" {
+  name        = "${local.name_prefix}-vpc-endpoints"
+  description = "Security group for VPC endpoints"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    description     = "HTTPS from ECS tasks"
+    from_port       = 443
+    to_port         = 443
+    protocol        = "tcp"
+    security_groups = [aws_security_group.airunner.id]
+  }
+
+  egress {
+    description = "Allow all outbound"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "${local.name_prefix}-vpc-endpoints-sg"
+    }
+  )
+}
+
+# VPC Endpoints
+# DynamoDB Gateway Endpoint (free)
+resource "aws_vpc_endpoint" "dynamodb" {
+  vpc_id            = aws_vpc.main.id
+  service_name      = "com.amazonaws.${data.aws_region.current.id}.dynamodb"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids   = [aws_route_table.public.id]
+
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "${local.name_prefix}-dynamodb-endpoint"
+    }
+  )
+}
+
+# SQS Interface Endpoint
+resource "aws_vpc_endpoint" "sqs" {
+  vpc_id              = aws_vpc.main.id
+  service_name        = "com.amazonaws.${data.aws_region.current.id}.sqs"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = aws_subnet.public[*].id
+  security_group_ids  = [aws_security_group.vpc_endpoints.id]
+  private_dns_enabled = true
+
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "${local.name_prefix}-sqs-endpoint"
+    }
+  )
+}
+
 # ECS Cluster
 resource "aws_ecs_cluster" "main" {
   name = "${local.name_prefix}-cluster"
 
   setting {
     name  = "containerInsights"
-    value = "enabled"
+    value = "disabled"
   }
 
   tags = {
@@ -607,40 +670,49 @@ resource "aws_ecs_task_definition" "airunner" {
           protocol      = "tcp"
         }
       ]
-      environment = [
-        {
-          name  = "AIRUNNER_STORE_TYPE"
-          value = "sqs"
-        },
-        {
-          name  = "AIRUNNER_SQS_QUEUE_DEFAULT"
-          value = aws_sqs_queue.default.url
-        },
-        {
-          name  = "AIRUNNER_SQS_QUEUE_PRIORITY"
-          value = aws_sqs_queue.priority.url
-        },
-        {
-          name  = "AIRUNNER_DYNAMODB_JOBS_TABLE"
-          value = aws_dynamodb_table.jobs.name
-        },
-        {
-          name  = "AIRUNNER_DYNAMODB_EVENTS_TABLE"
-          value = aws_dynamodb_table.job_events.name
-        },
-        {
-          name  = "AIRUNNER_DEFAULT_VISIBILITY_TIMEOUT"
-          value = "300"
-        },
-        {
-          name  = "AIRUNNER_EVENTS_TTL_DAYS"
-          value = "30"
-        },
-        {
-          name  = "AWS_REGION"
-          value = data.aws_region.current.id
-        }
-      ]
+      environment = concat(
+        [
+          {
+            name  = "AIRUNNER_STORE_TYPE"
+            value = "sqs"
+          },
+          {
+            name  = "AIRUNNER_SQS_QUEUE_DEFAULT"
+            value = aws_sqs_queue.default.url
+          },
+          {
+            name  = "AIRUNNER_SQS_QUEUE_PRIORITY"
+            value = aws_sqs_queue.priority.url
+          },
+          {
+            name  = "AIRUNNER_DYNAMODB_JOBS_TABLE"
+            value = aws_dynamodb_table.jobs.name
+          },
+          {
+            name  = "AIRUNNER_DYNAMODB_EVENTS_TABLE"
+            value = aws_dynamodb_table.job_events.name
+          },
+          {
+            name  = "AIRUNNER_DEFAULT_VISIBILITY_TIMEOUT"
+            value = "300"
+          },
+          {
+            name  = "AIRUNNER_EVENTS_TTL_DAYS"
+            value = "30"
+          },
+          {
+            name  = "AWS_REGION"
+            value = data.aws_region.current.id
+          }
+        ],
+        # Conditionally add OTEL_SERVICE_NAME only when OTEL is configured
+        var.otel_exporter_endpoint != "" ? [
+          {
+            name  = "OTEL_SERVICE_NAME"
+            value = "${var.environment}-airunner"
+          }
+        ] : []
+      )
       secrets = concat(
         [
           {
@@ -654,13 +726,13 @@ resource "aws_ecs_task_definition" "airunner" {
         ],
         var.otel_exporter_endpoint != "" ? [
           {
-            name      = "AIRUNNER_OTEL_EXPORTER_ENDPOINT"
+            name      = "OTEL_EXPORTER_OTLP_ENDPOINT"
             valueFrom = aws_ssm_parameter.otel_exporter_endpoint[0].arn
           }
         ] : [],
         var.otel_exporter_headers != "" ? [
           {
-            name      = "AIRUNNER_OTEL_EXPORTER_HEADERS"
+            name      = "OTEL_EXPORTER_OTLP_HEADERS"
             valueFrom = aws_ssm_parameter.otel_exporter_headers[0].arn
           }
         ] : []
@@ -699,9 +771,8 @@ resource "aws_ecs_service" "airunner" {
   launch_type     = "EC2"
 
   network_configuration {
-    subnets          = aws_subnet.public[*].id
-    security_groups  = [aws_security_group.airunner.id]
-    assign_public_ip = false
+    subnets         = aws_subnet.public[*].id
+    security_groups = [aws_security_group.airunner.id]
   }
 
   load_balancer {

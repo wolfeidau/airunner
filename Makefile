@@ -21,6 +21,12 @@ build-server: ## Build server binary (job queue server)
 	@mkdir -p bin
 	go build -o bin/airunner-server ./cmd/server
 
+.PHONY: proto-install
+proto-install: ## Install protoc-gen-go and protoc-gen-connect-go
+	go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+	go install connectrpc.com/connect/cmd/protoc-gen-connect-go@latest
+	go install github.com/bufbuild/buf/cmd/buf@latest
+
 .PHONY: proto-generate
 proto-generate: ## Generate Go code from proto files
 	cd api && buf generate

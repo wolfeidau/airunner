@@ -107,6 +107,7 @@ message BatchingConfig {
 message ExecutionConfig {
   BatchingConfig batching = 1;
   int32 heartbeat_interval_seconds = 2; // e.g., 30
+  int32 output_flush_interval_millis = 3; // e.g., 100 (flush console output every 100ms)
 }
 
 enum StreamType {

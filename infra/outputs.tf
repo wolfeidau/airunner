@@ -193,6 +193,7 @@ output "dynamodb_table_arns" {
 output "ssm_parameters" {
   description = "SSM parameter names"
   value = {
+    jwt_signing_key        = aws_ssm_parameter.jwt_signing_key.name
     token_signing_secret   = aws_ssm_parameter.token_signing_secret.name
     otel_exporter_endpoint = try(aws_ssm_parameter.otel_exporter_endpoint[0].name, null)
     otel_exporter_headers  = try(aws_ssm_parameter.otel_exporter_headers[0].name, null)

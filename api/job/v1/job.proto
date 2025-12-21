@@ -96,11 +96,17 @@ message OutputBatchEvent {
 }
 
 // Batch configuration for event publishing
+//
+// IMPORTANT: max_batch_bytes must account for persistence backend limits:
+// - DynamoDB has a 400KB item size limit
+// - Events are stored as serialized protobufs with ~15-20% encoding overhead
+// - Recommended max_batch_bytes: 256KB (262144 bytes) for DynamoDB backend
+// - This ensures final serialized JobEvent stays below 350KB safety threshold
 message BatchingConfig {
-  int32 flush_interval_seconds = 1; // e.g., 2
-  int32 max_batch_size = 2; // e.g., 50
-  int64 max_batch_bytes = 3; // e.g., 1048576 (1 MB)
-  int32 playback_interval_millis = 4; // e.g., 50 (for client replay)
+  int32 flush_interval_seconds = 1; // How often to flush buffered outputs (e.g., 2 seconds)
+  int32 max_batch_size = 2; // Max number of output items per batch (e.g., 50)
+  int64 max_batch_bytes = 3; // Max raw bytes per batch before protobuf encoding (e.g., 262144 = 256KB)
+  int32 playback_interval_millis = 4; // Interval for client replay timing (e.g., 50ms)
 }
 
 // Execution configuration for a job

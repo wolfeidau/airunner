@@ -888,12 +888,18 @@ func (x *OutputBatchEvent) GetPlaybackIntervalMillis() int32 {
 }
 
 // Batch configuration for event publishing
+//
+// IMPORTANT: max_batch_bytes must account for persistence backend limits:
+// - DynamoDB has a 400KB item size limit
+// - Events are stored as serialized protobufs with ~15-20% encoding overhead
+// - Recommended max_batch_bytes: 256KB (262144 bytes) for DynamoDB backend
+// - This ensures final serialized JobEvent stays below 350KB safety threshold
 type BatchingConfig struct {
 	state                  protoimpl.MessageState `protogen:"open.v1"`
-	FlushIntervalSeconds   int32                  `protobuf:"varint,1,opt,name=flush_interval_seconds,json=flushIntervalSeconds,proto3" json:"flush_interval_seconds,omitempty"`       // e.g., 2
-	MaxBatchSize           int32                  `protobuf:"varint,2,opt,name=max_batch_size,json=maxBatchSize,proto3" json:"max_batch_size,omitempty"`                               // e.g., 50
-	MaxBatchBytes          int64                  `protobuf:"varint,3,opt,name=max_batch_bytes,json=maxBatchBytes,proto3" json:"max_batch_bytes,omitempty"`                            // e.g., 1048576 (1 MB)
-	PlaybackIntervalMillis int32                  `protobuf:"varint,4,opt,name=playback_interval_millis,json=playbackIntervalMillis,proto3" json:"playback_interval_millis,omitempty"` // e.g., 50 (for client replay)
+	FlushIntervalSeconds   int32                  `protobuf:"varint,1,opt,name=flush_interval_seconds,json=flushIntervalSeconds,proto3" json:"flush_interval_seconds,omitempty"`       // How often to flush buffered outputs (e.g., 2 seconds)
+	MaxBatchSize           int32                  `protobuf:"varint,2,opt,name=max_batch_size,json=maxBatchSize,proto3" json:"max_batch_size,omitempty"`                               // Max number of output items per batch (e.g., 50)
+	MaxBatchBytes          int64                  `protobuf:"varint,3,opt,name=max_batch_bytes,json=maxBatchBytes,proto3" json:"max_batch_bytes,omitempty"`                            // Max raw bytes per batch before protobuf encoding (e.g., 262144 = 256KB)
+	PlaybackIntervalMillis int32                  `protobuf:"varint,4,opt,name=playback_interval_millis,json=playbackIntervalMillis,proto3" json:"playback_interval_millis,omitempty"` // Interval for client replay timing (e.g., 50ms)
 	unknownFields          protoimpl.UnknownFields
 	sizeCache              protoimpl.SizeCache
 }

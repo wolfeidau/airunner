@@ -88,6 +88,8 @@ func (je *JobExecutor) Execute(ctx context.Context, job *jobv1.Job) error {
 		// Note: console-stream doesn't have a direct working directory option
 		// We would need to handle this by changing directory or modifying the command
 		log.Info().Str("dir", job.JobParams.WorkingDirectory).Msg("Changing working directory")
+
+		opts = append(opts, consolestream.WithWorkingDir(job.JobParams.WorkingDirectory))
 	}
 
 	// Create the process
@@ -147,8 +149,16 @@ func (je *JobExecutor) Execute(ctx context.Context, job *jobv1.Job) error {
 			}
 			return nil
 
+		case *consolestream.HeartbeatEvent:
+			// Drop heartbeat events for now - they're sent every flush interval
+			// and we don't currently need them. May implement in the future.
+			log.Debug().
+				Bool("process_alive", e.ProcessAlive).
+				Dur("elapsed_time", e.ElapsedTime).
+				Msg("Received heartbeat event (dropped)")
+
 		default:
-			// Handle other event types like heartbeat if needed
+			// Handle other unexpected event types
 			log.Info().Str("event", event.String()).Msg("Received unhandled event")
 		}
 	}

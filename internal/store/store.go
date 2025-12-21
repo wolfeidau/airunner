@@ -161,7 +161,8 @@ func (s *MemoryJobStore) EnqueueJob(ctx context.Context, req *jobv1.EnqueueJobRe
 			MaxBatchBytes:          1048576,
 			PlaybackIntervalMillis: 50,
 		},
-		HeartbeatIntervalSeconds: 30,
+		HeartbeatIntervalSeconds:  30,
+		OutputFlushIntervalMillis: 100, // Flush console output every 100ms
 	}
 
 	// Create job

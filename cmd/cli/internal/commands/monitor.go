@@ -24,6 +24,7 @@ type MonitorCmd struct {
 	Timeout       time.Duration     `help:"Timeout for the monitor" default:"5m"`
 	Token         string            `help:"JWT token for authentication" env:"AIRUNNER_TOKEN"`
 	Playback      bool              `help:"Replay events at original speed based on timestamps"`
+	Verbose       bool              `help:"Show verbose debug output including timestamps"`
 }
 
 func (m *MonitorCmd) Run(ctx context.Context, globals *Globals) error {
@@ -63,6 +64,7 @@ func (m *MonitorCmd) Run(ctx context.Context, globals *Globals) error {
 		FromTimestamp: m.FromTimestamp,
 		EventFilter:   m.EventFilter,
 		Playback:      m.Playback,
+		Verbose:       m.Verbose,
 	}); err != nil {
 		return fmt.Errorf("failed to monitor job: %w", err)
 	}
@@ -77,6 +79,7 @@ type monitorJobArgs struct {
 	FromTimestamp int64
 	EventFilter   []jobv1.EventType
 	Playback      bool
+	Verbose       bool
 }
 
 func monitorJob(ctx context.Context, clients *client.Clients, args monitorJobArgs) error {
@@ -98,14 +101,15 @@ func monitorJob(ctx context.Context, clients *client.Clients, args monitorJobArg
 
 	var timer *playbackTimer
 	if args.Playback {
-		timer = newPlaybackTimer()
+		timer = newPlaybackTimer(args.Verbose)
 	}
 
 	for stream.Receive() {
 		event := stream.Msg().Event
 
 		// Handle playback timing
-		if timer != nil && event.Timestamp != nil {
+		// Skip for OUTPUT_BATCH - it handles timing internally for each output
+		if timer != nil && event.Timestamp != nil && event.EventType != jobv1.EventType_EVENT_TYPE_OUTPUT_BATCH {
 			timer.wait(event.Timestamp.AsTime())
 		}
 
@@ -119,6 +123,11 @@ func monitorJob(ctx context.Context, clients *client.Clients, args monitorJobArg
 
 		case jobv1.EventType_EVENT_TYPE_PROCESS_END:
 			if end := event.GetProcessEnd(); end != nil {
+				if args.Verbose {
+					fmt.Printf("\n[DEBUG] PROCESS_END event: timestamp=%s\n",
+						event.Timestamp.AsTime().Format("15:04:05.000"))
+				}
+
 				status := "✅ SUCCESS"
 				if end.ExitCode != 0 {
 					status = "❌ FAILED"
@@ -157,6 +166,45 @@ func monitorJob(ctx context.Context, clients *client.Clients, args monitorJobArg
 				fmt.Printf("%s", string(output.Output))
 			}
 
+		case jobv1.EventType_EVENT_TYPE_OUTPUT_BATCH:
+			if batch := event.GetOutputBatch(); batch != nil {
+				if args.Verbose {
+					batchTime := event.Timestamp.AsTime()
+					firstOutputTime := time.UnixMilli(batch.FirstTimestampMs)
+					fmt.Printf("\n[DEBUG] Batch event: timestamp=%s, outputs=%d, first_output=%s, playback_interval=%dms\n",
+						batchTime.Format("15:04:05.000"),
+						len(batch.Outputs),
+						firstOutputTime.Format("15:04:05.000"),
+						batch.PlaybackIntervalMillis)
+				}
+
+				// Unpack and replay each output from the batch with original timing
+				for i, output := range batch.Outputs {
+					// Calculate actual timestamp for this output
+					// FirstTimestampMs is the absolute timestamp of the first item in the batch
+					// TimestampDeltaMs is the offset from the first item
+					outputTimestampMs := batch.FirstTimestampMs + int64(output.TimestampDeltaMs)
+					outputTime := time.UnixMilli(outputTimestampMs)
+
+					if args.Verbose && i < 5 { // Only show first 5 to avoid spam
+						fmt.Printf("[DEBUG] Output %d: delta=%dms, timestamp=%s\n",
+							i, output.TimestampDeltaMs, outputTime.Format("15:04:05.000"))
+					}
+
+					// Handle playback timing with actual timestamps
+					if timer != nil {
+						timer.wait(outputTime)
+					}
+
+					// Display output
+					fmt.Printf("%s", string(output.Output))
+				}
+
+				if args.Verbose {
+					fmt.Printf("[DEBUG] Batch complete\n\n")
+				}
+			}
+
 		case jobv1.EventType_EVENT_TYPE_TERMINAL_RESIZE:
 			if resize := event.GetTerminalResize(); resize != nil {
 				fmt.Printf("[%s] 📺 Terminal resized to %dx%d (%dx%d pixels)\n",
@@ -186,10 +234,11 @@ type playbackTimer struct {
 	firstEventTime    time.Time
 	referenceWallTime time.Time
 	initialized       bool
+	verbose           bool
 }
 
-func newPlaybackTimer() *playbackTimer {
-	return &playbackTimer{}
+func newPlaybackTimer(verbose bool) *playbackTimer {
+	return &playbackTimer{verbose: verbose}
 }
 
 func (pt *playbackTimer) wait(eventTime time.Time) {
@@ -197,6 +246,9 @@ func (pt *playbackTimer) wait(eventTime time.Time) {
 		pt.firstEventTime = eventTime
 		pt.referenceWallTime = time.Now()
 		pt.initialized = true
+		if pt.verbose {
+			fmt.Printf("[DEBUG TIMER] Initialized: first_event=%s\n", eventTime.Format("15:04:05.000"))
+		}
 		return
 	}
 
@@ -204,8 +256,19 @@ func (pt *playbackTimer) wait(eventTime time.Time) {
 	elapsedEvent := eventTime.Sub(pt.firstEventTime)
 	elapsedWall := time.Since(pt.referenceWallTime)
 
+	if pt.verbose {
+		fmt.Printf("[DEBUG TIMER] Event time: %s, elapsed_event=%v, elapsed_wall=%v",
+			eventTime.Format("15:04:05.000"), elapsedEvent, elapsedWall)
+	}
+
 	// Sleep for the remaining time if playback is ahead
 	if elapsedEvent > elapsedWall {
-		time.Sleep(elapsedEvent - elapsedWall)
+		sleepDuration := elapsedEvent - elapsedWall
+		if pt.verbose {
+			fmt.Printf(", sleeping=%v\n", sleepDuration)
+		}
+		time.Sleep(sleepDuration)
+	} else if pt.verbose {
+		fmt.Printf(", no sleep needed\n")
 	}
 }

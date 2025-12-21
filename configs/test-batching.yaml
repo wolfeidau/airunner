@@ -1,0 +1,18 @@
+command: /Users/markw/Code/notgopath/airunner/bin/airunner-cli
+args:
+  - "test-output"
+  - "--pattern=mixed"
+  - "--lines=20"
+  - "--interval=100ms"
+processType: pty
+timeout: 30
+environment:
+  PATH: "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+metadata:
+  submitter: "batch-test"
+  priority: "normal"
+  test: "event-batching"
+repository: "https://github.com/wolfeidau/airunner"
+commit: "main"
+branch: "main"
+owner: "test-user"

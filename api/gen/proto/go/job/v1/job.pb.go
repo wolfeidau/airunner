@@ -958,11 +958,12 @@ func (x *BatchingConfig) GetPlaybackIntervalMillis() int32 {
 
 // Execution configuration for a job
 type ExecutionConfig struct {
-	state                    protoimpl.MessageState `protogen:"open.v1"`
-	Batching                 *BatchingConfig        `protobuf:"bytes,1,opt,name=batching,proto3" json:"batching,omitempty"`
-	HeartbeatIntervalSeconds int32                  `protobuf:"varint,2,opt,name=heartbeat_interval_seconds,json=heartbeatIntervalSeconds,proto3" json:"heartbeat_interval_seconds,omitempty"` // e.g., 30
-	unknownFields            protoimpl.UnknownFields
-	sizeCache                protoimpl.SizeCache
+	state                     protoimpl.MessageState `protogen:"open.v1"`
+	Batching                  *BatchingConfig        `protobuf:"bytes,1,opt,name=batching,proto3" json:"batching,omitempty"`
+	HeartbeatIntervalSeconds  int32                  `protobuf:"varint,2,opt,name=heartbeat_interval_seconds,json=heartbeatIntervalSeconds,proto3" json:"heartbeat_interval_seconds,omitempty"`      // e.g., 30
+	OutputFlushIntervalMillis int32                  `protobuf:"varint,3,opt,name=output_flush_interval_millis,json=outputFlushIntervalMillis,proto3" json:"output_flush_interval_millis,omitempty"` // e.g., 100 (flush console output every 100ms)
+	unknownFields             protoimpl.UnknownFields
+	sizeCache                 protoimpl.SizeCache
 }
 
 func (x *ExecutionConfig) Reset() {
@@ -1005,6 +1006,13 @@ func (x *ExecutionConfig) GetBatching() *BatchingConfig {
 func (x *ExecutionConfig) GetHeartbeatIntervalSeconds() int32 {
 	if x != nil {
 		return x.HeartbeatIntervalSeconds
+	}
+	return 0
+}
+
+func (x *ExecutionConfig) GetOutputFlushIntervalMillis() int32 {
+	if x != nil {
+		return x.OutputFlushIntervalMillis
 	}
 	return 0
 }
@@ -2106,10 +2114,11 @@ const file_job_v1_job_proto_rawDesc = "" +
 	"\x16flush_interval_seconds\x18\x01 \x01(\x05R\x14flushIntervalSeconds\x12$\n" +
 	"\x0emax_batch_size\x18\x02 \x01(\x05R\fmaxBatchSize\x12&\n" +
 	"\x0fmax_batch_bytes\x18\x03 \x01(\x03R\rmaxBatchBytes\x128\n" +
-	"\x18playback_interval_millis\x18\x04 \x01(\x05R\x16playbackIntervalMillis\"\x83\x01\n" +
+	"\x18playback_interval_millis\x18\x04 \x01(\x05R\x16playbackIntervalMillis\"\xc4\x01\n" +
 	"\x0fExecutionConfig\x122\n" +
 	"\bbatching\x18\x01 \x01(\v2\x16.job.v1.BatchingConfigR\bbatching\x12<\n" +
-	"\x1aheartbeat_interval_seconds\x18\x02 \x01(\x05R\x18heartbeatIntervalSeconds\"b\n" +
+	"\x1aheartbeat_interval_seconds\x18\x02 \x01(\x05R\x18heartbeatIntervalSeconds\x12?\n" +
+	"\x1coutput_flush_interval_millis\x18\x03 \x01(\x05R\x19outputFlushIntervalMillis\"b\n" +
 	"\x17PublishJobEventsRequest\x12\x1d\n" +
 	"\n" +
 	"task_token\x18\x01 \x01(\tR\ttaskToken\x12(\n" +

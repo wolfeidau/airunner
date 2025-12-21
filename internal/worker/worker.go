@@ -54,10 +54,23 @@ func (je *JobExecutor) Execute(ctx context.Context, job *jobv1.Job) error {
 		}
 	}()
 
+	// Determine flush interval from ExecutionConfig
+	flushInterval := 100 * time.Millisecond // Default: 100ms
+	if job.ExecutionConfig != nil && job.ExecutionConfig.OutputFlushIntervalMillis > 0 {
+		flushInterval = time.Duration(job.ExecutionConfig.OutputFlushIntervalMillis) * time.Millisecond
+		log.Debug().
+			Dur("flush_interval", flushInterval).
+			Msg("Using configured output flush interval")
+	} else {
+		log.Debug().
+			Dur("flush_interval", flushInterval).
+			Msg("Using default output flush interval")
+	}
+
 	// Create console-stream process options
 	opts := []consolestream.ProcessOption{
 		consolestream.WithEnvMap(job.JobParams.Environment),
-		consolestream.WithFlushInterval(3 * time.Second),
+		consolestream.WithFlushInterval(flushInterval),
 	}
 
 	// Set process type

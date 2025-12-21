@@ -352,7 +352,7 @@ func TestEventSizeValidation(t *testing.T) {
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "exceeds maximum size")
 		require.ErrorIs(t, err, ErrEventTooLarge)
-		require.Contains(t, err.Error(), "DynamoDB maximum item size is 400KB") // Check that error mentions the limit
+		require.Contains(t, err.Error(), "storage limit")                       // Check that error mentions the limit
 		require.Contains(t, err.Error(), "Consider reducing output batch size") // Check for helpful message
 	})
 

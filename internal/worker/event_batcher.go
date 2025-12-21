@@ -71,20 +71,27 @@ func NewEventBatcher(config *jobv1.ExecutionConfig, onFlush func(*jobv1.JobEvent
 const (
 	// defaultMaxBatchBytes is the default maximum bytes per output batch.
 	// This is set conservatively to ensure the final serialized JobEvent (including protobuf
-	// overhead, wrapper fields, and array encoding) stays well below DynamoDB's 400KB item limit.
+	// overhead, wrapper fields, and array encoding) stays well below storage backend limits.
 	//
 	// Size calculation:
 	//   - Raw output bytes: 256KB
 	//   - Protobuf encoding overhead: ~15-20% = ~50KB
 	//   - OutputBatchEvent fields (sequences, timestamps, etc.): ~1KB
 	//   - JobEvent wrapper: ~1KB
-	//   - Total estimated: ~308KB (well below 350KB safety threshold)
+	//   - Total estimated: ~308KB (well below storage limit)
 	//
-	// DynamoDB limits:
-	//   - Hard limit: 400KB per item
-	//   - Safe threshold (sqs_store.go): 350KB (maxEventPayloadBytes)
-	//   - This default: 256KB raw → ~308KB serialized (with ~88% safety margin)
+	// Backend compatibility:
+	//   - This default: 256KB raw → ~308KB serialized (safe for most storage backends)
 	defaultMaxBatchBytes = 256 * 1024 // 256KB
+
+	// maxSingleOutputBytes is the maximum size for a single output item.
+	// Individual outputs larger than this are rejected to prevent storage backend size violations.
+	// This must be smaller than defaultMaxBatchBytes to account for:
+	//   - Multiple items in a batch
+	//   - Protobuf encoding overhead for the batch container
+	//   - Event wrapper overhead
+	// Setting to 200KB ensures even single-item batches stay well below backend limits.
+	maxSingleOutputBytes = 200 * 1024 // 200KB
 
 	defaultMaxBatchSize           = 50 // 50 output items per batch
 	defaultFlushIntervalSeconds   = 2  // Flush every 2 seconds
@@ -139,6 +146,21 @@ func (eb *EventBatcher) AddOutputContext(ctx context.Context, output []byte, str
 	case <-eb.stopCh:
 		return fmt.Errorf("event batcher is stopped")
 	default:
+	}
+
+	// CRITICAL: Validate individual output size BEFORE adding to buffer
+	// This prevents a single large output from creating an oversized batch
+	if len(output) > maxSingleOutputBytes {
+		log.Error().
+			Int("output_size", len(output)).
+			Int("max_allowed", maxSingleOutputBytes).
+			Msg("Individual output exceeds maximum size limit")
+
+		return fmt.Errorf("output size %d bytes exceeds maximum allowed %d bytes (200KB). "+
+			"Large outputs must be split or truncated to ensure reliable event storage. "+
+			"Consider: (1) reducing output verbosity, (2) splitting large outputs across multiple writes, "+
+			"or (3) writing large data to files instead of stdout/stderr",
+			len(output), maxSingleOutputBytes)
 	}
 
 	// CRITICAL FIX: Make defensive copy to prevent external mutation

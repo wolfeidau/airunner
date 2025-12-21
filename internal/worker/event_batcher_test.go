@@ -714,3 +714,72 @@ func TestEventBatcherStopFlushesBeforeReturning(t *testing.T) {
 	batch := publishedEvents[0].GetOutputBatch()
 	require.Len(t, batch.Outputs, 10, "All outputs should be flushed")
 }
+
+func TestEventBatcherOversizedOutput(t *testing.T) {
+	publishedEvents := make([]*jobv1.JobEvent, 0)
+
+	batcher := NewEventBatcher(
+		&jobv1.ExecutionConfig{
+			Batching: &jobv1.BatchingConfig{
+				FlushIntervalSeconds:   10,
+				MaxBatchSize:           50,
+				MaxBatchBytes:          256 * 1024, // 256KB
+				PlaybackIntervalMillis: 50,
+			},
+		},
+		func(event *jobv1.JobEvent) error {
+			publishedEvents = append(publishedEvents, event)
+			return nil
+		},
+	)
+
+	t.Run("normal sized output succeeds", func(t *testing.T) {
+		// 10KB output should succeed
+		normalOutput := make([]byte, 10*1024)
+		for i := range normalOutput {
+			normalOutput[i] = 'A'
+		}
+
+		err := batcher.AddOutput(normalOutput, jobv1.StreamType_STREAM_TYPE_STDOUT)
+		require.NoError(t, err)
+	})
+
+	t.Run("oversized output rejected", func(t *testing.T) {
+		// 3MB output should be rejected (maxSingleOutputBytes = 200KB)
+		oversizedOutput := make([]byte, 3*1024*1024) // 3MB
+		for i := range oversizedOutput {
+			oversizedOutput[i] = 'B'
+		}
+
+		err := batcher.AddOutput(oversizedOutput, jobv1.StreamType_STREAM_TYPE_STDOUT)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "exceeds maximum allowed")
+		require.Contains(t, err.Error(), "200KB")
+		require.Contains(t, err.Error(), "reliable event storage")
+	})
+
+	t.Run("boundary sized output succeeds", func(t *testing.T) {
+		// Exactly at limit (200KB) should succeed
+		boundaryOutput := make([]byte, 200*1024)
+		for i := range boundaryOutput {
+			boundaryOutput[i] = 'C'
+		}
+
+		err := batcher.AddOutput(boundaryOutput, jobv1.StreamType_STREAM_TYPE_STDOUT)
+		require.NoError(t, err)
+	})
+
+	t.Run("slightly over limit rejected", func(t *testing.T) {
+		// Just over limit (200KB + 1 byte) should be rejected
+		overLimitOutput := make([]byte, 200*1024+1)
+		for i := range overLimitOutput {
+			overLimitOutput[i] = 'D'
+		}
+
+		err := batcher.AddOutput(overLimitOutput, jobv1.StreamType_STREAM_TYPE_STDOUT)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "exceeds maximum allowed")
+	})
+
+	require.NoError(t, batcher.Stop())
+}

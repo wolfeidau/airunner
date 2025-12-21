@@ -68,9 +68,10 @@ locals {
 
 # VPC and Networking
 resource "aws_vpc" "main" {
-  cidr_block           = "10.0.0.0/16"
-  enable_dns_hostnames = true
-  enable_dns_support   = true
+  cidr_block                       = "10.0.0.0/16"
+  assign_generated_ipv6_cidr_block = true
+  enable_dns_hostnames             = true
+  enable_dns_support               = true
 
   tags = {
     Name = "${local.name_prefix}-vpc"
@@ -86,11 +87,13 @@ resource "aws_internet_gateway" "main" {
 }
 
 resource "aws_subnet" "public" {
-  count                   = length(local.azs)
-  vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.0.${count.index + 1}.0/24"
-  availability_zone       = local.azs[count.index]
-  map_public_ip_on_launch = true
+  count                           = length(local.azs)
+  vpc_id                          = aws_vpc.main.id
+  cidr_block                      = "10.0.${count.index + 1}.0/24"
+  ipv6_cidr_block                 = cidrsubnet(aws_vpc.main.ipv6_cidr_block, 8, count.index)
+  availability_zone               = local.azs[count.index]
+  map_public_ip_on_launch         = true
+  assign_ipv6_address_on_creation = true
 
   tags = {
     Name = "${local.name_prefix}-public-subnet-${count.index + 1}"
@@ -105,6 +108,11 @@ resource "aws_route_table" "public" {
     gateway_id = aws_internet_gateway.main.id
   }
 
+  route {
+    ipv6_cidr_block = "::/0"
+    gateway_id      = aws_internet_gateway.main.id
+  }
+
   tags = {
     Name = "${local.name_prefix}-public-rt"
   }
@@ -116,6 +124,47 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
+# Private Subnets for ECS tasks
+resource "aws_subnet" "private" {
+  count                           = length(local.azs)
+  vpc_id                          = aws_vpc.main.id
+  cidr_block                      = "10.0.${count.index + 10}.0/24"
+  ipv6_cidr_block                 = cidrsubnet(aws_vpc.main.ipv6_cidr_block, 8, count.index + 10)
+  availability_zone               = local.azs[count.index]
+  assign_ipv6_address_on_creation = true
+
+  tags = {
+    Name = "${local.name_prefix}-private-subnet-${count.index + 1}"
+  }
+}
+
+# Private route table - routes IPv4 via NAT, IPv6 via IGW
+resource "aws_route_table" "private" {
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block           = "0.0.0.0/0"
+    network_interface_id = aws_instance.nat.primary_network_interface_id
+  }
+
+  route {
+    ipv6_cidr_block = "::/0"
+    gateway_id      = aws_internet_gateway.main.id
+  }
+
+  tags = {
+    Name = "${local.name_prefix}-private-rt"
+  }
+
+  depends_on = [aws_instance.nat]
+}
+
+resource "aws_route_table_association" "private" {
+  count          = length(aws_subnet.private)
+  subnet_id      = aws_subnet.private[count.index].id
+  route_table_id = aws_route_table.private.id
+}
+
 # Security Groups
 resource "aws_security_group" "alb" {
   name        = "${local.name_prefix}-alb-sg"
@@ -123,17 +172,35 @@ resource "aws_security_group" "alb" {
   vpc_id      = aws_vpc.main.id
 
   ingress {
+    description = "HTTPS from internet (IPv4)"
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  ingress {
+    description      = "HTTPS from internet (IPv6)"
+    from_port        = 443
+    to_port          = 443
+    protocol         = "tcp"
+    ipv6_cidr_blocks = ["::/0"]
+  }
+
   egress {
+    description = "Allow all outbound (IPv4)"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description      = "Allow all outbound (IPv6)"
+    from_port        = 0
+    to_port          = 0
+    protocol         = "-1"
+    ipv6_cidr_blocks = ["::/0"]
   }
 
   tags = {
@@ -147,6 +214,7 @@ resource "aws_security_group" "airunner" {
   vpc_id      = aws_vpc.main.id
 
   ingress {
+    description     = "Container port from ALB"
     from_port       = var.container_port
     to_port         = var.container_port
     protocol        = "tcp"
@@ -154,10 +222,19 @@ resource "aws_security_group" "airunner" {
   }
 
   egress {
+    description = "Allow all outbound (IPv4)"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description      = "Allow all outbound (IPv6)"
+    from_port        = 0
+    to_port          = 0
+    protocol         = "-1"
+    ipv6_cidr_blocks = ["::/0"]
   }
 
   tags = {
@@ -165,67 +242,157 @@ resource "aws_security_group" "airunner" {
   }
 }
 
-# Security Group for VPC Endpoints
-resource "aws_security_group" "vpc_endpoints" {
-  name        = "${local.name_prefix}-vpc-endpoints"
-  description = "Security group for VPC endpoints"
+# NAT Instance
+data "aws_ami" "amazon_linux_2023" {
+  most_recent = true
+  owners      = ["amazon"]
+
+  filter {
+    name   = "name"
+    values = ["al2023-ami-*-arm64"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+}
+
+resource "aws_security_group" "nat_instance" {
+  name        = "${local.name_prefix}-nat-instance-sg"
+  description = "Security group for NAT instance"
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    description     = "HTTPS from ECS tasks"
-    from_port       = 443
-    to_port         = 443
-    protocol        = "tcp"
-    security_groups = [aws_security_group.airunner.id]
+    description = "Allow all from VPC"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = [aws_vpc.main.cidr_block]
   }
 
   egress {
-    description = "Allow all outbound"
+    description = "Allow all outbound IPv4"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  egress {
+    description      = "Allow all outbound IPv6"
+    from_port        = 0
+    to_port          = 0
+    protocol         = "-1"
+    ipv6_cidr_blocks = ["::/0"]
+  }
+
+  tags = {
+    Name = "${local.name_prefix}-nat-instance-sg"
+  }
+}
+
+resource "aws_eip" "nat_instance" {
+  domain = "vpc"
+
+  tags = {
+    Name = "${local.name_prefix}-nat-instance-eip"
+  }
+}
+
+resource "aws_iam_role" "nat_instance" {
+  name = "nat-instance-${local.name_prefix}"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
+        Action = "sts:AssumeRole"
+      }
+    ]
+  })
+
+  tags = {
+    Name = "${local.name_prefix}-nat-instance-role"
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "nat_instance_ssm" {
+  role       = aws_iam_role.nat_instance.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_iam_instance_profile" "nat_instance" {
+  name = "nat-instance-${local.name_prefix}"
+  role = aws_iam_role.nat_instance.name
+}
+
+resource "aws_instance" "nat" {
+  ami                    = data.aws_ami.amazon_linux_2023.id
+  instance_type          = "t4g.nano"
+  subnet_id              = aws_subnet.public[0].id
+  vpc_security_group_ids = [aws_security_group.nat_instance.id]
+  iam_instance_profile   = aws_iam_instance_profile.nat_instance.name
+  source_dest_check      = false
+
+  user_data_base64 = base64encode(<<-EOF
+    #!/bin/bash
+    # Configure NAT
+    sysctl -w net.ipv4.ip_forward=1
+    echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+
+    # Get the network interface
+    INTERFACE=$(ip route | grep default | awk '{print $5}')
+
+    # Configure iptables for NAT
+    iptables -t nat -A POSTROUTING -o $INTERFACE -j MASQUERADE
+    iptables -A FORWARD -i $INTERFACE -o $INTERFACE -m state --state RELATED,ESTABLISHED -j ACCEPT
+    iptables -A FORWARD -i $INTERFACE -o $INTERFACE -j ACCEPT
+
+    # Save iptables rules
+    iptables-save > /etc/iptables.rules
+
+    # Restore iptables on boot
+    cat > /etc/systemd/system/iptables-restore.service <<'UNIT'
+    [Unit]
+    Description=Restore iptables rules
+    Before=network-pre.target
+
+    [Service]
+    Type=oneshot
+    ExecStart=/sbin/iptables-restore /etc/iptables.rules
+
+    [Install]
+    WantedBy=multi-user.target
+    UNIT
+
+    systemctl enable iptables-restore.service
+  EOF
+  )
+
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 1
+  }
+
+  monitoring = true
+
   tags = merge(
     local.common_tags,
     {
-      Name = "${local.name_prefix}-vpc-endpoints-sg"
+      Name = "${local.name_prefix}-nat-instance"
     }
   )
 }
 
-# VPC Endpoints
-# DynamoDB Gateway Endpoint (free)
-resource "aws_vpc_endpoint" "dynamodb" {
-  vpc_id            = aws_vpc.main.id
-  service_name      = "com.amazonaws.${data.aws_region.current.id}.dynamodb"
-  vpc_endpoint_type = "Gateway"
-  route_table_ids   = [aws_route_table.public.id]
-
-  tags = merge(
-    local.common_tags,
-    {
-      Name = "${local.name_prefix}-dynamodb-endpoint"
-    }
-  )
-}
-
-# SQS Interface Endpoint
-resource "aws_vpc_endpoint" "sqs" {
-  vpc_id              = aws_vpc.main.id
-  service_name        = "com.amazonaws.${data.aws_region.current.id}.sqs"
-  vpc_endpoint_type   = "Interface"
-  subnet_ids          = aws_subnet.public[*].id
-  security_group_ids  = [aws_security_group.vpc_endpoints.id]
-  private_dns_enabled = true
-
-  tags = merge(
-    local.common_tags,
-    {
-      Name = "${local.name_prefix}-sqs-endpoint"
-    }
-  )
+resource "aws_eip_association" "nat_instance" {
+  instance_id   = aws_instance.nat.id
+  allocation_id = aws_eip.nat_instance.id
 }
 
 # ECS Cluster
@@ -592,6 +759,7 @@ resource "aws_lb" "main" {
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb.id]
   subnets            = aws_subnet.public[*].id
+  ip_address_type    = "dualstack"
   idle_timeout       = 120
 
   enable_deletion_protection = false
@@ -703,6 +871,10 @@ resource "aws_ecs_task_definition" "airunner" {
           {
             name  = "AWS_REGION"
             value = data.aws_region.current.id
+          },
+          {
+            name  = "AWS_USE_DUALSTACK_ENDPOINT"
+            value = "true"
           }
         ],
         # Conditionally add OTEL_SERVICE_NAME only when OTEL is configured
@@ -771,7 +943,7 @@ resource "aws_ecs_service" "airunner" {
   launch_type     = "EC2"
 
   network_configuration {
-    subnets         = aws_subnet.public[*].id
+    subnets         = aws_subnet.private[*].id
     security_groups = [aws_security_group.airunner.id]
   }
 

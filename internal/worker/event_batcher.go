@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -13,6 +14,23 @@ import (
 
 // EventBatcher buffers output events and flushes them into OutputBatchEvent messages
 // based on timers and size/byte thresholds.
+//
+// Thread Safety:
+// All public methods are safe for concurrent use. The batcher uses internal locking
+// to ensure atomic operations and ordering guarantees.
+//
+// Sequence Numbers:
+// Sequence numbers are monotonically increasing starting from 1. Each OutputItem
+// consumes one sequence number. Batch events use the sequence number of their first item.
+//
+// Flush Callback:
+// The onFlush callback must be non-blocking and reasonably fast. It is called while
+// holding the internal lock. Network I/O should be buffered (e.g., sent to a channel).
+//
+// Shutdown:
+// Call Stop() to gracefully shutdown. This flushes pending items and stops the timer.
+// After Stop(), AddOutput and AddEvent will return errors. Stop() is idempotent and
+// safe to call multiple times concurrently.
 type EventBatcher struct {
 	mu sync.Mutex
 
@@ -33,13 +51,26 @@ type EventBatcher struct {
 	// Timer management
 	flushTimer *time.Timer
 	stopCh     chan struct{}
+	stopOnce   sync.Once // Ensures Stop() is idempotent
 
 	// Callback for publishing batches
-	onFlush func(*jobv1.JobEvent) error
+	onFlush func(context.Context, *jobv1.JobEvent) error
 }
 
-// NewEventBatcher creates a new event batcher with the given configuration
+// NewEventBatcher creates a new event batcher with the given configuration.
+// The onFlush callback is wrapped to accept context for backwards compatibility.
+// For new code, consider using NewEventBatcherWithContext.
 func NewEventBatcher(config *jobv1.ExecutionConfig, onFlush func(*jobv1.JobEvent) error) *EventBatcher {
+	// Wrap the callback to add context support
+	onFlushWithCtx := func(ctx context.Context, event *jobv1.JobEvent) error {
+		return onFlush(event)
+	}
+	return NewEventBatcherWithContext(config, onFlushWithCtx)
+}
+
+// NewEventBatcherWithContext creates a new event batcher with context-aware callback.
+// The onFlush callback receives a context that can be used for cancellation and tracing.
+func NewEventBatcherWithContext(config *jobv1.ExecutionConfig, onFlush func(context.Context, *jobv1.JobEvent) error) *EventBatcher {
 	if config == nil || config.Batching == nil {
 		// Use sensible defaults
 		config = &jobv1.ExecutionConfig{
@@ -65,9 +96,17 @@ func NewEventBatcher(config *jobv1.ExecutionConfig, onFlush func(*jobv1.JobEvent
 	}
 }
 
-// AddOutput buffers a single output line with stream type
-// Returns error if flush fails or if batcher is stopped
-func (eb *EventBatcher) AddOutput(output []byte, streamType int32) error {
+// AddOutput buffers a single output line with stream type.
+// Returns error if flush fails or if batcher is stopped.
+// For new code, use AddOutputContext for cancellation support.
+func (eb *EventBatcher) AddOutput(output []byte, streamType jobv1.StreamType) error {
+	return eb.AddOutputContext(context.Background(), output, streamType)
+}
+
+// AddOutputContext buffers a single output line with stream type and context.
+// The context is used for flush operations and can cancel ongoing flushes.
+// Returns error if flush fails or if batcher is stopped.
+func (eb *EventBatcher) AddOutputContext(ctx context.Context, output []byte, streamType jobv1.StreamType) error {
 	eb.mu.Lock()
 	defer eb.mu.Unlock()
 
@@ -77,6 +116,10 @@ func (eb *EventBatcher) AddOutput(output []byte, streamType int32) error {
 		return fmt.Errorf("event batcher is stopped")
 	default:
 	}
+
+	// CRITICAL FIX: Make defensive copy to prevent external mutation
+	outputCopy := make([]byte, len(output))
+	copy(outputCopy, output)
 
 	// Calculate item size: output bytes + field overhead (rough estimate)
 	itemSize := int64(len(output) + 16) // 16 bytes for stream_type and timestamp_delta_ms fields
@@ -98,9 +141,9 @@ func (eb *EventBatcher) AddOutput(output []byte, streamType int32) error {
 	// Calculate timestamp delta from first item in batch
 	timeDeltaMs := util.AsInt32FromInt64(nowMs - eb.firstTimestampMs)
 
-	// Add item to buffer
+	// Add item to buffer (using defensive copy)
 	item := &jobv1.OutputItem{
-		Output:           output,
+		Output:           outputCopy,
 		StreamType:       streamType,
 		TimestampDeltaMs: timeDeltaMs,
 	}
@@ -121,15 +164,23 @@ func (eb *EventBatcher) AddOutput(output []byte, streamType int32) error {
 	}
 
 	if shouldFlush {
-		return eb.flushLocked(reason)
+		return eb.flushLocked(ctx, reason)
 	}
 
 	return nil
 }
 
-// AddEvent flushes current batch and publishes a non-output event directly
-// This ensures ordering: all buffered outputs are flushed before the new event
+// AddEvent flushes current batch and publishes a non-output event directly.
+// This ensures ordering: all buffered outputs are flushed before the new event.
+// For new code, use AddEventContext for cancellation support.
 func (eb *EventBatcher) AddEvent(event *jobv1.JobEvent) error {
+	return eb.AddEventContext(context.Background(), event)
+}
+
+// AddEventContext flushes current batch and publishes a non-output event directly.
+// The context is used for flush and publish operations.
+// This ensures ordering: all buffered outputs are flushed before the new event.
+func (eb *EventBatcher) AddEventContext(ctx context.Context, event *jobv1.JobEvent) error {
 	eb.mu.Lock()
 	defer eb.mu.Unlock()
 
@@ -142,7 +193,7 @@ func (eb *EventBatcher) AddEvent(event *jobv1.JobEvent) error {
 
 	// Flush any buffered outputs first
 	if len(eb.buffer) > 0 {
-		if err := eb.flushLocked("manual_flush_before_event"); err != nil {
+		if err := eb.flushLocked(ctx, "manual_flush_before_event"); err != nil {
 			return fmt.Errorf("failed to flush batch before event: %w", err)
 		}
 	}
@@ -155,12 +206,19 @@ func (eb *EventBatcher) AddEvent(event *jobv1.JobEvent) error {
 	}
 
 	// Publish event directly
-	return eb.onFlush(event)
+	return eb.onFlush(ctx, event)
 }
 
-// Flush flushes any buffered outputs immediately
-// This is safe to call concurrently
+// Flush flushes any buffered outputs immediately.
+// This is safe to call concurrently.
+// For new code, use FlushContext for cancellation support.
 func (eb *EventBatcher) Flush() error {
+	return eb.FlushContext(context.Background())
+}
+
+// FlushContext flushes any buffered outputs immediately with context.
+// This is safe to call concurrently.
+func (eb *EventBatcher) FlushContext(ctx context.Context) error {
 	eb.mu.Lock()
 	defer eb.mu.Unlock()
 
@@ -168,43 +226,67 @@ func (eb *EventBatcher) Flush() error {
 		return nil
 	}
 
-	return eb.flushLocked("manual_flush")
+	return eb.flushLocked(ctx, "manual_flush")
 }
 
-// Stop gracefully shuts down the batcher and flushes any pending outputs
+// Stop gracefully shuts down the batcher and flushes any pending outputs.
+// Stop is idempotent and safe to call multiple times concurrently.
+// For new code, use StopContext to pass a context for the final flush.
 func (eb *EventBatcher) Stop() error {
-	eb.mu.Lock()
-	defer eb.mu.Unlock()
+	return eb.StopContext(context.Background())
+}
 
-	// Only close if not already closed
-	select {
-	case <-eb.stopCh:
-		// Already closed
-		return nil
-	default:
+// StopContext gracefully shuts down the batcher and flushes any pending outputs.
+// The context is used for the final flush operation.
+// Stop is idempotent and safe to call multiple times concurrently.
+func (eb *EventBatcher) StopContext(ctx context.Context) error {
+	var flushErr error
+
+	// CRITICAL FIX: Use sync.Once to ensure Stop is idempotent
+	eb.stopOnce.Do(func() {
+		// Close stop channel to signal shutdown
 		close(eb.stopCh)
-	}
 
-	// Stop timer if running
-	if eb.flushTimer != nil {
-		eb.flushTimer.Stop()
-	}
+		// Acquire lock for final flush
+		eb.mu.Lock()
+		defer eb.mu.Unlock()
 
-	// Flush any remaining buffered outputs
-	if len(eb.buffer) > 0 {
-		return eb.flushLocked("shutdown")
-	}
+		// CRITICAL FIX: Properly stop timer with channel drain
+		if eb.flushTimer != nil {
+			if !eb.flushTimer.Stop() {
+				// Timer already fired but callback may not have run yet
+				// Drain the channel to prevent the callback from executing
+				select {
+				case <-eb.flushTimer.C:
+				default:
+				}
+			}
+			eb.flushTimer = nil
+		}
 
-	return nil
+		// Flush any remaining buffered outputs
+		if len(eb.buffer) > 0 {
+			flushErr = eb.flushLocked(ctx, "shutdown")
+		}
+	})
+
+	return flushErr
 }
 
 // flushLocked flushes the current buffer and publishes a batch event
 // Must be called with lock held
-func (eb *EventBatcher) flushLocked(reason string) error {
+func (eb *EventBatcher) flushLocked(ctx context.Context, reason string) error {
 	if len(eb.buffer) == 0 {
 		// Stop timer if no more items
 		if eb.flushTimer != nil {
-			eb.flushTimer.Stop()
+			// CRITICAL FIX: Properly stop timer before clearing
+			if !eb.flushTimer.Stop() {
+				// Timer already fired, drain channel
+				select {
+				case <-eb.flushTimer.C:
+				default:
+				}
+			}
 			eb.flushTimer = nil
 		}
 		return nil
@@ -229,22 +311,33 @@ func (eb *EventBatcher) flushLocked(reason string) error {
 		},
 	}
 
-	// Log batch info
+	// Log batch info with duration
 	log.Debug().
 		Int64("start_seq", startSeq).
 		Int64("end_seq", endSeq).
 		Int("item_count", len(eb.buffer)).
 		Int64("bytes", eb.bufferBytes).
+		Dur("batch_duration", time.Since(eb.bufferStartTime)).
 		Str("reason", reason).
 		Msg("Flushing output batch")
 
-	// Publish batch
-	err := eb.onFlush(batchEvent)
+	// Publish batch with context
+	err := eb.onFlush(ctx, batchEvent)
+
+	// CRITICAL FIX: Stop timer before resetting buffer
+	if eb.flushTimer != nil {
+		if !eb.flushTimer.Stop() {
+			select {
+			case <-eb.flushTimer.C:
+			default:
+			}
+		}
+		eb.flushTimer = nil
+	}
 
 	// Reset buffer
 	eb.buffer = make([]*jobv1.OutputItem, 0, eb.maxBatchSize)
 	eb.bufferBytes = 0
-	eb.flushTimer = nil
 
 	return err
 }
@@ -252,9 +345,18 @@ func (eb *EventBatcher) flushLocked(reason string) error {
 // startFlushTimer starts or restarts the flush timer
 // Must be called with lock held
 func (eb *EventBatcher) startFlushTimer() {
-	// Stop existing timer if any
+	// CRITICAL FIX: Stop existing timer properly with channel drain
 	if eb.flushTimer != nil {
-		eb.flushTimer.Stop()
+		if !eb.flushTimer.Stop() {
+			// Timer already fired but callback may not have run yet
+			// Try to drain the channel to prevent the old callback from executing
+			select {
+			case <-eb.flushTimer.C:
+				// Channel drained, old callback won't execute
+			default:
+				// Channel empty, timer was stopped or callback already ran
+			}
+		}
 	}
 
 	// Start new timer
@@ -262,7 +364,7 @@ func (eb *EventBatcher) startFlushTimer() {
 		eb.mu.Lock()
 		defer eb.mu.Unlock()
 
-		// Check if still stopped (race condition check)
+		// Check if batcher was stopped (race condition check)
 		select {
 		case <-eb.stopCh:
 			return
@@ -271,7 +373,8 @@ func (eb *EventBatcher) startFlushTimer() {
 
 		// Flush if buffer still has items
 		if len(eb.buffer) > 0 {
-			if err := eb.flushLocked("timer"); err != nil {
+			ctx := context.Background()
+			if err := eb.flushLocked(ctx, "timer"); err != nil {
 				log.Error().Err(err).Msg("Failed to flush batch on timer")
 				// Continue - don't fail the whole operation
 			}

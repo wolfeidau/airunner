@@ -23,6 +23,55 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type StreamType int32
+
+const (
+	StreamType_STREAM_TYPE_UNSPECIFIED StreamType = 0
+	StreamType_STREAM_TYPE_STDOUT      StreamType = 1
+	StreamType_STREAM_TYPE_STDERR      StreamType = 2
+)
+
+// Enum value maps for StreamType.
+var (
+	StreamType_name = map[int32]string{
+		0: "STREAM_TYPE_UNSPECIFIED",
+		1: "STREAM_TYPE_STDOUT",
+		2: "STREAM_TYPE_STDERR",
+	}
+	StreamType_value = map[string]int32{
+		"STREAM_TYPE_UNSPECIFIED": 0,
+		"STREAM_TYPE_STDOUT":      1,
+		"STREAM_TYPE_STDERR":      2,
+	}
+)
+
+func (x StreamType) Enum() *StreamType {
+	p := new(StreamType)
+	*p = x
+	return p
+}
+
+func (x StreamType) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (StreamType) Descriptor() protoreflect.EnumDescriptor {
+	return file_job_v1_job_proto_enumTypes[0].Descriptor()
+}
+
+func (StreamType) Type() protoreflect.EnumType {
+	return &file_job_v1_job_proto_enumTypes[0]
+}
+
+func (x StreamType) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use StreamType.Descriptor instead.
+func (StreamType) EnumDescriptor() ([]byte, []int) {
+	return file_job_v1_job_proto_rawDescGZIP(), []int{0}
+}
+
 type EventType int32
 
 const (
@@ -71,11 +120,11 @@ func (x EventType) String() string {
 }
 
 func (EventType) Descriptor() protoreflect.EnumDescriptor {
-	return file_job_v1_job_proto_enumTypes[0].Descriptor()
+	return file_job_v1_job_proto_enumTypes[1].Descriptor()
 }
 
 func (EventType) Type() protoreflect.EnumType {
-	return &file_job_v1_job_proto_enumTypes[0]
+	return &file_job_v1_job_proto_enumTypes[1]
 }
 
 func (x EventType) Number() protoreflect.EnumNumber {
@@ -84,7 +133,7 @@ func (x EventType) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use EventType.Descriptor instead.
 func (EventType) EnumDescriptor() ([]byte, []int) {
-	return file_job_v1_job_proto_rawDescGZIP(), []int{0}
+	return file_job_v1_job_proto_rawDescGZIP(), []int{1}
 }
 
 type ProcessType int32
@@ -120,11 +169,11 @@ func (x ProcessType) String() string {
 }
 
 func (ProcessType) Descriptor() protoreflect.EnumDescriptor {
-	return file_job_v1_job_proto_enumTypes[1].Descriptor()
+	return file_job_v1_job_proto_enumTypes[2].Descriptor()
 }
 
 func (ProcessType) Type() protoreflect.EnumType {
-	return &file_job_v1_job_proto_enumTypes[1]
+	return &file_job_v1_job_proto_enumTypes[2]
 }
 
 func (x ProcessType) Number() protoreflect.EnumNumber {
@@ -133,7 +182,7 @@ func (x ProcessType) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ProcessType.Descriptor instead.
 func (ProcessType) EnumDescriptor() ([]byte, []int) {
-	return file_job_v1_job_proto_rawDescGZIP(), []int{1}
+	return file_job_v1_job_proto_rawDescGZIP(), []int{2}
 }
 
 type JobState int32
@@ -178,11 +227,11 @@ func (x JobState) String() string {
 }
 
 func (JobState) Descriptor() protoreflect.EnumDescriptor {
-	return file_job_v1_job_proto_enumTypes[2].Descriptor()
+	return file_job_v1_job_proto_enumTypes[3].Descriptor()
 }
 
 func (JobState) Type() protoreflect.EnumType {
-	return &file_job_v1_job_proto_enumTypes[2]
+	return &file_job_v1_job_proto_enumTypes[3]
 }
 
 func (x JobState) Number() protoreflect.EnumNumber {
@@ -191,7 +240,7 @@ func (x JobState) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use JobState.Descriptor instead.
 func (JobState) EnumDescriptor() ([]byte, []int) {
-	return file_job_v1_job_proto_rawDescGZIP(), []int{2}
+	return file_job_v1_job_proto_rawDescGZIP(), []int{3}
 }
 
 type JobEvent struct {
@@ -703,9 +752,9 @@ func (x *OutputEvent) GetOutput() []byte {
 // Individual output item in a batch
 type OutputItem struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
-	Output           []byte                 `protobuf:"bytes,1,opt,name=output,proto3" json:"output,omitempty"`                                                // Output data (stdout/stderr)
-	StreamType       int32                  `protobuf:"varint,2,opt,name=stream_type,json=streamType,proto3" json:"stream_type,omitempty"`                     // 0=stdout, 1=stderr
-	TimestampDeltaMs int32                  `protobuf:"varint,3,opt,name=timestamp_delta_ms,json=timestampDeltaMs,proto3" json:"timestamp_delta_ms,omitempty"` // Delta from previous output in milliseconds
+	Output           []byte                 `protobuf:"bytes,1,opt,name=output,proto3" json:"output,omitempty"`                                                   // Output data (stdout/stderr)
+	StreamType       StreamType             `protobuf:"varint,2,opt,name=stream_type,json=streamType,proto3,enum=job.v1.StreamType" json:"stream_type,omitempty"` // stdout or stderr
+	TimestampDeltaMs int32                  `protobuf:"varint,3,opt,name=timestamp_delta_ms,json=timestampDeltaMs,proto3" json:"timestamp_delta_ms,omitempty"`    // Delta from previous output in milliseconds
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -747,11 +796,11 @@ func (x *OutputItem) GetOutput() []byte {
 	return nil
 }
 
-func (x *OutputItem) GetStreamType() int32 {
+func (x *OutputItem) GetStreamType() StreamType {
 	if x != nil {
 		return x.StreamType
 	}
-	return 0
+	return StreamType_STREAM_TYPE_UNSPECIFIED
 }
 
 func (x *OutputItem) GetTimestampDeltaMs() int32 {
@@ -2040,11 +2089,11 @@ const file_job_v1_job_proto_rawDesc = "" +
 	"\fwidth_pixels\x18\x03 \x01(\x05R\vwidthPixels\x12#\n" +
 	"\rheight_pixels\x18\x04 \x01(\x05R\fheightPixels\"%\n" +
 	"\vOutputEvent\x12\x16\n" +
-	"\x06output\x18\x01 \x01(\fR\x06output\"s\n" +
+	"\x06output\x18\x01 \x01(\fR\x06output\"\x87\x01\n" +
 	"\n" +
 	"OutputItem\x12\x16\n" +
-	"\x06output\x18\x01 \x01(\fR\x06output\x12\x1f\n" +
-	"\vstream_type\x18\x02 \x01(\x05R\n" +
+	"\x06output\x18\x01 \x01(\fR\x06output\x123\n" +
+	"\vstream_type\x18\x02 \x01(\x0e2\x12.job.v1.StreamTypeR\n" +
 	"streamType\x12,\n" +
 	"\x12timestamp_delta_ms\x18\x03 \x01(\x05R\x10timestampDeltaMs\"\xf2\x01\n" +
 	"\x10OutputBatchEvent\x12,\n" +
@@ -2150,7 +2199,12 @@ const file_job_v1_job_proto_rawDesc = "" +
 	"\rerror_message\x18\x04 \x01(\tR\ferrorMessage\x129\n" +
 	"\n" +
 	"started_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt\x12=\n" +
-	"\fcompleted_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\vcompletedAt*\xed\x01\n" +
+	"\fcompleted_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\vcompletedAt*Y\n" +
+	"\n" +
+	"StreamType\x12\x1b\n" +
+	"\x17STREAM_TYPE_UNSPECIFIED\x10\x00\x12\x16\n" +
+	"\x12STREAM_TYPE_STDOUT\x10\x01\x12\x16\n" +
+	"\x12STREAM_TYPE_STDERR\x10\x02*\xed\x01\n" +
 	"\tEventType\x12\x1a\n" +
 	"\x16EVENT_TYPE_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18EVENT_TYPE_PROCESS_START\x10\x01\x12\x1a\n" +
@@ -2198,99 +2252,101 @@ func file_job_v1_job_proto_rawDescGZIP() []byte {
 	return file_job_v1_job_proto_rawDescData
 }
 
-var file_job_v1_job_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_job_v1_job_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
 var file_job_v1_job_proto_msgTypes = make([]protoimpl.MessageInfo, 30)
 var file_job_v1_job_proto_goTypes = []any{
-	(EventType)(0),                   // 0: job.v1.EventType
-	(ProcessType)(0),                 // 1: job.v1.ProcessType
-	(JobState)(0),                    // 2: job.v1.JobState
-	(*JobEvent)(nil),                 // 3: job.v1.JobEvent
-	(*ProcessStartEvent)(nil),        // 4: job.v1.ProcessStartEvent
-	(*ProcessEndEvent)(nil),          // 5: job.v1.ProcessEndEvent
-	(*ProcessErrorEvent)(nil),        // 6: job.v1.ProcessErrorEvent
-	(*HeartbeatEvent)(nil),           // 7: job.v1.HeartbeatEvent
-	(*TerminalResizeEvent)(nil),      // 8: job.v1.TerminalResizeEvent
-	(*OutputEvent)(nil),              // 9: job.v1.OutputEvent
-	(*OutputItem)(nil),               // 10: job.v1.OutputItem
-	(*OutputBatchEvent)(nil),         // 11: job.v1.OutputBatchEvent
-	(*BatchingConfig)(nil),           // 12: job.v1.BatchingConfig
-	(*ExecutionConfig)(nil),          // 13: job.v1.ExecutionConfig
-	(*PublishJobEventsRequest)(nil),  // 14: job.v1.PublishJobEventsRequest
-	(*PublishJobEventsResponse)(nil), // 15: job.v1.PublishJobEventsResponse
-	(*StreamJobEventsRequest)(nil),   // 16: job.v1.StreamJobEventsRequest
-	(*StreamJobEventsResponse)(nil),  // 17: job.v1.StreamJobEventsResponse
-	(*EnqueueJobRequest)(nil),        // 18: job.v1.EnqueueJobRequest
-	(*EnqueueJobResponse)(nil),       // 19: job.v1.EnqueueJobResponse
-	(*DequeueJobRequest)(nil),        // 20: job.v1.DequeueJobRequest
-	(*DequeueJobResponse)(nil),       // 21: job.v1.DequeueJobResponse
-	(*UpdateJobRequest)(nil),         // 22: job.v1.UpdateJobRequest
-	(*UpdateJobResponse)(nil),        // 23: job.v1.UpdateJobResponse
-	(*ListJobsRequest)(nil),          // 24: job.v1.ListJobsRequest
-	(*ListJobsResponse)(nil),         // 25: job.v1.ListJobsResponse
-	(*JobParams)(nil),                // 26: job.v1.JobParams
-	(*Job)(nil),                      // 27: job.v1.Job
-	(*CompleteJobRequest)(nil),       // 28: job.v1.CompleteJobRequest
-	(*CompleteJobResponse)(nil),      // 29: job.v1.CompleteJobResponse
-	(*JobResult)(nil),                // 30: job.v1.JobResult
-	nil,                              // 31: job.v1.JobParams.EnvironmentEntry
-	nil,                              // 32: job.v1.JobParams.MetadataEntry
-	(*timestamppb.Timestamp)(nil),    // 33: google.protobuf.Timestamp
-	(*durationpb.Duration)(nil),      // 34: google.protobuf.Duration
+	(StreamType)(0),                  // 0: job.v1.StreamType
+	(EventType)(0),                   // 1: job.v1.EventType
+	(ProcessType)(0),                 // 2: job.v1.ProcessType
+	(JobState)(0),                    // 3: job.v1.JobState
+	(*JobEvent)(nil),                 // 4: job.v1.JobEvent
+	(*ProcessStartEvent)(nil),        // 5: job.v1.ProcessStartEvent
+	(*ProcessEndEvent)(nil),          // 6: job.v1.ProcessEndEvent
+	(*ProcessErrorEvent)(nil),        // 7: job.v1.ProcessErrorEvent
+	(*HeartbeatEvent)(nil),           // 8: job.v1.HeartbeatEvent
+	(*TerminalResizeEvent)(nil),      // 9: job.v1.TerminalResizeEvent
+	(*OutputEvent)(nil),              // 10: job.v1.OutputEvent
+	(*OutputItem)(nil),               // 11: job.v1.OutputItem
+	(*OutputBatchEvent)(nil),         // 12: job.v1.OutputBatchEvent
+	(*BatchingConfig)(nil),           // 13: job.v1.BatchingConfig
+	(*ExecutionConfig)(nil),          // 14: job.v1.ExecutionConfig
+	(*PublishJobEventsRequest)(nil),  // 15: job.v1.PublishJobEventsRequest
+	(*PublishJobEventsResponse)(nil), // 16: job.v1.PublishJobEventsResponse
+	(*StreamJobEventsRequest)(nil),   // 17: job.v1.StreamJobEventsRequest
+	(*StreamJobEventsResponse)(nil),  // 18: job.v1.StreamJobEventsResponse
+	(*EnqueueJobRequest)(nil),        // 19: job.v1.EnqueueJobRequest
+	(*EnqueueJobResponse)(nil),       // 20: job.v1.EnqueueJobResponse
+	(*DequeueJobRequest)(nil),        // 21: job.v1.DequeueJobRequest
+	(*DequeueJobResponse)(nil),       // 22: job.v1.DequeueJobResponse
+	(*UpdateJobRequest)(nil),         // 23: job.v1.UpdateJobRequest
+	(*UpdateJobResponse)(nil),        // 24: job.v1.UpdateJobResponse
+	(*ListJobsRequest)(nil),          // 25: job.v1.ListJobsRequest
+	(*ListJobsResponse)(nil),         // 26: job.v1.ListJobsResponse
+	(*JobParams)(nil),                // 27: job.v1.JobParams
+	(*Job)(nil),                      // 28: job.v1.Job
+	(*CompleteJobRequest)(nil),       // 29: job.v1.CompleteJobRequest
+	(*CompleteJobResponse)(nil),      // 30: job.v1.CompleteJobResponse
+	(*JobResult)(nil),                // 31: job.v1.JobResult
+	nil,                              // 32: job.v1.JobParams.EnvironmentEntry
+	nil,                              // 33: job.v1.JobParams.MetadataEntry
+	(*timestamppb.Timestamp)(nil),    // 34: google.protobuf.Timestamp
+	(*durationpb.Duration)(nil),      // 35: google.protobuf.Duration
 }
 var file_job_v1_job_proto_depIdxs = []int32{
-	33, // 0: job.v1.JobEvent.timestamp:type_name -> google.protobuf.Timestamp
-	0,  // 1: job.v1.JobEvent.event_type:type_name -> job.v1.EventType
-	4,  // 2: job.v1.JobEvent.process_start:type_name -> job.v1.ProcessStartEvent
-	5,  // 3: job.v1.JobEvent.process_end:type_name -> job.v1.ProcessEndEvent
-	6,  // 4: job.v1.JobEvent.process_error:type_name -> job.v1.ProcessErrorEvent
-	7,  // 5: job.v1.JobEvent.heartbeat:type_name -> job.v1.HeartbeatEvent
-	9,  // 6: job.v1.JobEvent.output:type_name -> job.v1.OutputEvent
-	8,  // 7: job.v1.JobEvent.terminal_resize:type_name -> job.v1.TerminalResizeEvent
-	11, // 8: job.v1.JobEvent.output_batch:type_name -> job.v1.OutputBatchEvent
-	33, // 9: job.v1.ProcessStartEvent.started_at:type_name -> google.protobuf.Timestamp
-	34, // 10: job.v1.ProcessEndEvent.run_duration:type_name -> google.protobuf.Duration
-	34, // 11: job.v1.HeartbeatEvent.elapsed_time:type_name -> google.protobuf.Duration
-	10, // 12: job.v1.OutputBatchEvent.outputs:type_name -> job.v1.OutputItem
-	12, // 13: job.v1.ExecutionConfig.batching:type_name -> job.v1.BatchingConfig
-	3,  // 14: job.v1.PublishJobEventsRequest.events:type_name -> job.v1.JobEvent
-	0,  // 15: job.v1.StreamJobEventsRequest.event_filter:type_name -> job.v1.EventType
-	3,  // 16: job.v1.StreamJobEventsResponse.event:type_name -> job.v1.JobEvent
-	26, // 17: job.v1.EnqueueJobRequest.job_params:type_name -> job.v1.JobParams
-	33, // 18: job.v1.EnqueueJobResponse.created_at:type_name -> google.protobuf.Timestamp
-	2,  // 19: job.v1.EnqueueJobResponse.state:type_name -> job.v1.JobState
-	27, // 20: job.v1.DequeueJobResponse.job:type_name -> job.v1.Job
-	2,  // 21: job.v1.ListJobsRequest.state:type_name -> job.v1.JobState
-	27, // 22: job.v1.ListJobsResponse.jobs:type_name -> job.v1.Job
-	31, // 23: job.v1.JobParams.environment:type_name -> job.v1.JobParams.EnvironmentEntry
-	32, // 24: job.v1.JobParams.metadata:type_name -> job.v1.JobParams.MetadataEntry
-	1,  // 25: job.v1.JobParams.process_type:type_name -> job.v1.ProcessType
-	26, // 26: job.v1.Job.job_params:type_name -> job.v1.JobParams
-	2,  // 27: job.v1.Job.state:type_name -> job.v1.JobState
-	33, // 28: job.v1.Job.created_at:type_name -> google.protobuf.Timestamp
-	33, // 29: job.v1.Job.updated_at:type_name -> google.protobuf.Timestamp
-	13, // 30: job.v1.Job.execution_config:type_name -> job.v1.ExecutionConfig
-	30, // 31: job.v1.CompleteJobRequest.job_result:type_name -> job.v1.JobResult
-	33, // 32: job.v1.JobResult.started_at:type_name -> google.protobuf.Timestamp
-	33, // 33: job.v1.JobResult.completed_at:type_name -> google.protobuf.Timestamp
-	18, // 34: job.v1.JobService.EnqueueJob:input_type -> job.v1.EnqueueJobRequest
-	20, // 35: job.v1.JobService.DequeueJob:input_type -> job.v1.DequeueJobRequest
-	22, // 36: job.v1.JobService.UpdateJob:input_type -> job.v1.UpdateJobRequest
-	28, // 37: job.v1.JobService.CompleteJob:input_type -> job.v1.CompleteJobRequest
-	24, // 38: job.v1.JobService.ListJobs:input_type -> job.v1.ListJobsRequest
-	16, // 39: job.v1.JobEventsService.StreamJobEvents:input_type -> job.v1.StreamJobEventsRequest
-	14, // 40: job.v1.JobEventsService.PublishJobEvents:input_type -> job.v1.PublishJobEventsRequest
-	19, // 41: job.v1.JobService.EnqueueJob:output_type -> job.v1.EnqueueJobResponse
-	21, // 42: job.v1.JobService.DequeueJob:output_type -> job.v1.DequeueJobResponse
-	23, // 43: job.v1.JobService.UpdateJob:output_type -> job.v1.UpdateJobResponse
-	29, // 44: job.v1.JobService.CompleteJob:output_type -> job.v1.CompleteJobResponse
-	25, // 45: job.v1.JobService.ListJobs:output_type -> job.v1.ListJobsResponse
-	17, // 46: job.v1.JobEventsService.StreamJobEvents:output_type -> job.v1.StreamJobEventsResponse
-	15, // 47: job.v1.JobEventsService.PublishJobEvents:output_type -> job.v1.PublishJobEventsResponse
-	41, // [41:48] is the sub-list for method output_type
-	34, // [34:41] is the sub-list for method input_type
-	34, // [34:34] is the sub-list for extension type_name
-	34, // [34:34] is the sub-list for extension extendee
-	0,  // [0:34] is the sub-list for field type_name
+	34, // 0: job.v1.JobEvent.timestamp:type_name -> google.protobuf.Timestamp
+	1,  // 1: job.v1.JobEvent.event_type:type_name -> job.v1.EventType
+	5,  // 2: job.v1.JobEvent.process_start:type_name -> job.v1.ProcessStartEvent
+	6,  // 3: job.v1.JobEvent.process_end:type_name -> job.v1.ProcessEndEvent
+	7,  // 4: job.v1.JobEvent.process_error:type_name -> job.v1.ProcessErrorEvent
+	8,  // 5: job.v1.JobEvent.heartbeat:type_name -> job.v1.HeartbeatEvent
+	10, // 6: job.v1.JobEvent.output:type_name -> job.v1.OutputEvent
+	9,  // 7: job.v1.JobEvent.terminal_resize:type_name -> job.v1.TerminalResizeEvent
+	12, // 8: job.v1.JobEvent.output_batch:type_name -> job.v1.OutputBatchEvent
+	34, // 9: job.v1.ProcessStartEvent.started_at:type_name -> google.protobuf.Timestamp
+	35, // 10: job.v1.ProcessEndEvent.run_duration:type_name -> google.protobuf.Duration
+	35, // 11: job.v1.HeartbeatEvent.elapsed_time:type_name -> google.protobuf.Duration
+	0,  // 12: job.v1.OutputItem.stream_type:type_name -> job.v1.StreamType
+	11, // 13: job.v1.OutputBatchEvent.outputs:type_name -> job.v1.OutputItem
+	13, // 14: job.v1.ExecutionConfig.batching:type_name -> job.v1.BatchingConfig
+	4,  // 15: job.v1.PublishJobEventsRequest.events:type_name -> job.v1.JobEvent
+	1,  // 16: job.v1.StreamJobEventsRequest.event_filter:type_name -> job.v1.EventType
+	4,  // 17: job.v1.StreamJobEventsResponse.event:type_name -> job.v1.JobEvent
+	27, // 18: job.v1.EnqueueJobRequest.job_params:type_name -> job.v1.JobParams
+	34, // 19: job.v1.EnqueueJobResponse.created_at:type_name -> google.protobuf.Timestamp
+	3,  // 20: job.v1.EnqueueJobResponse.state:type_name -> job.v1.JobState
+	28, // 21: job.v1.DequeueJobResponse.job:type_name -> job.v1.Job
+	3,  // 22: job.v1.ListJobsRequest.state:type_name -> job.v1.JobState
+	28, // 23: job.v1.ListJobsResponse.jobs:type_name -> job.v1.Job
+	32, // 24: job.v1.JobParams.environment:type_name -> job.v1.JobParams.EnvironmentEntry
+	33, // 25: job.v1.JobParams.metadata:type_name -> job.v1.JobParams.MetadataEntry
+	2,  // 26: job.v1.JobParams.process_type:type_name -> job.v1.ProcessType
+	27, // 27: job.v1.Job.job_params:type_name -> job.v1.JobParams
+	3,  // 28: job.v1.Job.state:type_name -> job.v1.JobState
+	34, // 29: job.v1.Job.created_at:type_name -> google.protobuf.Timestamp
+	34, // 30: job.v1.Job.updated_at:type_name -> google.protobuf.Timestamp
+	14, // 31: job.v1.Job.execution_config:type_name -> job.v1.ExecutionConfig
+	31, // 32: job.v1.CompleteJobRequest.job_result:type_name -> job.v1.JobResult
+	34, // 33: job.v1.JobResult.started_at:type_name -> google.protobuf.Timestamp
+	34, // 34: job.v1.JobResult.completed_at:type_name -> google.protobuf.Timestamp
+	19, // 35: job.v1.JobService.EnqueueJob:input_type -> job.v1.EnqueueJobRequest
+	21, // 36: job.v1.JobService.DequeueJob:input_type -> job.v1.DequeueJobRequest
+	23, // 37: job.v1.JobService.UpdateJob:input_type -> job.v1.UpdateJobRequest
+	29, // 38: job.v1.JobService.CompleteJob:input_type -> job.v1.CompleteJobRequest
+	25, // 39: job.v1.JobService.ListJobs:input_type -> job.v1.ListJobsRequest
+	17, // 40: job.v1.JobEventsService.StreamJobEvents:input_type -> job.v1.StreamJobEventsRequest
+	15, // 41: job.v1.JobEventsService.PublishJobEvents:input_type -> job.v1.PublishJobEventsRequest
+	20, // 42: job.v1.JobService.EnqueueJob:output_type -> job.v1.EnqueueJobResponse
+	22, // 43: job.v1.JobService.DequeueJob:output_type -> job.v1.DequeueJobResponse
+	24, // 44: job.v1.JobService.UpdateJob:output_type -> job.v1.UpdateJobResponse
+	30, // 45: job.v1.JobService.CompleteJob:output_type -> job.v1.CompleteJobResponse
+	26, // 46: job.v1.JobService.ListJobs:output_type -> job.v1.ListJobsResponse
+	18, // 47: job.v1.JobEventsService.StreamJobEvents:output_type -> job.v1.StreamJobEventsResponse
+	16, // 48: job.v1.JobEventsService.PublishJobEvents:output_type -> job.v1.PublishJobEventsResponse
+	42, // [42:49] is the sub-list for method output_type
+	35, // [35:42] is the sub-list for method input_type
+	35, // [35:35] is the sub-list for extension type_name
+	35, // [35:35] is the sub-list for extension extendee
+	0,  // [0:35] is the sub-list for field type_name
 }
 
 func init() { file_job_v1_job_proto_init() }
@@ -2312,7 +2368,7 @@ func file_job_v1_job_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_job_v1_job_proto_rawDesc), len(file_job_v1_job_proto_rawDesc)),
-			NumEnums:      3,
+			NumEnums:      4,
 			NumMessages:   30,
 			NumExtensions: 0,
 			NumServices:   2,

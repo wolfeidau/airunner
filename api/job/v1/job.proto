@@ -82,7 +82,7 @@ message OutputEvent {
 // Individual output item in a batch
 message OutputItem {
   bytes output = 1; // Output data (stdout/stderr)
-  int32 stream_type = 2; // 0=stdout, 1=stderr
+  StreamType stream_type = 2; // stdout or stderr
   int32 timestamp_delta_ms = 3; // Delta from previous output in milliseconds
 }
 
@@ -107,6 +107,12 @@ message BatchingConfig {
 message ExecutionConfig {
   BatchingConfig batching = 1;
   int32 heartbeat_interval_seconds = 2; // e.g., 30
+}
+
+enum StreamType {
+  STREAM_TYPE_UNSPECIFIED = 0;
+  STREAM_TYPE_STDOUT = 1;
+  STREAM_TYPE_STDERR = 2;
 }
 
 enum EventType {

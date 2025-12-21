@@ -44,6 +44,7 @@ message JobEvent {
     HeartbeatEvent heartbeat = 7;
     OutputEvent output = 8;
     TerminalResizeEvent terminal_resize = 9;
+    OutputBatchEvent output_batch = 10; // Batched outputs
   }
 }
 
@@ -78,6 +79,36 @@ message OutputEvent {
   bytes output = 1; // Output data (stdout/stderr)
 }
 
+// Individual output item in a batch
+message OutputItem {
+  bytes output = 1; // Output data (stdout/stderr)
+  int32 stream_type = 2; // 0=stdout, 1=stderr
+  int32 timestamp_delta_ms = 3; // Delta from previous output in milliseconds
+}
+
+// Batch container for output events
+message OutputBatchEvent {
+  repeated OutputItem outputs = 1; // Individual outputs in this batch
+  int64 start_sequence = 2; // First output's sequence (also DynamoDB sort key)
+  int64 end_sequence = 3; // Last output's sequence (inclusive)
+  int64 first_timestamp_ms = 4; // Unix milliseconds for first output
+  int32 playback_interval_millis = 5; // Interval for client replay timing (fallback if timing is critical)
+}
+
+// Batch configuration for event publishing
+message BatchingConfig {
+  int32 flush_interval_seconds = 1; // e.g., 2
+  int32 max_batch_size = 2; // e.g., 50
+  int64 max_batch_bytes = 3; // e.g., 1048576 (1 MB)
+  int32 playback_interval_millis = 4; // e.g., 50 (for client replay)
+}
+
+// Execution configuration for a job
+message ExecutionConfig {
+  BatchingConfig batching = 1;
+  int32 heartbeat_interval_seconds = 2; // e.g., 30
+}
+
 enum EventType {
   EVENT_TYPE_UNSPECIFIED = 0;
   EVENT_TYPE_PROCESS_START = 1;
@@ -86,6 +117,7 @@ enum EventType {
   EVENT_TYPE_HEARTBEAT = 4;
   EVENT_TYPE_OUTPUT = 5;
   EVENT_TYPE_TERMINAL_RESIZE = 6;
+  EVENT_TYPE_OUTPUT_BATCH = 7; // Batched outputs
 }
 
 message PublishJobEventsRequest {
@@ -193,6 +225,7 @@ message Job {
   JobState state = 3; // Current state of the job
   google.protobuf.Timestamp created_at = 4; // Timestamp when the job was created
   google.protobuf.Timestamp updated_at = 5; // Timestamp when the job was last updated
+  ExecutionConfig execution_config = 6; // Execution configuration for the job
 }
 
 // CompleteJobRequest is the request message for CompleteJob

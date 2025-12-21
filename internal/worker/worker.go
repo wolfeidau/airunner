@@ -20,6 +20,7 @@ type JobExecutor struct {
 	taskToken   string
 	sequence    int64
 	pid         int32 // Process ID from ProcessStart event
+	batcher     *EventBatcher
 }
 
 func NewJobExecutor(eventStream *connect.ClientStreamForClient[jobv1.PublishJobEventsRequest, jobv1.PublishJobEventsResponse], taskToken string) *JobExecutor {
@@ -30,8 +31,28 @@ func NewJobExecutor(eventStream *connect.ClientStreamForClient[jobv1.PublishJobE
 	}
 }
 
+// NewJobExecutorWithBatcher creates a JobExecutor with event batching support
+// The batcher will be initialized with the job's ExecutionConfig
+func NewJobExecutorWithBatcher(eventStream *connect.ClientStreamForClient[jobv1.PublishJobEventsRequest, jobv1.PublishJobEventsResponse], taskToken string, batcher *EventBatcher) *JobExecutor {
+	return &JobExecutor{
+		eventStream: eventStream,
+		taskToken:   taskToken,
+		sequence:    1, // Start sequence at 1
+		batcher:     batcher,
+	}
+}
+
 func (je *JobExecutor) Execute(ctx context.Context, job *jobv1.Job) error {
 	log.Info().Str("job_id", job.JobId).Msg("Starting job execution")
+
+	// Ensure batcher is stopped and flushes any remaining events
+	defer func() {
+		if je.batcher != nil {
+			if err := je.batcher.Stop(); err != nil {
+				log.Error().Err(err).Msg("Failed to stop event batcher")
+			}
+		}
+	}()
 
 	// Create console-stream process options
 	opts := []consolestream.ProcessOption{
@@ -64,6 +85,13 @@ func (je *JobExecutor) Execute(ctx context.Context, job *jobv1.Job) error {
 		if err != nil {
 			log.Error().Err(err).Str("job_id", job.JobId).Msg("Job execution failed")
 
+			// Flush any buffered outputs first
+			if je.batcher != nil {
+				if flushErr := je.batcher.Flush(); flushErr != nil {
+					log.Error().Err(flushErr).Msg("Failed to flush batch before error event")
+				}
+			}
+
 			// Attempt to publish error event - if this fails, log but continue to return original error
 			if publishErr := je.publishErrorEvent(err.Error()); publishErr != nil {
 				log.Error().Err(publishErr).Msg("Failed to publish error event after job failure")
@@ -81,10 +109,25 @@ func (je *JobExecutor) Execute(ctx context.Context, job *jobv1.Job) error {
 			}
 
 		case *consolestream.OutputData:
-			// Output events are best-effort, no error handling needed
-			je.publishOutputEvent(e.Data)
+			// Use batcher for outputs if available, otherwise publish directly
+			if je.batcher != nil {
+				if err := je.batcher.AddOutput(e.Data, 0); err != nil {
+					log.Error().Err(err).Str("job_id", job.JobId).Msg("Failed to buffer output event")
+					// Continue - output events are best-effort
+				}
+			} else {
+				// Fallback: publish directly if no batcher
+				je.publishOutputEvent(e.Data)
+			}
 
 		case *consolestream.ProcessEnd:
+			// Flush any buffered outputs before ProcessEnd
+			if je.batcher != nil {
+				if err := je.batcher.Flush(); err != nil {
+					log.Error().Err(err).Msg("Failed to flush batch before process end event")
+				}
+			}
+
 			if err := je.publishProcessEndEvent(e); err != nil {
 				log.Error().Err(err).Str("job_id", job.JobId).Msg("Failed to publish process end event")
 				return fmt.Errorf("event publishing failed: %w", err)

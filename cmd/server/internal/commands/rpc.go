@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/rs/cors"
+	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 	"github.com/wolfeidau/airunner/internal/auth"
 	"github.com/wolfeidau/airunner/internal/autossl"
 	"github.com/wolfeidau/airunner/internal/logger"
@@ -25,20 +26,30 @@ import (
 )
 
 type RPCServerCmd struct {
-	Listen                   string `help:"listen address" default:"localhost:8993"`
-	Cert                     string `help:"path to TLS cert file" default:""`
-	Key                      string `help:"path to TLS key file" default:""`
-	Hostname                 string `help:"hostname for TLS cert" default:"localhost:8993"`
-	NoAuth                   bool   `help:"disable JWT authentication (development only)" default:"false"`
-	JWTPublicKey             string `help:"PEM-encoded JWT public key" env:"JWT_PUBLIC_KEY"`
-	StoreType                string `help:"job store type (memory or sqs)" default:"memory" env:"AIRUNNER_STORE_TYPE" enum:"memory,sqs"`
-	SQSQueueDefault          string `help:"SQS queue URL for default priority jobs" env:"AIRUNNER_SQS_QUEUE_DEFAULT"`
-	SQSQueuePriority         string `help:"SQS queue URL for priority jobs" env:"AIRUNNER_SQS_QUEUE_PRIORITY"`
-	DynamoDBJobsTable        string `help:"DynamoDB table name for jobs" env:"AIRUNNER_DYNAMODB_JOBS_TABLE"`
-	DynamoDBEventsTable      string `help:"DynamoDB table name for job events" env:"AIRUNNER_DYNAMODB_EVENTS_TABLE"`
-	DefaultVisibilityTimeout int32  `help:"default visibility timeout in seconds for SQS messages" default:"300"`
-	EventsTTLDays            int32  `help:"TTL in days for job events in DynamoDB" default:"30"`
-	TokenSigningSecret       string `help:"secret key for signing JWT tokens" env:"AIRUNNER_TOKEN_SIGNING_SECRET"`
+	Listen                   string         `help:"listen address" default:"localhost:8993"`
+	Cert                     string         `help:"path to TLS cert file" default:""`
+	Key                      string         `help:"path to TLS key file" default:""`
+	Hostname                 string         `help:"hostname for TLS cert" default:"localhost:8993"`
+	NoAuth                   bool           `help:"disable JWT authentication (development only)" default:"false"`
+	JWTPublicKey             string         `help:"PEM-encoded JWT public key" env:"JWT_PUBLIC_KEY"`
+	StoreType                string         `help:"job store type (memory or sqs)" default:"memory" env:"AIRUNNER_STORE_TYPE" enum:"memory,sqs"`
+	SQSQueueDefault          string         `help:"SQS queue URL for default priority jobs" env:"AIRUNNER_SQS_QUEUE_DEFAULT"`
+	SQSQueuePriority         string         `help:"SQS queue URL for priority jobs" env:"AIRUNNER_SQS_QUEUE_PRIORITY"`
+	DynamoDBJobsTable        string         `help:"DynamoDB table name for jobs" env:"AIRUNNER_DYNAMODB_JOBS_TABLE"`
+	DynamoDBEventsTable      string         `help:"DynamoDB table name for job events" env:"AIRUNNER_DYNAMODB_EVENTS_TABLE"`
+	DefaultVisibilityTimeout int32          `help:"default visibility timeout in seconds for SQS messages" default:"300"`
+	EventsTTLDays            int32          `help:"TTL in days for job events in DynamoDB" default:"30"`
+	TokenSigningSecret       string         `help:"secret key for signing JWT tokens" env:"AIRUNNER_TOKEN_SIGNING_SECRET"`
+	Execution                ExecutionFlags `embed:"" prefix:"execution-"`
+}
+
+// Execution configuration for event batching
+type ExecutionFlags struct {
+	BatchFlushInterval int32 `help:"flush interval in seconds for event batching" default:"2" env:"AIRUNNER_EXEC_BATCH_FLUSH_INTERVAL"`
+	BatchMaxSize       int32 `help:"max batch size in events" default:"50" env:"AIRUNNER_EXEC_BATCH_MAX_SIZE"`
+	BatchMaxBytes      int64 `help:"max batch size in bytes" default:"1048576" env:"AIRUNNER_EXEC_BATCH_MAX_BYTES"`
+	PlaybackInterval   int32 `help:"playback interval in milliseconds for client replay" default:"50" env:"AIRUNNER_EXEC_PLAYBACK_INTERVAL"`
+	HeartbeatInterval  int32 `help:"heartbeat interval in seconds" default:"30" env:"AIRUNNER_EXEC_HEARTBEAT_INTERVAL"`
 }
 
 func (s *RPCServerCmd) Run(ctx context.Context, globals *Globals) error {
@@ -193,7 +204,7 @@ func createSQSJobStore(ctx context.Context, cmd *RPCServerCmd) (store.JobStore, 
 	sqsClient := sqs.NewFromConfig(awsConfig)
 	dynamoClient := dynamodb.NewFromConfig(awsConfig)
 
-	// Build store configuration
+	// Build store configuration with execution config
 	storeCfg := store.SQSJobStoreConfig{
 		QueueURLs: map[string]string{
 			"default":  cmd.SQSQueueDefault,
@@ -204,6 +215,15 @@ func createSQSJobStore(ctx context.Context, cmd *RPCServerCmd) (store.JobStore, 
 		DefaultVisibilityTimeoutSeconds: cmd.DefaultVisibilityTimeout,
 		EventsTTLDays:                   cmd.EventsTTLDays,
 		TokenSigningSecret:              []byte(cmd.TokenSigningSecret),
+		DefaultExecutionConfig: &jobv1.ExecutionConfig{
+			Batching: &jobv1.BatchingConfig{
+				FlushIntervalSeconds:   cmd.Execution.BatchFlushInterval,
+				MaxBatchSize:           cmd.Execution.BatchMaxSize,
+				MaxBatchBytes:          cmd.Execution.BatchMaxBytes,
+				PlaybackIntervalMillis: cmd.Execution.PlaybackInterval,
+			},
+			HeartbeatIntervalSeconds: cmd.Execution.HeartbeatInterval,
+		},
 	}
 
 	return store.NewSQSJobStore(sqsClient, dynamoClient, storeCfg), nil

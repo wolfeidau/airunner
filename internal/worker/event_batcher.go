@@ -68,19 +68,43 @@ func NewEventBatcher(config *jobv1.ExecutionConfig, onFlush func(*jobv1.JobEvent
 	return NewEventBatcherWithContext(config, onFlushWithCtx)
 }
 
+const (
+	// defaultMaxBatchBytes is the default maximum bytes per output batch.
+	// This is set conservatively to ensure the final serialized JobEvent (including protobuf
+	// overhead, wrapper fields, and array encoding) stays well below DynamoDB's 400KB item limit.
+	//
+	// Size calculation:
+	//   - Raw output bytes: 256KB
+	//   - Protobuf encoding overhead: ~15-20% = ~50KB
+	//   - OutputBatchEvent fields (sequences, timestamps, etc.): ~1KB
+	//   - JobEvent wrapper: ~1KB
+	//   - Total estimated: ~308KB (well below 350KB safety threshold)
+	//
+	// DynamoDB limits:
+	//   - Hard limit: 400KB per item
+	//   - Safe threshold (sqs_store.go): 350KB (maxEventPayloadBytes)
+	//   - This default: 256KB raw → ~308KB serialized (with ~88% safety margin)
+	defaultMaxBatchBytes = 256 * 1024 // 256KB
+
+	defaultMaxBatchSize           = 50 // 50 output items per batch
+	defaultFlushIntervalSeconds   = 2  // Flush every 2 seconds
+	defaultPlaybackIntervalMillis = 50 // 50ms replay interval for clients
+	defaultHeartbeatIntervalSecs  = 30 // Heartbeat every 30 seconds
+)
+
 // NewEventBatcherWithContext creates a new event batcher with context-aware callback.
 // The onFlush callback receives a context that can be used for cancellation and tracing.
 func NewEventBatcherWithContext(config *jobv1.ExecutionConfig, onFlush func(context.Context, *jobv1.JobEvent) error) *EventBatcher {
 	if config == nil || config.Batching == nil {
-		// Use sensible defaults
+		// Use sensible defaults aligned with DynamoDB limits
 		config = &jobv1.ExecutionConfig{
 			Batching: &jobv1.BatchingConfig{
-				FlushIntervalSeconds:   2,
-				MaxBatchSize:           50,
-				MaxBatchBytes:          1048576,
-				PlaybackIntervalMillis: 50,
+				FlushIntervalSeconds:   defaultFlushIntervalSeconds,
+				MaxBatchSize:           defaultMaxBatchSize,
+				MaxBatchBytes:          defaultMaxBatchBytes, // 256KB (was 1MB)
+				PlaybackIntervalMillis: defaultPlaybackIntervalMillis,
 			},
-			HeartbeatIntervalSeconds: 30,
+			HeartbeatIntervalSeconds: defaultHeartbeatIntervalSecs,
 		}
 	}
 

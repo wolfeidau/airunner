@@ -37,6 +37,7 @@ var (
 	ErrJobNotFound      = errors.New("job not found")
 	ErrJobIDMismatch    = errors.New("job ID mismatch")
 	ErrThrottled        = errors.New("AWS request throttled")
+	ErrEventTooLarge    = errors.New("event exceeds maximum size")
 )
 
 // SQS and AWS service limits
@@ -46,6 +47,14 @@ const (
 	eventChannelBufferSize  = 100   // Buffer size for event streaming channels
 	defaultListJobsPageSize = 50    // Default page size for ListJobs
 	taskTokenVersion        = "v1"  // Task token format version for future compatibility
+
+	// DynamoDB item size limits
+	// DynamoDB maximum item size is 400KB, but we need to account for:
+	// - Attribute names and overhead (~20KB)
+	// - Base64 encoding overhead for binary data (~33% increase)
+	// - Proto encoding overhead
+	// Setting a conservative limit at 350KB for the serialized event payload
+	maxEventPayloadBytes = 350 * 1024 // 350KB safety margin below DynamoDB's 400KB limit
 )
 
 // SQSJobStoreConfig holds the configuration for SQSJobStore
@@ -93,8 +102,9 @@ func recordsToProtos(records []jobRecord) []*jobv1.Job {
 	return jobs
 }
 
-// wrapAWSError wraps AWS SDK errors, identifying throttling errors
-// Returns ErrThrottled for throttling errors, otherwise wraps the original error
+// wrapAWSError wraps AWS SDK errors, identifying throttling and size limit errors
+// Returns ErrThrottled for throttling errors, ErrEventTooLarge for size violations,
+// otherwise wraps the original error
 func wrapAWSError(err error, msg string) error {
 	if err == nil {
 		return nil
@@ -114,6 +124,15 @@ func wrapAWSError(err error, msg string) error {
 		strings.Contains(errMsg, "TooManyRequestsException") ||
 		strings.Contains(errMsg, "Throttling") {
 		return fmt.Errorf("%s: %w: %v", msg, ErrThrottled, err)
+	}
+
+	// Check for DynamoDB item size validation errors
+	// This catches cases where size validation was missed or item grew during serialization
+	if strings.Contains(errMsg, "Item size has exceeded the maximum allowed size") ||
+		strings.Contains(errMsg, "ValidationException") && strings.Contains(errMsg, "size") {
+		return fmt.Errorf("%s: %w: item exceeds DynamoDB's 400KB limit. "+
+			"This typically indicates an event payload is too large. "+
+			"Consider reducing batch sizes or output volume: %v", msg, ErrEventTooLarge, err)
 	}
 
 	// Wrap other AWS errors
@@ -976,6 +995,9 @@ func (s *SQSJobStore) unmarshalEventItem(item map[string]types.AttributeValue) (
 
 // batchWriteEvents writes events to DynamoDB JobEvents table in batches
 // Handles chunking (max 25 items per BatchWriteItem) and partial failure retries
+//
+// IMPORTANT: Validates event size against DynamoDB's 400KB item size limit before writing.
+// Events exceeding maxEventPayloadBytes will be rejected with ErrEventTooLarge.
 func (s *SQSJobStore) batchWriteEvents(ctx context.Context, jobID string, events []*jobv1.JobEvent) error {
 	const maxBatchSize = 25 // DynamoDB BatchWriteItem limit
 
@@ -1002,6 +1024,22 @@ func (s *SQSJobStore) batchWriteEvents(ctx context.Context, jobID string, events
 			if err != nil {
 				log.Error().Err(err).Int64("sequence", event.Sequence).Msg("Failed to marshal event")
 				return fmt.Errorf("failed to marshal event seq=%d: %w", event.Sequence, err)
+			}
+
+			// Validate event size against DynamoDB limits
+			// DynamoDB has a 400KB item size limit; we check against a conservative threshold
+			if len(eventBytes) > maxEventPayloadBytes {
+				log.Error().
+					Int("event_size_bytes", len(eventBytes)).
+					Int("max_allowed_bytes", maxEventPayloadBytes).
+					Int64("sequence", event.Sequence).
+					Int32("event_type", int32(event.EventType)).
+					Str("job_id", jobID).
+					Msg("Event exceeds maximum size limit for DynamoDB")
+
+				return fmt.Errorf("%w: event seq=%d size=%d bytes exceeds limit of %d bytes (DynamoDB maximum item size is 400KB). "+
+					"Consider reducing output batch size or splitting large outputs",
+					ErrEventTooLarge, event.Sequence, len(eventBytes), maxEventPayloadBytes)
 			}
 
 			// Build DynamoDB item

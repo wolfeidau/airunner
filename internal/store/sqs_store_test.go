@@ -320,3 +320,71 @@ func TestContextCancellation(t *testing.T) {
 	require.NotNil(t, s)
 	require.Error(t, ctx.Err())
 }
+
+func TestEventSizeValidation(t *testing.T) {
+	s := NewSQSJobStore(nil, nil, SQSJobStoreConfig{
+		JobEventsTableName: "test_job_events",
+	})
+
+	ctx := context.Background()
+	jobID := "test-job-123"
+
+	t.Run("event exceeds size limit", func(t *testing.T) {
+		// Create a large event that exceeds maxEventPayloadBytes (350KB)
+		// Using 400KB to ensure it exceeds the limit
+		largeOutput := make([]byte, 400*1024) // 400KB
+		for i := range largeOutput {
+			largeOutput[i] = 'A'
+		}
+
+		largeEvent := &jobv1.JobEvent{
+			EventType: jobv1.EventType_EVENT_TYPE_OUTPUT,
+			Sequence:  1,
+			EventData: &jobv1.JobEvent_Output{
+				Output: &jobv1.OutputEvent{
+					Output: largeOutput,
+				},
+			},
+		}
+
+		// This should fail BEFORE reaching the AWS client due to size validation
+		err := s.batchWriteEvents(ctx, jobID, []*jobv1.JobEvent{largeEvent})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "exceeds maximum size")
+		require.ErrorIs(t, err, ErrEventTooLarge)
+		require.Contains(t, err.Error(), "DynamoDB maximum item size is 400KB") // Check that error mentions the limit
+		require.Contains(t, err.Error(), "Consider reducing output batch size") // Check for helpful message
+	})
+
+	t.Run("mixed event sizes batch rejected", func(t *testing.T) {
+		// Create a batch with one small and one oversized event
+		// The batch should be rejected due to the oversized event
+		smallEvent := &jobv1.JobEvent{
+			EventType: jobv1.EventType_EVENT_TYPE_OUTPUT,
+			Sequence:  1,
+			EventData: &jobv1.JobEvent_Output{
+				Output: &jobv1.OutputEvent{
+					Output: []byte("small output data"),
+				},
+			},
+		}
+
+		largeEvent := &jobv1.JobEvent{
+			EventType: jobv1.EventType_EVENT_TYPE_OUTPUT,
+			Sequence:  2,
+			EventData: &jobv1.JobEvent_Output{
+				Output: &jobv1.OutputEvent{
+					Output: make([]byte, 400*1024), // 400KB
+				},
+			},
+		}
+
+		// Should fail on the large event (sequence 2)
+		err := s.batchWriteEvents(ctx, jobID, []*jobv1.JobEvent{smallEvent, largeEvent})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "exceeds maximum size")
+		require.Contains(t, err.Error(), "seq=2") // Verify it identifies the correct event
+		require.ErrorIs(t, err, ErrEventTooLarge)
+	})
+
+}

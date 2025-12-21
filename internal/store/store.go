@@ -153,13 +153,25 @@ func (s *MemoryJobStore) EnqueueJob(ctx context.Context, req *jobv1.EnqueueJobRe
 	jobId := uuid.Must(uuid.NewV7()).String()
 	now := timestamppb.Now()
 
+	// Create default ExecutionConfig (memory store uses built-in defaults)
+	executionConfig := &jobv1.ExecutionConfig{
+		Batching: &jobv1.BatchingConfig{
+			FlushIntervalSeconds:   2,
+			MaxBatchSize:           50,
+			MaxBatchBytes:          1048576,
+			PlaybackIntervalMillis: 50,
+		},
+		HeartbeatIntervalSeconds: 30,
+	}
+
 	// Create job
 	job := &jobv1.Job{
-		JobId:     jobId,
-		JobParams: req.JobParams,
-		State:     jobv1.JobState_JOB_STATE_SCHEDULED,
-		CreatedAt: now,
-		UpdatedAt: now,
+		JobId:           jobId,
+		JobParams:       req.JobParams,
+		State:           jobv1.JobState_JOB_STATE_SCHEDULED,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		ExecutionConfig: executionConfig,
 	}
 
 	// Store job

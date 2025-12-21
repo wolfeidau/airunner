@@ -56,28 +56,31 @@ type SQSJobStoreConfig struct {
 	DefaultVisibilityTimeoutSeconds int32
 	EventsTTLDays                   int32  // Optional: TTL for event retention in days (0 = no TTL)
 	TokenSigningSecret              []byte // Secret key for HMAC signing task tokens (required for security)
+	DefaultExecutionConfig          *jobv1.ExecutionConfig
 }
 
 // jobRecord is the DynamoDB representation of a job
 // Note: Result is stored separately and not retrieved in getJobByID
 type jobRecord struct {
-	JobID     string           `dynamodbav:"job_id"`
-	Queue     string           `dynamodbav:"queue"`
-	State     int32            `dynamodbav:"state"`
-	RequestID string           `dynamodbav:"request_id"`
-	CreatedAt int64            `dynamodbav:"created_at"`
-	UpdatedAt int64            `dynamodbav:"updated_at"`
-	JobParams *jobv1.JobParams `dynamodbav:"job_params"`
+	JobID           string                 `dynamodbav:"job_id"`
+	Queue           string                 `dynamodbav:"queue"`
+	State           int32                  `dynamodbav:"state"`
+	RequestID       string                 `dynamodbav:"request_id"`
+	CreatedAt       int64                  `dynamodbav:"created_at"`
+	UpdatedAt       int64                  `dynamodbav:"updated_at"`
+	JobParams       *jobv1.JobParams       `dynamodbav:"job_params"`
+	ExecutionConfig *jobv1.ExecutionConfig `dynamodbav:"execution_config"`
 }
 
 // toProto converts a jobRecord to a protobuf Job
 func (r *jobRecord) toProto() *jobv1.Job {
 	return &jobv1.Job{
-		JobId:     r.JobID,
-		State:     jobv1.JobState(r.State),
-		CreatedAt: timestamppb.New(time.UnixMilli(r.CreatedAt)),
-		UpdatedAt: timestamppb.New(time.UnixMilli(r.UpdatedAt)),
-		JobParams: r.JobParams,
+		JobId:           r.JobID,
+		State:           jobv1.JobState(r.State),
+		CreatedAt:       timestamppb.New(time.UnixMilli(r.CreatedAt)),
+		UpdatedAt:       timestamppb.New(time.UnixMilli(r.UpdatedAt)),
+		JobParams:       r.JobParams,
+		ExecutionConfig: r.ExecutionConfig,
 	}
 }
 
@@ -313,6 +316,16 @@ func (s *SQSJobStore) EnqueueJob(ctx context.Context, req *jobv1.EnqueueJobReque
 		return nil, fmt.Errorf("failed to marshal job params: %w", err)
 	}
 	jobItem["job_params"] = &types.AttributeValueMemberM{Value: params}
+
+	// Marshal ExecutionConfig to DynamoDB format
+	if s.cfg.DefaultExecutionConfig != nil {
+		execConfig, err := attributevalue.MarshalMap(s.cfg.DefaultExecutionConfig)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to marshal execution config")
+			return nil, fmt.Errorf("failed to marshal execution config: %w", err)
+		}
+		jobItem["execution_config"] = &types.AttributeValueMemberM{Value: execConfig}
+	}
 
 	// PutItem with condition: job_id must not exist
 	putInput := &dynamodb.PutItemInput{

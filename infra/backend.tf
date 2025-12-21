@@ -10,7 +10,7 @@ resource "random_password" "token_signing_secret" {
 
 resource "aws_sqs_queue" "default_dlq" {
   name                      = "${local.name_prefix}-default-dlq"
-  message_retention_seconds = 1209600  # 14 days
+  message_retention_seconds = 1209600 # 14 days
 
   sqs_managed_sse_enabled = true
 
@@ -24,7 +24,7 @@ resource "aws_sqs_queue" "default_dlq" {
 
 resource "aws_sqs_queue" "priority_dlq" {
   name                      = "${local.name_prefix}-priority-dlq"
-  message_retention_seconds = 1209600  # 14 days
+  message_retention_seconds = 1209600 # 14 days
 
   sqs_managed_sse_enabled = true
 
@@ -44,7 +44,7 @@ resource "aws_sqs_queue" "default" {
   name                       = "${local.name_prefix}-default"
   visibility_timeout_seconds = 300
   receive_wait_time_seconds  = 20
-  message_retention_seconds  = 1209600  # 14 days
+  message_retention_seconds  = 1209600 # 14 days
 
   sqs_managed_sse_enabled = true
 
@@ -67,7 +67,7 @@ resource "aws_sqs_queue" "priority" {
   name                       = "${local.name_prefix}-priority"
   visibility_timeout_seconds = 300
   receive_wait_time_seconds  = 20
-  message_retention_seconds  = 1209600  # 14 days
+  message_retention_seconds  = 1209600 # 14 days
 
   sqs_managed_sse_enabled = true
 
@@ -91,9 +91,9 @@ resource "aws_sqs_queue" "priority" {
 # ============================================================================
 
 resource "aws_dynamodb_table" "jobs" {
-  name           = "${local.name_prefix}_jobs"
-  billing_mode   = "PAY_PER_REQUEST"
-  hash_key       = "job_id"
+  name         = "${local.name_prefix}_jobs"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "job_id"
 
   attribute {
     name = "job_id"
@@ -117,7 +117,7 @@ resource "aws_dynamodb_table" "jobs" {
 
   # GSI1: Query jobs by queue and creation time
   global_secondary_index {
-    name            = "GSI1"  # Changed from "queue-created-at-index"
+    name            = "GSI1" # Changed from "queue-created-at-index"
     hash_key        = "queue"
     range_key       = "created_at"
     projection_type = "ALL"
@@ -125,7 +125,7 @@ resource "aws_dynamodb_table" "jobs" {
 
   # GSI2: Query jobs by request ID
   global_secondary_index {
-    name            = "GSI2"  # Changed from "request-id-index"
+    name            = "GSI2" # Changed from "request-id-index"
     hash_key        = "request_id"
     projection_type = "KEYS_ONLY"
   }
@@ -144,10 +144,10 @@ resource "aws_dynamodb_table" "jobs" {
 }
 
 resource "aws_dynamodb_table" "job_events" {
-  name           = "${local.name_prefix}_job_events"
-  billing_mode   = "PAY_PER_REQUEST"
-  hash_key       = "job_id"
-  range_key      = "sequence"
+  name         = "${local.name_prefix}_job_events"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "job_id"
+  range_key    = "sequence"
 
   attribute {
     name = "job_id"

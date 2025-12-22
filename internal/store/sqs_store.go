@@ -48,13 +48,13 @@ const (
 	defaultListJobsPageSize = 50    // Default page size for ListJobs
 	taskTokenVersion        = "v1"  // Task token format version for future compatibility
 
-	// DynamoDB item size limits
-	// DynamoDB maximum item size is 400KB, but we need to account for:
+	// Storage backend item size limits
+	// Maximum item size for the storage backend is 400KB, but we need to account for:
 	// - Attribute names and overhead (~20KB)
 	// - Base64 encoding overhead for binary data (~33% increase)
 	// - Proto encoding overhead
 	// Setting a conservative limit at 350KB for the serialized event payload
-	maxEventPayloadBytes = 350 * 1024 // 350KB safety margin below DynamoDB's 400KB limit
+	maxEventPayloadBytes = 350 * 1024 // 350KB safety margin below 400KB backend limit
 )
 
 // SQSJobStoreConfig holds the configuration for SQSJobStore
@@ -126,11 +126,11 @@ func wrapAWSError(err error, msg string) error {
 		return fmt.Errorf("%s: %w: %v", msg, ErrThrottled, err)
 	}
 
-	// Check for DynamoDB item size validation errors
+	// Check for storage backend item size validation errors
 	// This catches cases where size validation was missed or item grew during serialization
 	if strings.Contains(errMsg, "Item size has exceeded the maximum allowed size") ||
 		strings.Contains(errMsg, "ValidationException") && strings.Contains(errMsg, "size") {
-		return fmt.Errorf("%s: %w: item exceeds DynamoDB's 400KB limit. "+
+		return fmt.Errorf("%s: %w: item exceeds storage backend size limit. "+
 			"This typically indicates an event payload is too large. "+
 			"Consider reducing batch sizes or output volume: %v", msg, ErrEventTooLarge, err)
 	}
@@ -996,7 +996,7 @@ func (s *SQSJobStore) unmarshalEventItem(item map[string]types.AttributeValue) (
 // batchWriteEvents writes events to DynamoDB JobEvents table in batches
 // Handles chunking (max 25 items per BatchWriteItem) and partial failure retries
 //
-// IMPORTANT: Validates event size against DynamoDB's 400KB item size limit before writing.
+// IMPORTANT: Validates event size against storage backend size limits before writing.
 // Events exceeding maxEventPayloadBytes will be rejected with ErrEventTooLarge.
 func (s *SQSJobStore) batchWriteEvents(ctx context.Context, jobID string, events []*jobv1.JobEvent) error {
 	const maxBatchSize = 25 // DynamoDB BatchWriteItem limit
@@ -1026,8 +1026,8 @@ func (s *SQSJobStore) batchWriteEvents(ctx context.Context, jobID string, events
 				return fmt.Errorf("failed to marshal event seq=%d: %w", event.Sequence, err)
 			}
 
-			// Validate event size against DynamoDB limits
-			// DynamoDB has a 400KB item size limit; we check against a conservative threshold
+			// Validate event size against storage backend limits
+			// Events must stay within size limits; we check against a conservative threshold
 			if len(eventBytes) > maxEventPayloadBytes {
 				log.Error().
 					Int("event_size_bytes", len(eventBytes)).
@@ -1035,9 +1035,9 @@ func (s *SQSJobStore) batchWriteEvents(ctx context.Context, jobID string, events
 					Int64("sequence", event.Sequence).
 					Int32("event_type", int32(event.EventType)).
 					Str("job_id", jobID).
-					Msg("Event exceeds maximum size limit for DynamoDB")
+					Msg("Event exceeds maximum size limit for storage backend")
 
-				return fmt.Errorf("%w: event seq=%d size=%d bytes exceeds limit of %d bytes (DynamoDB maximum item size is 400KB). "+
+				return fmt.Errorf("%w: event seq=%d size=%d bytes exceeds storage limit of %d bytes. "+
 					"Consider reducing output batch size or splitting large outputs",
 					ErrEventTooLarge, event.Sequence, len(eventBytes), maxEventPayloadBytes)
 			}

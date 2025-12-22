@@ -18,26 +18,19 @@ import (
 type JobExecutor struct {
 	eventStream *connect.ClientStreamForClient[jobv1.PublishJobEventsRequest, jobv1.PublishJobEventsResponse]
 	taskToken   string
-	sequence    int64
 	pid         int32 // Process ID from ProcessStart event
 	batcher     *EventBatcher
 }
 
-func NewJobExecutor(eventStream *connect.ClientStreamForClient[jobv1.PublishJobEventsRequest, jobv1.PublishJobEventsResponse], taskToken string) *JobExecutor {
-	return &JobExecutor{
-		eventStream: eventStream,
-		taskToken:   taskToken,
-		sequence:    1, // Start sequence at 1
+// NewJobExecutor creates a JobExecutor with event batching support
+// The batcher is required for unified sequence numbering
+func NewJobExecutor(eventStream *connect.ClientStreamForClient[jobv1.PublishJobEventsRequest, jobv1.PublishJobEventsResponse], taskToken string, batcher *EventBatcher) *JobExecutor {
+	if batcher == nil {
+		panic("EventBatcher is required - use NewEventBatcher to create one")
 	}
-}
-
-// NewJobExecutorWithBatcher creates a JobExecutor with event batching support
-// The batcher will be initialized with the job's ExecutionConfig
-func NewJobExecutorWithBatcher(eventStream *connect.ClientStreamForClient[jobv1.PublishJobEventsRequest, jobv1.PublishJobEventsResponse], taskToken string, batcher *EventBatcher) *JobExecutor {
 	return &JobExecutor{
 		eventStream: eventStream,
 		taskToken:   taskToken,
-		sequence:    1, // Start sequence at 1
 		batcher:     batcher,
 	}
 }
@@ -98,82 +91,78 @@ func (je *JobExecutor) Execute(ctx context.Context, job *jobv1.Job) error {
 	// Execute and stream the process
 	for event, err := range process.ExecuteAndStream(ctx) {
 		if err != nil {
-			log.Error().Err(err).Str("job_id", job.JobId).Msg("Job execution failed")
-
-			// Flush any buffered outputs first
-			if je.batcher != nil {
-				if flushErr := je.batcher.Flush(); flushErr != nil {
-					log.Error().Err(flushErr).Msg("Failed to flush batch before error event")
-				}
-			}
-
-			// Attempt to publish error event - if this fails, log but continue to return original error
-			if publishErr := je.publishErrorEvent(err.Error()); publishErr != nil {
-				log.Error().Err(publishErr).Msg("Failed to publish error event after job failure")
-			}
-
-			return fmt.Errorf("job execution failed: %w", err)
+			return je.handleStreamError(err, job.JobId)
 		}
 
-		// Handle different event types
-		switch e := event.Event.(type) {
-		case *consolestream.ProcessStart:
-			if err := je.publishProcessStartEvent(e); err != nil {
-				log.Error().Err(err).Str("job_id", job.JobId).Msg("Failed to publish process start event")
-				return fmt.Errorf("event publishing failed: %w", err)
-			}
+		// Delegate event handling to testable helper method
+		if err := je.handleEvent(event, job.JobId); err != nil {
+			log.Error().Err(err).Str("job_id", job.JobId).Msg("Failed to handle event")
+			return fmt.Errorf("event handling failed: %w", err)
+		}
 
-		case *consolestream.OutputData:
-			// Use batcher for outputs if available, otherwise publish directly
-			if je.batcher != nil {
-				if err := je.batcher.AddOutput(e.Data, 0); err != nil {
-					log.Error().Err(err).Str("job_id", job.JobId).Msg("Failed to buffer output event")
-					// Continue - output events are best-effort
-				}
-			} else {
-				// Fallback: publish directly if no batcher
-				je.publishOutputEvent(e.Data)
-			}
-
-		case *consolestream.ProcessEnd:
-			// Flush any buffered outputs before ProcessEnd
-			if je.batcher != nil {
-				if err := je.batcher.Flush(); err != nil {
-					log.Error().Err(err).Msg("Failed to flush batch before process end event")
-				}
-			}
-
-			if err := je.publishProcessEndEvent(e); err != nil {
-				log.Error().Err(err).Str("job_id", job.JobId).Msg("Failed to publish process end event")
-				return fmt.Errorf("event publishing failed: %w", err)
-			}
+		// ProcessEnd returns nil from handleEvent, but we need to exit the loop
+		if _, ok := event.Event.(*consolestream.ProcessEnd); ok {
 			return nil
-
-		case *consolestream.HeartbeatEvent:
-			// Drop heartbeat events for now - they're sent every flush interval
-			// and we don't currently need them. May implement in the future.
-			log.Debug().
-				Bool("process_alive", e.ProcessAlive).
-				Dur("elapsed_time", e.ElapsedTime).
-				Msg("Received heartbeat event (dropped)")
-
-		default:
-			// Handle other unexpected event types
-			log.Info().Str("event", event.String()).Msg("Received unhandled event")
 		}
 	}
 
 	return errors.New("failed job execution") // Should not reach here normally
 }
 
-// assignSequence sets the sequence number and timestamp for an event
-func (je *JobExecutor) assignSequence(event *jobv1.JobEvent) {
-	event.Sequence = je.sequence
-	je.sequence++
+// handleEvent dispatches individual events to appropriate handlers
+// This method is easily unit testable with concrete event types
+func (je *JobExecutor) handleEvent(event consolestream.Event, jobID string) error {
+	switch e := event.Event.(type) {
+	case *consolestream.ProcessStart:
+		return je.publishProcessStartEvent(e)
 
-	if event.Timestamp == nil {
-		event.Timestamp = timestamppb.Now()
+	case *consolestream.OutputData:
+		// Buffer output through batcher for batching and unified sequencing
+		if err := je.batcher.AddOutput(e.Data, 0); err != nil {
+			log.Error().Err(err).Str("job_id", jobID).Msg("Failed to buffer output event")
+			// Continue - output events are best-effort
+		}
+		return nil
+
+	case *consolestream.ProcessEnd:
+		// Flush any buffered outputs before ProcessEnd
+		if err := je.batcher.Flush(); err != nil {
+			log.Error().Err(err).Msg("Failed to flush batch before process end event")
+		}
+		return je.publishProcessEndEvent(e)
+
+	case *consolestream.HeartbeatEvent:
+		// Drop heartbeat events for now - they're sent every flush interval
+		// and we don't currently need them. May implement in the future.
+		log.Debug().
+			Bool("process_alive", e.ProcessAlive).
+			Dur("elapsed_time", e.ElapsedTime).
+			Msg("Received heartbeat event (dropped)")
+		return nil
+
+	default:
+		// Handle other unexpected event types
+		log.Info().Str("event", event.String()).Msg("Received unhandled event")
+		return nil
 	}
+}
+
+// handleStreamError handles errors from the event stream
+// Flushes buffered events and publishes an error event
+func (je *JobExecutor) handleStreamError(err error, jobID string) error {
+	log.Error().Err(err).Str("job_id", jobID).Msg("Job execution failed")
+
+	// Flush any buffered outputs first
+	if flushErr := je.batcher.Flush(); flushErr != nil {
+		log.Error().Err(flushErr).Msg("Failed to flush batch before error event")
+	}
+
+	// Attempt to publish error event - if this fails, log but continue to return original error
+	if publishErr := je.publishErrorEvent(err.Error()); publishErr != nil {
+		log.Error().Err(publishErr).Msg("Failed to publish error event after job failure")
+	}
+
+	return fmt.Errorf("job execution failed: %w", err)
 }
 
 func (je *JobExecutor) publishProcessStartEvent(event *consolestream.ProcessStart) error {
@@ -190,40 +179,17 @@ func (je *JobExecutor) publishProcessStartEvent(event *consolestream.ProcessStar
 		},
 	}
 
-	je.assignSequence(startEvent)
-
-	if err := je.eventStream.Send(&jobv1.PublishJobEventsRequest{
-		TaskToken: je.taskToken,
-		Events:    []*jobv1.JobEvent{startEvent},
-	}); err != nil {
-		log.Error().Err(err).Msg("Failed to send process start event")
+	// Route through batcher for unified sequence numbering
+	if err := je.batcher.AddEvent(startEvent); err != nil {
+		log.Error().Err(err).Msg("Failed to add process start event to batcher")
 		return fmt.Errorf("failed to publish process start event: %w", err)
 	}
 
 	return nil
 }
 
-func (je *JobExecutor) publishOutputEvent(output []byte) {
-	outputEvent := &jobv1.JobEvent{
-		EventType: jobv1.EventType_EVENT_TYPE_OUTPUT,
-		EventData: &jobv1.JobEvent_Output{
-			Output: &jobv1.OutputEvent{
-				Output: output,
-			},
-		},
-	}
-
-	je.assignSequence(outputEvent)
-
-	if err := je.eventStream.Send(&jobv1.PublishJobEventsRequest{
-		TaskToken: je.taskToken,
-		Events:    []*jobv1.JobEvent{outputEvent},
-	}); err != nil {
-		// Log but don't fail the job - output events are best-effort
-		// Losing individual output lines shouldn't terminate job execution
-		log.Warn().Err(err).Msg("Failed to send output event - continuing execution")
-	}
-}
+// publishOutputEvent is deprecated - outputs should be buffered through EventBatcher.AddOutput()
+// which will batch them into OUTPUT_BATCH events for efficiency
 
 func (je *JobExecutor) publishProcessEndEvent(event *consolestream.ProcessEnd) error {
 	endEvent := &jobv1.JobEvent{
@@ -237,13 +203,9 @@ func (je *JobExecutor) publishProcessEndEvent(event *consolestream.ProcessEnd) e
 		},
 	}
 
-	je.assignSequence(endEvent)
-
-	if err := je.eventStream.Send(&jobv1.PublishJobEventsRequest{
-		TaskToken: je.taskToken,
-		Events:    []*jobv1.JobEvent{endEvent},
-	}); err != nil {
-		log.Error().Err(err).Msg("Failed to send process end event")
+	// Route through batcher for unified sequence numbering
+	if err := je.batcher.AddEvent(endEvent); err != nil {
+		log.Error().Err(err).Msg("Failed to add process end event to batcher")
 		return fmt.Errorf("failed to publish process end event: %w", err)
 	}
 
@@ -260,13 +222,9 @@ func (je *JobExecutor) publishErrorEvent(errorMessage string) error {
 		},
 	}
 
-	je.assignSequence(errorEvent)
-
-	if err := je.eventStream.Send(&jobv1.PublishJobEventsRequest{
-		TaskToken: je.taskToken,
-		Events:    []*jobv1.JobEvent{errorEvent},
-	}); err != nil {
-		log.Error().Err(err).Msg("Failed to send error event")
+	// Route through batcher for unified sequence numbering
+	if err := je.batcher.AddEvent(errorEvent); err != nil {
+		log.Error().Err(err).Msg("Failed to add error event to batcher")
 		return fmt.Errorf("failed to publish error event: %w", err)
 	}
 

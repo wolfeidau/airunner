@@ -21,6 +21,11 @@ type JobStore interface {
 	CompleteJob(ctx context.Context, taskToken string, result *jobv1.JobResult) error
 	ListJobs(ctx context.Context, req *jobv1.ListJobsRequest) (*jobv1.ListJobsResponse, error)
 
+	// ReleaseJob returns a job back to the queue, resetting its state to SCHEDULED.
+	// This is used when a dequeued job cannot be delivered to the client (e.g., stream failure).
+	// The job becomes immediately available for another worker to pick up.
+	ReleaseJob(ctx context.Context, taskToken string) error
+
 	// Event streaming
 	PublishEvents(ctx context.Context, taskToken string, events []*jobv1.JobEvent) error
 	StreamEvents(ctx context.Context, jobId string, fromSequence int64, fromTimestamp int64, eventFilter []jobv1.EventType) (<-chan *jobv1.JobEvent, error)
@@ -290,6 +295,37 @@ func (s *MemoryJobStore) CompleteJob(ctx context.Context, taskToken string, resu
 		job.State = jobv1.JobState_JOB_STATE_FAILED
 	}
 	job.UpdatedAt = timestamppb.Now()
+
+	// Clean up visibility timeout and task token
+	delete(s.invisibleJobs, jobId)
+	delete(s.taskTokens, taskToken)
+	delete(s.jobTokens, jobId)
+
+	return nil
+}
+
+// ReleaseJob returns a job back to the queue, resetting its state to SCHEDULED
+func (s *MemoryJobStore) ReleaseJob(ctx context.Context, taskToken string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	jobId, exists := s.taskTokens[taskToken]
+	if !exists {
+		return fmt.Errorf("invalid task token")
+	}
+
+	job := s.jobs[jobId]
+	if job == nil {
+		return fmt.Errorf("job not found")
+	}
+
+	// Reset job state to SCHEDULED
+	job.State = jobv1.JobState_JOB_STATE_SCHEDULED
+	job.UpdatedAt = timestamppb.Now()
+
+	// Return job to the front of the queue (prepend for priority)
+	queueName := s.jobQueues[jobId]
+	s.queues[queueName] = append([]*jobv1.Job{job}, s.queues[queueName]...)
 
 	// Clean up visibility timeout and task token
 	delete(s.invisibleJobs, jobId)

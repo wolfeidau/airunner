@@ -44,6 +44,7 @@ var (
 const (
 	sqsMaxMessages          = 10    // SQS maximum messages per ReceiveMessage call
 	sqsMaxVisibilitySeconds = 43200 // SQS maximum visibility timeout (12 hours)
+	sqsLongPollSeconds      = 20    // SQS long polling wait time (max 20 seconds)
 	eventChannelBufferSize  = 100   // Buffer size for event streaming channels
 	defaultListJobsPageSize = 50    // Default page size for ListJobs
 	taskTokenVersion        = "v1"  // Task token format version for future compatibility
@@ -399,11 +400,12 @@ func (s *SQSJobStore) DequeueJobs(ctx context.Context, queue string, maxJobs int
 	// Limit to SQS max messages per call
 	numToReceive := min(maxJobs, sqsMaxMessages)
 
-	// ReceiveMessage from SQS
+	// ReceiveMessage from SQS with long polling enabled
+	// Long polling reduces API calls and provides near-instant response when messages arrive
 	receiveInput := &sqs.ReceiveMessageInput{
 		QueueUrl:            aws.String(queueURL),
 		MaxNumberOfMessages: int32(min(numToReceive, sqsMaxMessages)),            //nolint:gosec // bounded above
-		WaitTimeSeconds:     0,                                                   // Non-blocking; long polling handled at service layer
+		WaitTimeSeconds:     sqsLongPollSeconds,                                  // Long polling (20s max)
 		VisibilityTimeout:   int32(min(timeoutSeconds, sqsMaxVisibilitySeconds)), //nolint:gosec // SQS max is 12h
 	}
 
@@ -421,9 +423,16 @@ func (s *SQSJobStore) DequeueJobs(ctx context.Context, queue string, maxJobs int
 	}
 
 	results := make([]*JobWithToken, 0, len(output.Messages))
+	metrics := telemetry.GetMetrics()
 
 	// Process each message
 	for _, message := range output.Messages {
+		// Check for context cancellation at start of each iteration
+		if err := ctx.Err(); err != nil {
+			log.Warn().Err(err).Int("processed", len(results)).Msg("Context cancelled during dequeue, returning partial results")
+			break
+		}
+
 		// Extract job_id from message body
 		jobID := s.extractJobIDFromMessage(aws.ToString(message.Body))
 		if jobID == "" {
@@ -436,6 +445,11 @@ func (s *SQSJobStore) DequeueJobs(ctx context.Context, queue string, maxJobs int
 		// Get job metadata from DynamoDB
 		job, err := s.getJobByID(ctx, jobID)
 		if err != nil {
+			// Check if context was cancelled
+			if ctx.Err() != nil {
+				log.Warn().Err(ctx.Err()).Str("job_id", jobID).Msg("Context cancelled during DynamoDB get")
+				break
+			}
 			log.Error().Err(err).Str("job_id", jobID).Msg("Failed to get job from DynamoDB")
 			// Do NOT delete the message on transient errors; leave for redelivery
 			continue
@@ -454,12 +468,26 @@ func (s *SQSJobStore) DequeueJobs(ctx context.Context, queue string, maxJobs int
 			continue
 		}
 
+		// Handle RUNNING jobs - this indicates a previous delivery failure
+		// The message reappeared in SQS because visibility timeout expired
+		// before the job was completed (e.g., stream.Send() failed)
+		if job.State == jobv1.JobState_JOB_STATE_RUNNING {
+			log.Warn().Str("job_id", jobID).Msg("Redelivering job that was previously RUNNING (indicates failed delivery)")
+			metrics.JobsRedeliveredTotal.Add(ctx, 1,
+				metric.WithAttributes(attribute.String("queue", queue)))
+		}
+
 		// Update job state to RUNNING
 		job.State = jobv1.JobState_JOB_STATE_RUNNING
 		job.UpdatedAt = timestamppb.Now()
 
 		err = s.updateJobState(ctx, job)
 		if err != nil {
+			// Check if context was cancelled
+			if ctx.Err() != nil {
+				log.Warn().Err(ctx.Err()).Str("job_id", jobID).Msg("Context cancelled during state update")
+				break
+			}
 			log.Error().Err(err).Str("job_id", jobID).Msg("Failed to update job state to RUNNING")
 			continue
 		}
@@ -606,6 +634,76 @@ func (s *SQSJobStore) CompleteJob(ctx context.Context, taskToken string, result 
 	}
 
 	log.Info().Str("job_id", tt.JobID).Bool("success", result.Success).Msg("Job completed")
+	return nil
+}
+
+// ReleaseJob returns a job back to the queue, resetting its state to SCHEDULED.
+// This immediately makes the message visible in SQS by setting visibility timeout to 0.
+func (s *SQSJobStore) ReleaseJob(ctx context.Context, taskToken string) error {
+	// Decode and verify task token
+	tt, err := s.decodeTaskToken(taskToken)
+	if err != nil {
+		log.Warn().Err(err).Msg("Invalid task token for release")
+		return err
+	}
+
+	// Get queue URL
+	queueURL, exists := s.cfg.QueueURLs[tt.Queue]
+	if !exists {
+		log.Error().Str("queue", tt.Queue).Msg("Queue not configured for release")
+		return fmt.Errorf("queue not configured: %s", tt.Queue)
+	}
+
+	// Change message visibility to 0 to immediately release back to queue
+	changeVisInput := &sqs.ChangeMessageVisibilityInput{
+		QueueUrl:          aws.String(queueURL),
+		ReceiptHandle:     aws.String(tt.ReceiptHandle),
+		VisibilityTimeout: 0, // Immediate release
+	}
+
+	_, err = s.sqsClient.ChangeMessageVisibility(ctx, changeVisInput)
+	if err != nil {
+		log.Error().Err(err).Str("job_id", tt.JobID).Msg("Failed to release message visibility in SQS")
+		return wrapAWSError(err, "failed to release message visibility")
+	}
+
+	// Update job state to SCHEDULED in DynamoDB
+	updateBuilder := expression.Set(
+		expression.Name("state"),
+		expression.Value(int32(jobv1.JobState_JOB_STATE_SCHEDULED)),
+	).Set(
+		expression.Name("updated_at"),
+		expression.Value(time.Now().UnixMilli()),
+	)
+
+	expr, err := expression.NewBuilder().WithUpdate(updateBuilder).Build()
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to build update expression for release")
+		return fmt.Errorf("failed to build update expression: %w", err)
+	}
+
+	updateInput := &dynamodb.UpdateItemInput{
+		TableName: aws.String(s.cfg.JobsTableName),
+		Key: map[string]types.AttributeValue{
+			"job_id": &types.AttributeValueMemberS{Value: tt.JobID},
+		},
+		UpdateExpression:          expr.Update(),
+		ExpressionAttributeNames:  expr.Names(),
+		ExpressionAttributeValues: expr.Values(),
+	}
+
+	_, err = s.dynamoClient.UpdateItem(ctx, updateInput)
+	if err != nil {
+		log.Error().Err(err).Str("job_id", tt.JobID).Msg("Failed to update job state to SCHEDULED in DynamoDB")
+		// Message is already released in SQS, so this is a warning not a fatal error
+		// The job will be picked up but may show wrong state temporarily
+	}
+
+	// Record metric
+	telemetry.GetMetrics().JobsReleasedTotal.Add(ctx, 1,
+		metric.WithAttributes(attribute.String("queue", tt.Queue)))
+
+	log.Info().Str("job_id", tt.JobID).Str("queue", tt.Queue).Msg("Job released back to queue")
 	return nil
 }
 

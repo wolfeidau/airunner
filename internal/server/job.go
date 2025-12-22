@@ -5,9 +5,17 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/rs/zerolog/log"
 	v1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 	"github.com/wolfeidau/airunner/api/gen/proto/go/job/v1/jobv1connect"
 	"github.com/wolfeidau/airunner/internal/store"
+)
+
+// Server-side polling configuration
+const (
+	// dequeuePollingInterval is the interval between polls when no messages are available.
+	// With SQS long polling enabled (20s), this only applies when the queue is empty.
+	dequeuePollingInterval = 500 * time.Millisecond
 )
 
 var _ jobv1connect.JobServiceHandler = &JobServer{}
@@ -41,8 +49,8 @@ func (s *JobServer) DequeueJob(ctx context.Context, req *connect.Request[v1.Dequ
 		timeoutSeconds = 300 // 5 minutes default
 	}
 
-	// Long polling implementation - try multiple times
-	ticker := time.NewTicker(100 * time.Millisecond)
+	// Polling with reduced frequency - SQS long polling handles the wait
+	ticker := time.NewTicker(dequeuePollingInterval)
 	defer ticker.Stop()
 
 	for {
@@ -58,6 +66,13 @@ func (s *JobServer) DequeueJob(ctx context.Context, req *connect.Request[v1.Dequ
 				TaskToken: jobWithToken.TaskToken,
 			}
 			if err := stream.Send(resp); err != nil {
+				// Release the job back to the queue so it can be picked up by another worker
+				// This prevents jobs from being stuck in RUNNING state until visibility timeout
+				if releaseErr := s.store.ReleaseJob(ctx, jobWithToken.TaskToken); releaseErr != nil {
+					log.Error().Err(releaseErr).Str("job_id", jobWithToken.Job.JobId).Msg("Failed to release job after stream error")
+				} else {
+					log.Warn().Str("job_id", jobWithToken.Job.JobId).Msg("Released job back to queue after stream failure")
+				}
 				return connect.NewError(connect.CodeInternal, err)
 			}
 		}

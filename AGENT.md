@@ -4,26 +4,27 @@ This file provides guidance to AI coding agents when working with code in this r
 
 ## Project Overview
 
-This is `airunner`, a Go-based job orchestration platform with two main binaries:
+This is `airunner`, a Go-based job orchestration platform with production-ready AWS backend support.
 
 ### Binaries
 
 - **airunner-server** (`cmd/server/main.go`) - Job queue server
-  - Provides gRPC API for job management
-  - Runs in-memory job store for development
+  - Provides gRPC API via Connect RPC for job management
+  - Supports in-memory store (development) or SQS/DynamoDB (production)
   - Handles job queuing, visibility timeouts, and event streaming
+  - OpenTelemetry integration for metrics and tracing
 
 - **airunner-cli** (`cmd/cli/main.go`) - Multi-purpose client
-  - `worker` - Long-running job execution worker
+  - `worker` - Long-running job execution worker with event batching
   - `submit` - Submit jobs to the queue
-  - `monitor` - Real-time job event monitoring
-  - `list` - List and filter jobs
+  - `monitor` - Real-time job event monitoring with TUI
+  - `list` - List and filter jobs with watch mode
+  - `token` - Generate JWT authentication tokens
 
-- **airunner-orchestrator** (`cmd/orchestrator/main.go`) - Future cloud backend
-  - Reserved for SQS/DynamoDB/EventBridge implementation
-  - Not currently implemented
+- **airunner-orchestrator** (`cmd/orchestrator/main.go`) - Cloud backend entry point
+  - Uses SQS/DynamoDB backend for production deployments
 
-The system uses Protocol Buffers for service definitions, with the main job service defined in `api/job/v1/job.proto`.
+The system uses Protocol Buffers with Connect RPC for service definitions, with the main job service defined in `api/job/v1/job.proto`.
 
 ## Development Commands
 
@@ -90,6 +91,12 @@ make test           # Run all tests with coverage
 make test-coverage  # Run tests and show coverage report
 ```
 
+**Local Infrastructure (for integration tests):**
+```bash
+docker-compose up -d  # Start local DynamoDB and LocalStack (SQS)
+docker-compose down   # Stop local infrastructure
+```
+
 **Code Quality:**
 ```bash
 make lint          # Run linter
@@ -108,12 +115,45 @@ make mkcert        # Generate local TLS certificates
 
 ## Architecture Notes
 
-- **Protocol Buffers**: Uses buf for proto management with dependencies on googleapis and protovalidate
-- **Job System**: The JobService provides EnqueueJob and ListJobs operations with pagination support
-- **Microservices**: Three separate binaries that likely communicate via gRPC
-- **Job States**: Jobs track status, timestamps, payloads, and error messages
+### Core Packages
 
-The codebase appears to be in early stages with skeleton main.go files, suggesting active development of a distributed job processing system.
+- **internal/store/** - Job storage backends
+  - `JobStore` interface defines the contract for all storage implementations
+  - `MemoryJobStore` - In-memory FIFO queues with visibility timeouts for development
+  - `SQSJobStore` - Production backend using AWS SQS for queuing and DynamoDB for persistence
+
+- **internal/worker/** - Job execution engine
+  - `JobExecutor` - Runs jobs via console-stream library with output capture
+  - `EventBatcher` - Buffers output events before publishing (max 50 items, 256KB, 2s flush interval)
+
+- **internal/server/** - HTTP/gRPC server implementation
+  - `JobService` - Enqueue, dequeue, complete, list operations
+  - `JobEventsService` - Publish and stream events with historical replay
+
+- **internal/telemetry/** - Observability
+  - OpenTelemetry initialization with OTLP exporters (Honeycomb-ready)
+  - 20+ custom metrics for event publish/errors, job lifecycle, DynamoDB operations
+
+- **internal/auth/** - Authentication
+  - JWT verification middleware with ECDSA ES256
+  - Token generation utilities
+
+### Key Patterns
+
+- **Interface-Based Design**: `JobStore` interface allows swapping MemoryJobStore or SQSJobStore
+- **Stateless Task Tokens**: HMAC-signed tokens containing job_id, queue, receipt_handle
+- **Event Streaming**: Bi-directional streaming with historical replay from DynamoDB
+- **Visibility Timeout**: SQS-like job invisibility for at-least-once delivery
+- **Idempotent Operations**: Request ID tracking via GSI2 for safe retries
+- **Size-Aware Batching**: Conservative limits (350KB) accounting for DynamoDB 400KB limit
+
+### AWS Backend (SQSJobStore)
+
+The production backend uses:
+- **SQS** - Job queue with visibility timeout management
+- **DynamoDB Jobs Table** - Job metadata with GSI1 (queue) and GSI2 (request_id)
+- **DynamoDB JobEvents Table** - Event persistence with TTL support
+- Task tokens use HMAC-SHA256 signing with constant-time validation
 
 ## Code Style
 - **Logging**: ALWAYS use `"github.com/rs/zerolog/log"` for all logging operations
@@ -121,6 +161,21 @@ The codebase appears to be in early stages with skeleton main.go files, suggesti
 - Error handling: return errors up the stack, log at top level
 - Package names: lowercase, descriptive (buildkite, commands, trace, tokens)
 - Use contexts for cancellation and tracing throughout
+
+### Error Handling Patterns
+
+The codebase uses sentinel errors for common conditions:
+```go
+var (
+    ErrInvalidTaskToken = errors.New("invalid task token")
+    ErrQueueMismatch    = errors.New("queue mismatch")
+    ErrJobNotFound      = errors.New("job not found")
+    ErrThrottled        = errors.New("AWS request throttled")
+    ErrEventTooLarge    = errors.New("event exceeds maximum size")
+)
+```
+
+AWS errors are wrapped with `wrapAWSError()` which identifies throttling and size violations. Use `errors.Is()` to check for specific error types.
 
 ## Documentation Style
 When creating any documentation (README files, code comments, design docs), write in the style of an Amazon engineer:
@@ -148,8 +203,39 @@ Key files:
 
 ## Key Files
 
+### API & Proto
 - `api/job/v1/job.proto` - Core job service gRPC definitions
-- `api/buf.yaml` - Protocol buffer configuration and linting rules  
-- `go.mod` - Go module definition (requires Go 1.24.5)
-- `cmd/*/main.go` - Entry points for the three main services
-- `internal/auth/` - JWT authentication package
+- `api/buf.yaml` - Protocol buffer configuration and linting rules
+
+### Store Implementations
+- `internal/store/store.go` - `JobStore` interface and `MemoryJobStore`
+- `internal/store/sqs_store.go` - `SQSJobStore` with SQS/DynamoDB backend
+
+### Worker & Event Processing
+- `internal/worker/worker.go` - `JobExecutor` for running jobs
+- `internal/worker/event_batcher.go` - Event batching with configurable flush thresholds
+
+### Server
+- `internal/server/server.go` - HTTP server setup with Connect RPC
+- `internal/server/job.go` - JobService implementation
+- `internal/server/job_event.go` - JobEventsService implementation
+
+### Observability
+- `internal/telemetry/telemetry.go` - OpenTelemetry initialization
+- `internal/telemetry/metrics.go` - Custom metrics definitions
+
+### Authentication
+- `internal/auth/jwt.go` - JWT verification middleware
+- `internal/auth/token.go` - Token generation
+
+### CLI Commands
+- `cmd/cli/internal/commands/` - Worker, submit, monitor, list, token commands
+
+### Design Specs
+- `specs/sqs_dynamodb_backend.md` - AWS backend architecture
+- `specs/event_batching.md` - Event batching design
+- `specs/api_auth.md` - Authentication specification
+
+### Infrastructure
+- `infra/` - Terraform configuration for AWS resources
+- `docker-compose.yml` - Local DynamoDB and LocalStack for testing

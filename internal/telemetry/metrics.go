@@ -26,10 +26,12 @@ type Metrics struct {
 	HistoricalEventsReplayed metric.Int64Counter
 
 	// Store operation metrics
-	JobsEnqueuedTotal  metric.Int64Counter
-	JobsDequeuedTotal  metric.Int64Counter
-	JobsCompletedTotal metric.Int64Counter
-	VisibilityUpdates  metric.Int64Counter
+	JobsEnqueuedTotal    metric.Int64Counter
+	JobsDequeuedTotal    metric.Int64Counter
+	JobsCompletedTotal   metric.Int64Counter
+	JobsRedeliveredTotal metric.Int64Counter
+	JobsReleasedTotal    metric.Int64Counter
+	VisibilityUpdates    metric.Int64Counter
 
 	// DynamoDB metrics (SQS store only)
 	DynamoDBOperationsTotal metric.Int64Counter
@@ -125,6 +127,18 @@ func initMetrics() *Metrics {
 	m.JobsCompletedTotal, _ = meter.Int64Counter(
 		"airunner.jobs.completed.total",
 		metric.WithDescription("Total number of jobs completed"),
+		metric.WithUnit("{job}"),
+	)
+
+	m.JobsRedeliveredTotal, _ = meter.Int64Counter(
+		"airunner.jobs.redelivered.total",
+		metric.WithDescription("Total number of jobs redelivered due to failed delivery"),
+		metric.WithUnit("{job}"),
+	)
+
+	m.JobsReleasedTotal, _ = meter.Int64Counter(
+		"airunner.jobs.released.total",
+		metric.WithDescription("Total number of jobs released back to queue"),
 		metric.WithUnit("{job}"),
 	)
 

@@ -321,6 +321,52 @@ func TestContextCancellation(t *testing.T) {
 	require.Error(t, ctx.Err())
 }
 
+func TestSQSJobStoreReleaseJob(t *testing.T) {
+	t.Run("release with invalid token fails", func(t *testing.T) {
+		store := &SQSJobStore{
+			cfg: SQSJobStoreConfig{
+				TokenSigningSecret: []byte("test-secret"),
+				QueueURLs:          map[string]string{"default": "https://example.com/queue"},
+			},
+		}
+
+		err := store.ReleaseJob(context.Background(), "invalid-token")
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "invalid task token")
+	})
+
+	t.Run("release with empty token fails", func(t *testing.T) {
+		store := &SQSJobStore{
+			cfg: SQSJobStoreConfig{
+				TokenSigningSecret: []byte("test-secret"),
+			},
+		}
+
+		err := store.ReleaseJob(context.Background(), "")
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "token cannot be empty")
+	})
+
+	t.Run("release with unconfigured queue fails", func(t *testing.T) {
+		store := &SQSJobStore{
+			cfg: SQSJobStoreConfig{
+				TokenSigningSecret: []byte("test-secret"),
+				QueueURLs:          map[string]string{"other": "https://example.com/other"},
+			},
+		}
+
+		// Create a valid token for a queue that doesn't exist in config
+		token := store.encodeTaskToken("job-123", "default", "receipt-abc")
+
+		err := store.ReleaseJob(context.Background(), token)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "queue not configured")
+	})
+
+	// Note: Full integration tests for ReleaseJob with actual SQS/DynamoDB
+	// are in sqs_store_integration_test.go using LocalStack
+}
+
 func TestEventSizeValidation(t *testing.T) {
 	s := NewSQSJobStore(nil, nil, SQSJobStoreConfig{
 		JobEventsTableName: "test_job_events",

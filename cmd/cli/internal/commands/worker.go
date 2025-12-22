@@ -127,7 +127,7 @@ func (w *WorkerCmd) processJob(ctx context.Context, clients *client.Clients) (bo
 		})
 	})
 
-	executor := worker.NewJobExecutorWithBatcher(eventStream, taskToken, batcher)
+	executor := worker.NewJobExecutor(eventStream, taskToken, batcher)
 
 	// Create a separate context for timeout extension so we can cancel it when the job completes
 	timeoutCtx, cancelTimeout := context.WithCancel(ctx)

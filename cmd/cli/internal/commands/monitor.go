@@ -104,8 +104,73 @@ func monitorJob(ctx context.Context, clients *client.Clients, args monitorJobArg
 		timer = newPlaybackTimer(args.Verbose)
 	}
 
-	for stream.Receive() {
+	// Linearizability verification: track sequence numbers to detect gaps
+	var lastSequence int64
+	var sequenceGaps []string
+	var processEndReceived bool
+
+	for {
+		var receivedEvent bool
+
+		// After PROCESS_END, use timeout to exit gracefully if no more events
+		if processEndReceived {
+			receiveChan := make(chan bool, 1)
+			go func() {
+				receiveChan <- stream.Receive()
+			}()
+
+			select {
+			case receivedEvent = <-receiveChan:
+				if !receivedEvent {
+					goto streamComplete
+				}
+			case <-time.After(2 * time.Second):
+				// Grace period expired, exit cleanly
+				if args.Verbose {
+					fmt.Printf("\n[DEBUG] Grace period expired after PROCESS_END, exiting\n")
+				}
+				goto streamComplete
+			}
+		} else {
+			receivedEvent = stream.Receive()
+			if !receivedEvent {
+				goto streamComplete
+			}
+		}
+
 		event := stream.Msg().Event
+
+		// Verify sequence linearizability
+		if lastSequence > 0 {
+			expectedNext := lastSequence + 1
+			if event.Sequence > expectedNext {
+				gap := fmt.Sprintf("Gap detected: expected seq %d, got %d (missing %d events)",
+					expectedNext, event.Sequence, event.Sequence-expectedNext)
+				sequenceGaps = append(sequenceGaps, gap)
+				if args.Verbose {
+					fmt.Printf("\n[WARN] SEQUENCE GAP: %s\n", gap)
+				}
+			} else if event.Sequence <= lastSequence {
+				if args.Verbose {
+					fmt.Printf("\n[WARN] SEQUENCE OUT OF ORDER: got seq %d after %d\n",
+						event.Sequence, lastSequence)
+				}
+			}
+		}
+
+		// Update lastSequence - for OUTPUT_BATCH, use EndSequence since the batch represents multiple sequences
+		if event.EventType == jobv1.EventType_EVENT_TYPE_OUTPUT_BATCH {
+			if batch := event.GetOutputBatch(); batch != nil {
+				lastSequence = batch.EndSequence
+				if args.Verbose {
+					fmt.Printf("[DEBUG] OUTPUT_BATCH covers sequences %d-%d\n", batch.StartSequence, batch.EndSequence)
+				}
+			} else {
+				lastSequence = event.Sequence
+			}
+		} else {
+			lastSequence = event.Sequence
+		}
 
 		// Handle playback timing
 		// Skip for OUTPUT_BATCH - it handles timing internally for each output
@@ -140,7 +205,8 @@ func monitorJob(ctx context.Context, clients *client.Clients, args monitorJobArg
 					end.RunDuration.AsDuration())
 			}
 
-			return nil // we are done
+			// Set flag to start grace period for any remaining events
+			processEndReceived = true
 
 		case jobv1.EventType_EVENT_TYPE_PROCESS_ERROR:
 			if err := event.GetProcessError(); err != nil {
@@ -170,7 +236,7 @@ func monitorJob(ctx context.Context, clients *client.Clients, args monitorJobArg
 			if batch := event.GetOutputBatch(); batch != nil {
 				if args.Verbose {
 					batchTime := event.Timestamp.AsTime()
-					firstOutputTime := time.UnixMilli(batch.FirstTimestampMs)
+					firstOutputTime := time.UnixMilli(batch.FirstTimestampMs).UTC()
 					fmt.Printf("\n[DEBUG] Batch event: timestamp=%s, outputs=%d, first_output=%s, playback_interval=%dms\n",
 						batchTime.Format("15:04:05.000"),
 						len(batch.Outputs),
@@ -184,7 +250,7 @@ func monitorJob(ctx context.Context, clients *client.Clients, args monitorJobArg
 					// FirstTimestampMs is the absolute timestamp of the first item in the batch
 					// TimestampDeltaMs is the offset from the first item
 					outputTimestampMs := batch.FirstTimestampMs + int64(output.TimestampDeltaMs)
-					outputTime := time.UnixMilli(outputTimestampMs)
+					outputTime := time.UnixMilli(outputTimestampMs).UTC()
 
 					if args.Verbose && i < 5 { // Only show first 5 to avoid spam
 						fmt.Printf("[DEBUG] Output %d: delta=%dms, timestamp=%s\n",
@@ -223,8 +289,21 @@ func monitorJob(ctx context.Context, clients *client.Clients, args monitorJobArg
 		}
 	}
 
+streamComplete:
 	if err := stream.Err(); err != nil {
 		return fmt.Errorf("stream error: %w", err)
+	}
+
+	// Report linearizability verification results
+	if len(sequenceGaps) > 0 {
+		fmt.Printf("\n%s\n", strings.Repeat("=", 50))
+		fmt.Printf("⚠️  LINEARIZABILITY VIOLATIONS DETECTED\n")
+		fmt.Printf("%s\n", strings.Repeat("=", 50))
+		for _, gap := range sequenceGaps {
+			fmt.Printf("  • %s\n", gap)
+		}
+		fmt.Printf("\nThis indicates events were lost or failed to persist.\n")
+		fmt.Printf("Check worker and server logs for errors.\n")
 	}
 
 	return nil

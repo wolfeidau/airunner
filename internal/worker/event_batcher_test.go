@@ -31,15 +31,16 @@ func TestEventBatcherAddOutput(t *testing.T) {
 	)
 
 	// Add 3 outputs - should not flush yet
-	require.NoError(t, batcher.AddOutput([]byte("line1\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
-	require.NoError(t, batcher.AddOutput([]byte("line2\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
-	require.NoError(t, batcher.AddOutput([]byte("line3\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
+	ctx := context.Background()
+	require.NoError(t, batcher.AddOutput(ctx, []byte("line1\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
+	require.NoError(t, batcher.AddOutput(ctx, []byte("line2\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
+	require.NoError(t, batcher.AddOutput(ctx, []byte("line3\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
 
 	require.Empty(t, publishedEvents, "Should not publish until batch is full")
 
 	// Add 2 more to reach max batch size
-	require.NoError(t, batcher.AddOutput([]byte("line4\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
-	require.NoError(t, batcher.AddOutput([]byte("line5\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
+	require.NoError(t, batcher.AddOutput(ctx, []byte("line4\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
+	require.NoError(t, batcher.AddOutput(ctx, []byte("line5\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
 
 	require.Len(t, publishedEvents, 1, "Should publish batch when max size reached")
 
@@ -59,7 +60,7 @@ func TestEventBatcherAddOutput(t *testing.T) {
 	require.Equal(t, []byte("line1\n"), batch.Outputs[0].Output)
 	require.Equal(t, []byte("line5\n"), batch.Outputs[4].Output)
 
-	require.NoError(t, batcher.Stop())
+	require.NoError(t, batcher.Stop(ctx))
 }
 
 func TestEventBatcherMaxBytes(t *testing.T) {
@@ -82,15 +83,16 @@ func TestEventBatcherMaxBytes(t *testing.T) {
 	)
 
 	// Add outputs until we exceed max bytes
+	ctx := context.Background()
 	largeOutput := make([]byte, 40) // 40 bytes per item
 	for i := 0; i < 3; i++ {
-		require.NoError(t, batcher.AddOutput(largeOutput, jobv1.StreamType_STREAM_TYPE_STDOUT))
+		require.NoError(t, batcher.AddOutput(ctx, largeOutput, jobv1.StreamType_STREAM_TYPE_STDOUT))
 	}
 
 	// Third output should trigger flush
 	require.NotEmpty(t, publishedEvents, "Should flush when max bytes exceeded")
 
-	require.NoError(t, batcher.Stop())
+	require.NoError(t, batcher.Stop(ctx))
 }
 
 func TestEventBatcherTimer(t *testing.T) {
@@ -112,7 +114,8 @@ func TestEventBatcherTimer(t *testing.T) {
 	)
 
 	// Add one output
-	require.NoError(t, batcher.AddOutput([]byte("line1\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
+	ctx := context.Background()
+	require.NoError(t, batcher.AddOutput(ctx, []byte("line1\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
 	require.Empty(t, publishedEvents, "Should not publish immediately")
 
 	// Wait for timer to fire
@@ -124,7 +127,7 @@ func TestEventBatcherTimer(t *testing.T) {
 	batch := event.GetOutputBatch()
 	require.Len(t, batch.Outputs, 1)
 
-	require.NoError(t, batcher.Stop())
+	require.NoError(t, batcher.Stop(ctx))
 }
 
 func TestEventBatcherNonOutputEvent(t *testing.T) {
@@ -146,8 +149,9 @@ func TestEventBatcherNonOutputEvent(t *testing.T) {
 	)
 
 	// Add some outputs
-	require.NoError(t, batcher.AddOutput([]byte("line1\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
-	require.NoError(t, batcher.AddOutput([]byte("line2\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
+	ctx := context.Background()
+	require.NoError(t, batcher.AddOutput(ctx, []byte("line1\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
+	require.NoError(t, batcher.AddOutput(ctx, []byte("line2\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
 	require.Empty(t, publishedEvents)
 
 	// Add a non-output event (heartbeat)
@@ -160,7 +164,7 @@ func TestEventBatcherNonOutputEvent(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, batcher.AddEvent(heartbeatEvent))
+	require.NoError(t, batcher.AddEvent(ctx, heartbeatEvent))
 
 	// Should have published: 1 batch + 1 heartbeat
 	require.Len(t, publishedEvents, 2)
@@ -172,7 +176,7 @@ func TestEventBatcherNonOutputEvent(t *testing.T) {
 	require.Equal(t, jobv1.EventType_EVENT_TYPE_HEARTBEAT, publishedEvents[1].EventType)
 	require.Equal(t, int64(3), publishedEvents[1].Sequence, "Heartbeat sequence should be 3 (after 2 outputs)")
 
-	require.NoError(t, batcher.Stop())
+	require.NoError(t, batcher.Stop(ctx))
 }
 
 func TestEventBatcherExplicitFlush(t *testing.T) {
@@ -194,14 +198,15 @@ func TestEventBatcherExplicitFlush(t *testing.T) {
 	)
 
 	// Add 3 outputs
-	require.NoError(t, batcher.AddOutput([]byte("line1\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
-	require.NoError(t, batcher.AddOutput([]byte("line2\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
-	require.NoError(t, batcher.AddOutput([]byte("line3\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
+	ctx := context.Background()
+	require.NoError(t, batcher.AddOutput(ctx, []byte("line1\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
+	require.NoError(t, batcher.AddOutput(ctx, []byte("line2\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
+	require.NoError(t, batcher.AddOutput(ctx, []byte("line3\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
 
 	require.Empty(t, publishedEvents)
 
 	// Explicit flush
-	require.NoError(t, batcher.Flush())
+	require.NoError(t, batcher.Flush(ctx))
 
 	require.Len(t, publishedEvents, 1)
 	batch := publishedEvents[0].GetOutputBatch()
@@ -209,7 +214,7 @@ func TestEventBatcherExplicitFlush(t *testing.T) {
 	require.Equal(t, int64(1), batch.StartSequence)
 	require.Equal(t, int64(3), batch.EndSequence)
 
-	require.NoError(t, batcher.Stop())
+	require.NoError(t, batcher.Stop(ctx))
 }
 
 func TestEventBatcherSequenceMonotonicity(t *testing.T) {
@@ -231,8 +236,9 @@ func TestEventBatcherSequenceMonotonicity(t *testing.T) {
 	)
 
 	// Add multiple batches
+	ctx := context.Background()
 	for i := 0; i < 10; i++ {
-		require.NoError(t, batcher.AddOutput([]byte("line\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
+		require.NoError(t, batcher.AddOutput(ctx, []byte("line\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
 	}
 
 	// Should have 3 batches (3+3+3 = 9, plus 1 in buffer)
@@ -255,13 +261,13 @@ func TestEventBatcherSequenceMonotonicity(t *testing.T) {
 	require.Equal(t, int64(9), batch3.EndSequence)
 
 	// Final flush should get sequence 10
-	require.NoError(t, batcher.Flush())
+	require.NoError(t, batcher.Flush(ctx))
 	require.Len(t, publishedEvents, 4)
 	batch4 := publishedEvents[3].GetOutputBatch()
 	require.Equal(t, int64(10), batch4.StartSequence)
 	require.Equal(t, int64(10), batch4.EndSequence)
 
-	require.NoError(t, batcher.Stop())
+	require.NoError(t, batcher.Stop(ctx))
 }
 
 func TestEventBatcherTimestampDeltas(t *testing.T) {
@@ -283,11 +289,12 @@ func TestEventBatcherTimestampDeltas(t *testing.T) {
 	)
 
 	// Add output, wait, add another
-	require.NoError(t, batcher.AddOutput([]byte("line1\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
+	ctx := context.Background()
+	require.NoError(t, batcher.AddOutput(ctx, []byte("line1\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
 	time.Sleep(100 * time.Millisecond)
-	require.NoError(t, batcher.AddOutput([]byte("line2\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
+	require.NoError(t, batcher.AddOutput(ctx, []byte("line2\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
 
-	require.NoError(t, batcher.Flush())
+	require.NoError(t, batcher.Flush(ctx))
 
 	batch := publishedEvents[0].GetOutputBatch()
 	require.Len(t, batch.Outputs, 2)
@@ -298,7 +305,7 @@ func TestEventBatcherTimestampDeltas(t *testing.T) {
 	// Second item should have delta ~100ms
 	require.InDelta(t, 100, batch.Outputs[1].TimestampDeltaMs, 20, "Second item should have ~100ms delta")
 
-	require.NoError(t, batcher.Stop())
+	require.NoError(t, batcher.Stop(ctx))
 }
 
 func TestEventBatcherStop(t *testing.T) {
@@ -320,18 +327,19 @@ func TestEventBatcherStop(t *testing.T) {
 	)
 
 	// Add outputs
-	require.NoError(t, batcher.AddOutput([]byte("line1\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
-	require.NoError(t, batcher.AddOutput([]byte("line2\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
+	ctx := context.Background()
+	require.NoError(t, batcher.AddOutput(ctx, []byte("line1\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
+	require.NoError(t, batcher.AddOutput(ctx, []byte("line2\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
 
 	// Stop should flush remaining events
-	require.NoError(t, batcher.Stop())
+	require.NoError(t, batcher.Stop(ctx))
 
 	require.Len(t, publishedEvents, 1)
 	batch := publishedEvents[0].GetOutputBatch()
 	require.Len(t, batch.Outputs, 2)
 
 	// After stop, AddOutput should fail
-	err := batcher.AddOutput([]byte("line3\n"), jobv1.StreamType_STREAM_TYPE_STDOUT)
+	err := batcher.AddOutput(ctx, []byte("line3\n"), jobv1.StreamType_STREAM_TYPE_STDOUT)
 	require.Error(t, err)
 }
 
@@ -359,12 +367,13 @@ func TestEventBatcherConcurrentOperations(t *testing.T) {
 	)
 
 	// Simulate concurrent output from multiple goroutines
+	ctx := context.Background()
 	done := make(chan bool, 3)
 	for i := 0; i < 3; i++ {
 		go func(workerID int) {
 			for j := 0; j < 20; j++ {
 				output := []byte("line\n")
-				if err := batcher.AddOutput(output, jobv1.StreamType_STREAM_TYPE_STDOUT); err != nil {
+				if err := batcher.AddOutput(ctx, output, jobv1.StreamType_STREAM_TYPE_STDOUT); err != nil {
 					t.Errorf("worker %d: failed to add output: %v", workerID, err)
 				}
 			}
@@ -378,7 +387,7 @@ func TestEventBatcherConcurrentOperations(t *testing.T) {
 	}
 
 	// Stop and collect remaining
-	require.NoError(t, batcher.Stop())
+	require.NoError(t, batcher.Stop(ctx))
 
 	// Should have published at least 1 event (multiple possible with timer)
 	mu.Lock()
@@ -415,19 +424,20 @@ func TestEventBatcherDefensiveCopy(t *testing.T) {
 	)
 
 	// Create a mutable buffer
+	ctx := context.Background()
 	output := []byte("original")
-	require.NoError(t, batcher.AddOutput(output, jobv1.StreamType_STREAM_TYPE_STDOUT))
+	require.NoError(t, batcher.AddOutput(ctx, output, jobv1.StreamType_STREAM_TYPE_STDOUT))
 
 	// Mutate the original buffer
 	output[0] = 'X'
 
 	// Flush and verify the buffered data was not mutated
-	require.NoError(t, batcher.Flush())
+	require.NoError(t, batcher.Flush(ctx))
 
 	batch := publishedEvents[0].GetOutputBatch()
 	require.Equal(t, []byte("original"), batch.Outputs[0].Output, "Defensive copy should prevent external mutation")
 
-	require.NoError(t, batcher.Stop())
+	require.NoError(t, batcher.Stop(ctx))
 }
 
 // TestEventBatcherConcurrentStop verifies that concurrent Stop() calls don't panic
@@ -447,13 +457,14 @@ func TestEventBatcherConcurrentStop(t *testing.T) {
 	)
 
 	// Add some data
-	require.NoError(t, batcher.AddOutput([]byte("test\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
+	ctx := context.Background()
+	require.NoError(t, batcher.AddOutput(ctx, []byte("test\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
 
 	// Call Stop() concurrently from multiple goroutines
 	done := make(chan bool, 5)
 	for i := 0; i < 5; i++ {
 		go func() {
-			_ = batcher.Stop()
+			_ = batcher.Stop(ctx)
 			done <- true
 		}()
 	}
@@ -465,7 +476,7 @@ func TestEventBatcherConcurrentStop(t *testing.T) {
 
 	// If we got here without panic, test passed
 	// Additional Stop() calls should be no-op
-	require.NoError(t, batcher.Stop())
+	require.NoError(t, batcher.Stop(ctx))
 }
 
 // TestEventBatcherErrorPropagation verifies error propagation from onFlush callback
@@ -487,13 +498,14 @@ func TestEventBatcherErrorPropagation(t *testing.T) {
 	)
 
 	// Add outputs to trigger flush
-	require.NoError(t, batcher.AddOutput([]byte("line1\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
-	err := batcher.AddOutput([]byte("line2\n"), jobv1.StreamType_STREAM_TYPE_STDOUT) // This should trigger flush and return error
+	ctx := context.Background()
+	require.NoError(t, batcher.AddOutput(ctx, []byte("line1\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
+	err := batcher.AddOutput(ctx, []byte("line2\n"), jobv1.StreamType_STREAM_TYPE_STDOUT) // This should trigger flush and return error
 
 	require.Error(t, err, "Should propagate error from onFlush callback")
 	require.ErrorIs(t, err, expectedErr, "Should preserve original error")
 
-	_ = batcher.Stop()
+	_ = batcher.Stop(ctx)
 }
 
 // TestEventBatcherTimerCancelledOnShutdown verifies timer is properly cancelled during shutdown
@@ -516,10 +528,11 @@ func TestEventBatcherTimerCancelledOnShutdown(t *testing.T) {
 	)
 
 	// Add output to start timer
-	require.NoError(t, batcher.AddOutput([]byte("line1\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
+	ctx := context.Background()
+	require.NoError(t, batcher.AddOutput(ctx, []byte("line1\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
 
 	// Stop immediately (before timer fires)
-	require.NoError(t, batcher.Stop())
+	require.NoError(t, batcher.Stop(ctx))
 
 	// Wait longer than flush interval
 	time.Sleep(1500 * time.Millisecond)
@@ -554,17 +567,17 @@ func TestEventBatcherContextCancellation(t *testing.T) {
 	)
 
 	// Add first output
-	require.NoError(t, batcher.AddOutputContext(ctx, []byte("line1\n"), 0))
+	require.NoError(t, batcher.AddOutput(ctx, []byte("line1\n"), 0))
 
 	// Cancel context
 	cancel()
 
 	// Try to flush with cancelled context - should fail
-	err := batcher.FlushContext(ctx)
+	err := batcher.Flush(ctx)
 	require.Error(t, err, "Flush should fail with cancelled context")
 	require.ErrorIs(t, err, context.Canceled)
 
-	_ = batcher.Stop()
+	_ = batcher.Stop(context.Background())
 }
 
 // TestEventBatcherZeroLengthOutput verifies handling of zero-length output
@@ -587,19 +600,20 @@ func TestEventBatcherZeroLengthOutput(t *testing.T) {
 	)
 
 	// Add zero-length output
-	require.NoError(t, batcher.AddOutput([]byte{}, jobv1.StreamType_STREAM_TYPE_STDOUT))
+	ctx := context.Background()
+	require.NoError(t, batcher.AddOutput(ctx, []byte{}, jobv1.StreamType_STREAM_TYPE_STDOUT))
 
 	// Add normal output
-	require.NoError(t, batcher.AddOutput([]byte("data"), jobv1.StreamType_STREAM_TYPE_STDOUT))
+	require.NoError(t, batcher.AddOutput(ctx, []byte("data"), jobv1.StreamType_STREAM_TYPE_STDOUT))
 
-	require.NoError(t, batcher.Flush())
+	require.NoError(t, batcher.Flush(ctx))
 
 	batch := publishedEvents[0].GetOutputBatch()
 	require.Len(t, batch.Outputs, 2)
 	require.Empty(t, batch.Outputs[0].Output, "Should handle zero-length output")
 	require.Equal(t, []byte("data"), batch.Outputs[1].Output)
 
-	require.NoError(t, batcher.Stop())
+	require.NoError(t, batcher.Stop(ctx))
 }
 
 // TestEventBatcherTimerFlushRace verifies race between timer fire and manual flush
@@ -625,10 +639,11 @@ func TestEventBatcherTimerFlushRace(t *testing.T) {
 	)
 
 	// Add output to start timer
-	require.NoError(t, batcher.AddOutput([]byte("line1\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
+	ctx := context.Background()
+	require.NoError(t, batcher.AddOutput(ctx, []byte("line1\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
 
 	// Immediately flush manually (racing with timer)
-	require.NoError(t, batcher.Flush())
+	require.NoError(t, batcher.Flush(ctx))
 
 	// Wait for timer to potentially fire
 	time.Sleep(1500 * time.Millisecond)
@@ -639,7 +654,7 @@ func TestEventBatcherTimerFlushRace(t *testing.T) {
 	mu.Unlock()
 	require.Equal(t, 1, count, "Should not double-flush on timer race")
 
-	require.NoError(t, batcher.Stop())
+	require.NoError(t, batcher.Stop(ctx))
 }
 
 // TestEventBatcherMaxTimestampDelta verifies handling of maximum timestamp delta edge case
@@ -662,13 +677,14 @@ func TestEventBatcherMaxTimestampDelta(t *testing.T) {
 	)
 
 	// Add first output
-	require.NoError(t, batcher.AddOutput([]byte("line1\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
+	ctx := context.Background()
+	require.NoError(t, batcher.AddOutput(ctx, []byte("line1\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
 
 	// Add second output (timestamp delta will be small, but we're testing the delta calculation)
 	time.Sleep(10 * time.Millisecond)
-	require.NoError(t, batcher.AddOutput([]byte("line2\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
+	require.NoError(t, batcher.AddOutput(ctx, []byte("line2\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
 
-	require.NoError(t, batcher.Flush())
+	require.NoError(t, batcher.Flush(ctx))
 
 	batch := publishedEvents[0].GetOutputBatch()
 	require.Len(t, batch.Outputs, 2)
@@ -678,7 +694,7 @@ func TestEventBatcherMaxTimestampDelta(t *testing.T) {
 	require.GreaterOrEqual(t, delta, int32(0), "Delta should be non-negative")
 	require.Less(t, delta, int32(1000), "Delta should be less than 1 second")
 
-	require.NoError(t, batcher.Stop())
+	require.NoError(t, batcher.Stop(ctx))
 }
 
 // TestEventBatcherStopFlushesBeforeReturning verifies Stop() flushes all pending data
@@ -701,14 +717,15 @@ func TestEventBatcherStopFlushesBeforeReturning(t *testing.T) {
 	)
 
 	// Add multiple outputs
+	ctx := context.Background()
 	for i := 0; i < 10; i++ {
-		require.NoError(t, batcher.AddOutput([]byte("line\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
+		require.NoError(t, batcher.AddOutput(ctx, []byte("line\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
 	}
 
 	require.Empty(t, publishedEvents, "Should not publish before Stop()")
 
 	// Stop should flush all pending data
-	require.NoError(t, batcher.Stop())
+	require.NoError(t, batcher.Stop(ctx))
 
 	require.Len(t, publishedEvents, 1, "Stop() should flush pending data")
 	batch := publishedEvents[0].GetOutputBatch()
@@ -733,6 +750,8 @@ func TestEventBatcherOversizedOutput(t *testing.T) {
 		},
 	)
 
+	ctx := context.Background()
+
 	t.Run("normal sized output succeeds", func(t *testing.T) {
 		// 10KB output should succeed
 		normalOutput := make([]byte, 10*1024)
@@ -740,7 +759,7 @@ func TestEventBatcherOversizedOutput(t *testing.T) {
 			normalOutput[i] = 'A'
 		}
 
-		err := batcher.AddOutput(normalOutput, jobv1.StreamType_STREAM_TYPE_STDOUT)
+		err := batcher.AddOutput(ctx, normalOutput, jobv1.StreamType_STREAM_TYPE_STDOUT)
 		require.NoError(t, err)
 	})
 
@@ -751,7 +770,7 @@ func TestEventBatcherOversizedOutput(t *testing.T) {
 			oversizedOutput[i] = 'B'
 		}
 
-		err := batcher.AddOutput(oversizedOutput, jobv1.StreamType_STREAM_TYPE_STDOUT)
+		err := batcher.AddOutput(ctx, oversizedOutput, jobv1.StreamType_STREAM_TYPE_STDOUT)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "exceeds maximum allowed")
 		require.Contains(t, err.Error(), "200KB")
@@ -765,7 +784,7 @@ func TestEventBatcherOversizedOutput(t *testing.T) {
 			boundaryOutput[i] = 'C'
 		}
 
-		err := batcher.AddOutput(boundaryOutput, jobv1.StreamType_STREAM_TYPE_STDOUT)
+		err := batcher.AddOutput(ctx, boundaryOutput, jobv1.StreamType_STREAM_TYPE_STDOUT)
 		require.NoError(t, err)
 	})
 
@@ -776,10 +795,10 @@ func TestEventBatcherOversizedOutput(t *testing.T) {
 			overLimitOutput[i] = 'D'
 		}
 
-		err := batcher.AddOutput(overLimitOutput, jobv1.StreamType_STREAM_TYPE_STDOUT)
+		err := batcher.AddOutput(ctx, overLimitOutput, jobv1.StreamType_STREAM_TYPE_STDOUT)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "exceeds maximum allowed")
 	})
 
-	require.NoError(t, batcher.Stop())
+	require.NoError(t, batcher.Stop(ctx))
 }

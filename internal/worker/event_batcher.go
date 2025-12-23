@@ -28,7 +28,7 @@ import (
 // holding the internal lock. Network I/O should be buffered (e.g., sent to a channel).
 //
 // Shutdown:
-// Call Stop() to gracefully shutdown. This flushes pending items and stops the timer.
+// Call Stop(ctx) to gracefully shutdown. This flushes pending items and stops the timer.
 // After Stop(), AddOutput and AddEvent will return errors. Stop() is idempotent and
 // safe to call multiple times concurrently.
 type EventBatcher struct {
@@ -127,17 +127,10 @@ func NewEventBatcherWithContext(config *jobv1.ExecutionConfig, onFlush func(cont
 	}
 }
 
-// AddOutput buffers a single output line with stream type.
-// Returns error if flush fails or if batcher is stopped.
-// For new code, use AddOutputContext for cancellation support.
-func (eb *EventBatcher) AddOutput(output []byte, streamType jobv1.StreamType) error {
-	return eb.AddOutputContext(context.Background(), output, streamType)
-}
-
-// AddOutputContext buffers a single output line with stream type and context.
+// AddOutput buffers a single output line with stream type and context.
 // The context is used for flush operations and can cancel ongoing flushes.
 // Returns error if flush fails or if batcher is stopped.
-func (eb *EventBatcher) AddOutputContext(ctx context.Context, output []byte, streamType jobv1.StreamType) error {
+func (eb *EventBatcher) AddOutput(ctx context.Context, output []byte, streamType jobv1.StreamType) error {
 	eb.mu.Lock()
 	defer eb.mu.Unlock()
 
@@ -217,16 +210,9 @@ func (eb *EventBatcher) AddOutputContext(ctx context.Context, output []byte, str
 }
 
 // AddEvent flushes current batch and publishes a non-output event directly.
-// This ensures ordering: all buffered outputs are flushed before the new event.
-// For new code, use AddEventContext for cancellation support.
-func (eb *EventBatcher) AddEvent(event *jobv1.JobEvent) error {
-	return eb.AddEventContext(context.Background(), event)
-}
-
-// AddEventContext flushes current batch and publishes a non-output event directly.
 // The context is used for flush and publish operations.
 // This ensures ordering: all buffered outputs are flushed before the new event.
-func (eb *EventBatcher) AddEventContext(ctx context.Context, event *jobv1.JobEvent) error {
+func (eb *EventBatcher) AddEvent(ctx context.Context, event *jobv1.JobEvent) error {
 	eb.mu.Lock()
 	defer eb.mu.Unlock()
 
@@ -255,16 +241,9 @@ func (eb *EventBatcher) AddEventContext(ctx context.Context, event *jobv1.JobEve
 	return eb.onFlush(ctx, event)
 }
 
-// Flush flushes any buffered outputs immediately.
+// Flush flushes any buffered outputs immediately with context.
 // This is safe to call concurrently.
-// For new code, use FlushContext for cancellation support.
-func (eb *EventBatcher) Flush() error {
-	return eb.FlushContext(context.Background())
-}
-
-// FlushContext flushes any buffered outputs immediately with context.
-// This is safe to call concurrently.
-func (eb *EventBatcher) FlushContext(ctx context.Context) error {
+func (eb *EventBatcher) Flush(ctx context.Context) error {
 	eb.mu.Lock()
 	defer eb.mu.Unlock()
 
@@ -276,16 +255,9 @@ func (eb *EventBatcher) FlushContext(ctx context.Context) error {
 }
 
 // Stop gracefully shuts down the batcher and flushes any pending outputs.
-// Stop is idempotent and safe to call multiple times concurrently.
-// For new code, use StopContext to pass a context for the final flush.
-func (eb *EventBatcher) Stop() error {
-	return eb.StopContext(context.Background())
-}
-
-// StopContext gracefully shuts down the batcher and flushes any pending outputs.
 // The context is used for the final flush operation.
 // Stop is idempotent and safe to call multiple times concurrently.
-func (eb *EventBatcher) StopContext(ctx context.Context) error {
+func (eb *EventBatcher) Stop(ctx context.Context) error {
 	var flushErr error
 
 	// CRITICAL FIX: Use sync.Once to ensure Stop is idempotent

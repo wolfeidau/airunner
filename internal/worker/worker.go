@@ -25,9 +25,6 @@ type JobExecutor struct {
 // NewJobExecutor creates a JobExecutor with event batching support
 // The batcher is required for unified sequence numbering
 func NewJobExecutor(eventStream *connect.ClientStreamForClient[jobv1.PublishJobEventsRequest, jobv1.PublishJobEventsResponse], taskToken string, batcher *EventBatcher) *JobExecutor {
-	if batcher == nil {
-		panic("EventBatcher is required - use NewEventBatcher to create one")
-	}
 	return &JobExecutor{
 		eventStream: eventStream,
 		taskToken:   taskToken,
@@ -41,7 +38,7 @@ func (je *JobExecutor) Execute(ctx context.Context, job *jobv1.Job) error {
 	// Ensure batcher is stopped and flushes any remaining events
 	defer func() {
 		if je.batcher != nil {
-			if err := je.batcher.Stop(); err != nil {
+			if err := je.batcher.Stop(ctx); err != nil {
 				log.Error().Err(err).Msg("Failed to stop event batcher")
 			}
 		}
@@ -118,7 +115,7 @@ func (je *JobExecutor) handleEvent(event consolestream.Event, jobID string) erro
 
 	case *consolestream.OutputData:
 		// Buffer output through batcher for batching and unified sequencing
-		if err := je.batcher.AddOutput(e.Data, 0); err != nil {
+		if err := je.batcher.AddOutput(context.Background(), e.Data, 0); err != nil {
 			log.Error().Err(err).Str("job_id", jobID).Msg("Failed to buffer output event")
 			// Continue - output events are best-effort
 		}
@@ -126,7 +123,7 @@ func (je *JobExecutor) handleEvent(event consolestream.Event, jobID string) erro
 
 	case *consolestream.ProcessEnd:
 		// Flush any buffered outputs before ProcessEnd
-		if err := je.batcher.Flush(); err != nil {
+		if err := je.batcher.Flush(context.Background()); err != nil {
 			log.Error().Err(err).Msg("Failed to flush batch before process end event")
 		}
 		return je.publishProcessEndEvent(e)
@@ -134,10 +131,6 @@ func (je *JobExecutor) handleEvent(event consolestream.Event, jobID string) erro
 	case *consolestream.HeartbeatEvent:
 		// Drop heartbeat events for now - they're sent every flush interval
 		// and we don't currently need them. May implement in the future.
-		log.Debug().
-			Bool("process_alive", e.ProcessAlive).
-			Dur("elapsed_time", e.ElapsedTime).
-			Msg("Received heartbeat event (dropped)")
 		return nil
 
 	default:
@@ -153,7 +146,7 @@ func (je *JobExecutor) handleStreamError(err error, jobID string) error {
 	log.Error().Err(err).Str("job_id", jobID).Msg("Job execution failed")
 
 	// Flush any buffered outputs first
-	if flushErr := je.batcher.Flush(); flushErr != nil {
+	if flushErr := je.batcher.Flush(context.Background()); flushErr != nil {
 		log.Error().Err(flushErr).Msg("Failed to flush batch before error event")
 	}
 
@@ -180,7 +173,7 @@ func (je *JobExecutor) publishProcessStartEvent(event *consolestream.ProcessStar
 	}
 
 	// Route through batcher for unified sequence numbering
-	if err := je.batcher.AddEvent(startEvent); err != nil {
+	if err := je.batcher.AddEvent(context.Background(), startEvent); err != nil {
 		log.Error().Err(err).Msg("Failed to add process start event to batcher")
 		return fmt.Errorf("failed to publish process start event: %w", err)
 	}
@@ -204,7 +197,7 @@ func (je *JobExecutor) publishProcessEndEvent(event *consolestream.ProcessEnd) e
 	}
 
 	// Route through batcher for unified sequence numbering
-	if err := je.batcher.AddEvent(endEvent); err != nil {
+	if err := je.batcher.AddEvent(context.Background(), endEvent); err != nil {
 		log.Error().Err(err).Msg("Failed to add process end event to batcher")
 		return fmt.Errorf("failed to publish process end event: %w", err)
 	}
@@ -223,7 +216,7 @@ func (je *JobExecutor) publishErrorEvent(errorMessage string) error {
 	}
 
 	// Route through batcher for unified sequence numbering
-	if err := je.batcher.AddEvent(errorEvent); err != nil {
+	if err := je.batcher.AddEvent(context.Background(), errorEvent); err != nil {
 		log.Error().Err(err).Msg("Failed to add error event to batcher")
 		return fmt.Errorf("failed to publish error event: %w", err)
 	}

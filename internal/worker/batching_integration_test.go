@@ -57,16 +57,16 @@ func TestEventBatcherIntegrationWithStore(t *testing.T) {
 		publishedEvents = append(publishedEvents, event)
 		return jobStore.PublishEvents(ctx, taskToken, []*jobv1.JobEvent{event})
 	})
-	defer func() { require.NoError(t, batcher.Stop()) }()
+	defer func() { require.NoError(t, batcher.Stop(ctx)) }()
 
 	// Simulate worker outputting 100 lines (with max batch size of 50, should get 2 batches)
 	for i := 0; i < 100; i++ {
 		output := []byte("output line\n")
-		require.NoError(t, batcher.AddOutput(output, 0))
+		require.NoError(t, batcher.AddOutput(ctx, output, 0))
 	}
 
 	// Flush remaining
-	require.NoError(t, batcher.Flush())
+	require.NoError(t, batcher.Flush(ctx))
 
 	// Should have published 2 batches (50 + 50)
 	require.Len(t, publishedEvents, 2)
@@ -120,11 +120,11 @@ func TestEventBatcherIntegrationWithNonOutputEvents(t *testing.T) {
 		publishedEvents = append(publishedEvents, event)
 		return jobStore.PublishEvents(ctx, taskToken, []*jobv1.JobEvent{event})
 	})
-	defer func() { require.NoError(t, batcher.Stop()) }()
+	defer func() { require.NoError(t, batcher.Stop(ctx)) }()
 
 	// Add some outputs (not enough to trigger flush)
 	for i := 0; i < 5; i++ {
-		require.NoError(t, batcher.AddOutput([]byte("line\n"), 0))
+		require.NoError(t, batcher.AddOutput(ctx, []byte("line\n"), 0))
 	}
 
 	require.Empty(t, publishedEvents, "Should not publish yet")
@@ -137,7 +137,7 @@ func TestEventBatcherIntegrationWithNonOutputEvents(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, batcher.AddEvent(heartbeat))
+	require.NoError(t, batcher.AddEvent(ctx, heartbeat))
 
 	// Should have published: 1 batch + 1 heartbeat
 	require.Len(t, publishedEvents, 2)
@@ -189,16 +189,16 @@ func TestEventBatcherIntegrationTimestampEncoding(t *testing.T) {
 		publishedEvents = append(publishedEvents, event)
 		return jobStore.PublishEvents(ctx, taskToken, []*jobv1.JobEvent{event})
 	})
-	defer func() { require.NoError(t, batcher.Stop()) }()
+	defer func() { require.NoError(t, batcher.Stop(ctx)) }()
 
 	// Add outputs with delays
-	require.NoError(t, batcher.AddOutput([]byte("line1\n"), 0))
+	require.NoError(t, batcher.AddOutput(ctx, []byte("line1\n"), 0))
 	time.Sleep(50 * time.Millisecond)
-	require.NoError(t, batcher.AddOutput([]byte("line2\n"), 0))
+	require.NoError(t, batcher.AddOutput(ctx, []byte("line2\n"), 0))
 	time.Sleep(50 * time.Millisecond)
-	require.NoError(t, batcher.AddOutput([]byte("line3\n"), 0))
+	require.NoError(t, batcher.AddOutput(ctx, []byte("line3\n"), 0))
 
-	require.NoError(t, batcher.Flush())
+	require.NoError(t, batcher.Flush(ctx))
 
 	require.Len(t, publishedEvents, 1)
 	batch := publishedEvents[0].GetOutputBatch()
@@ -226,23 +226,24 @@ func TestEventBatcherIntegrationTimestampEncoding(t *testing.T) {
 func TestEventBatcherIntegrationBackwardsCompatibility(t *testing.T) {
 	// Create a job with nil ExecutionConfig (simulating old job from before batching)
 	publishedEvents := make([]*jobv1.JobEvent, 0)
+	ctx := context.Background()
 	batcher := NewEventBatcher(nil, func(event *jobv1.JobEvent) error {
 		publishedEvents = append(publishedEvents, event)
 		return nil
 	})
-	defer func() { require.NoError(t, batcher.Stop()) }()
+	defer func() { require.NoError(t, batcher.Stop(ctx)) }()
 
 	// Should have created batcher with defaults
 	require.NotNil(t, batcher)
 
 	// Add outputs - should work with defaults
 	for i := 0; i < 10; i++ {
-		require.NoError(t, batcher.AddOutput([]byte("line\n"), 0))
+		require.NoError(t, batcher.AddOutput(ctx, []byte("line\n"), 0))
 	}
 
 	require.Empty(t, publishedEvents, "Should not flush with defaults yet")
 
-	require.NoError(t, batcher.Flush())
+	require.NoError(t, batcher.Flush(ctx))
 	require.Len(t, publishedEvents, 1)
 
 	batch := publishedEvents[0].GetOutputBatch()
@@ -292,13 +293,13 @@ func TestEventBatcherIntegrationSequenceMonotonicity(t *testing.T) {
 		publishedEvents = append(publishedEvents, event)
 		return jobStore.PublishEvents(ctx, taskToken, []*jobv1.JobEvent{event})
 	})
-	defer func() { require.NoError(t, batcher.Stop()) }()
+	defer func() { require.NoError(t, batcher.Stop(ctx)) }()
 
 	// Add 100 outputs - should create 10 batches of 10
 	for i := 0; i < 100; i++ {
-		require.NoError(t, batcher.AddOutput([]byte("line\n"), 0))
+		require.NoError(t, batcher.AddOutput(ctx, []byte("line\n"), 0))
 	}
-	require.NoError(t, batcher.Flush())
+	require.NoError(t, batcher.Flush(ctx))
 
 	// Should have 10 batches
 	require.Len(t, publishedEvents, 10)
@@ -350,7 +351,7 @@ func TestEventBatcherIntegrationProcessLifecycle(t *testing.T) {
 		publishedEvents = append(publishedEvents, event)
 		return jobStore.PublishEvents(ctx, taskToken, []*jobv1.JobEvent{event})
 	})
-	defer func() { require.NoError(t, batcher.Stop()) }()
+	defer func() { require.NoError(t, batcher.Stop(ctx)) }()
 
 	// Simulate job lifecycle:
 	// 1. ProcessStart
@@ -363,11 +364,11 @@ func TestEventBatcherIntegrationProcessLifecycle(t *testing.T) {
 			},
 		},
 	}
-	require.NoError(t, batcher.AddEvent(processStart))
+	require.NoError(t, batcher.AddEvent(ctx, processStart))
 
 	// 2. Some outputs
 	for i := 0; i < 20; i++ {
-		require.NoError(t, batcher.AddOutput([]byte("output\n"), 0))
+		require.NoError(t, batcher.AddOutput(ctx, []byte("output\n"), 0))
 	}
 
 	// 3. Heartbeat (should flush buffer)
@@ -377,11 +378,11 @@ func TestEventBatcherIntegrationProcessLifecycle(t *testing.T) {
 			Heartbeat: &jobv1.HeartbeatEvent{ProcessAlive: true},
 		},
 	}
-	require.NoError(t, batcher.AddEvent(heartbeat))
+	require.NoError(t, batcher.AddEvent(ctx, heartbeat))
 
 	// 4. More outputs
 	for i := 0; i < 30; i++ {
-		require.NoError(t, batcher.AddOutput([]byte("output\n"), 0))
+		require.NoError(t, batcher.AddOutput(ctx, []byte("output\n"), 0))
 	}
 
 	// 5. ProcessEnd (should flush buffer)
@@ -394,11 +395,9 @@ func TestEventBatcherIntegrationProcessLifecycle(t *testing.T) {
 			},
 		},
 	}
-	require.NoError(t, batcher.AddEvent(processEnd))
+	require.NoError(t, batcher.AddEvent(ctx, processEnd))
 
-	require.NoError(t, batcher.Stop())
-
-	// Verify event sequence:
+	// Stop is called in defer, verify event sequence:
 	// 1. ProcessStart (seq 1)
 	// 2. OutputBatch with 20 items (seq 2, contains 2-21)
 	// 3. Heartbeat (seq 22)

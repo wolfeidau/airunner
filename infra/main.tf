@@ -979,3 +979,16 @@ resource "aws_route53_record" "alb" {
     evaluate_target_health = true
   }
 }
+
+# Route53 AAAA record for ALB (IPv6)
+resource "aws_route53_record" "alb_ipv6" {
+  zone_id = data.aws_route53_zone.main.zone_id
+  name    = "airunner-${var.environment}.${var.domain_name}"
+  type    = "AAAA"
+
+  alias {
+    name                   = aws_lb.main.dns_name
+    zone_id                = aws_lb.main.zone_id
+    evaluate_target_health = true
+  }
+}

@@ -2,14 +2,26 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 	"github.com/wolfeidau/airunner/internal/util"
 	"google.golang.org/protobuf/types/known/timestamppb"
+)
+
+// Sentinel errors for common error conditions
+var (
+	ErrInvalidTaskToken = errors.New("invalid task token")
+	ErrQueueMismatch    = errors.New("queue mismatch")
+	ErrJobNotFound      = errors.New("job not found")
+	ErrJobIDMismatch    = errors.New("job ID mismatch")
+	ErrThrottled        = errors.New("AWS request throttled")
+	ErrEventTooLarge    = errors.New("event exceeds maximum size")
 )
 
 // JobStore defines the interface for job storage operations
@@ -248,12 +260,12 @@ func (s *MemoryJobStore) UpdateJobVisibility(ctx context.Context, queue string, 
 
 	jobId, exists := s.taskTokens[taskToken]
 	if !exists {
-		return fmt.Errorf("invalid task token")
+		return ErrInvalidTaskToken
 	}
 
 	// Verify the job belongs to the correct queue
 	if s.jobQueues[jobId] != queue {
-		return fmt.Errorf("job does not belong to queue %s", queue)
+		return fmt.Errorf("%w: expected queue %s", ErrQueueMismatch, queue)
 	}
 
 	// Update visibility timeout
@@ -265,6 +277,7 @@ func (s *MemoryJobStore) UpdateJobVisibility(ctx context.Context, queue string, 
 		job.UpdatedAt = timestamppb.Now()
 	}
 
+	log.Debug().Str("job_id", jobId).Str("queue", queue).Int("timeout_seconds", timeoutSeconds).Msg("Updated job visibility timeout")
 	return nil
 }
 
@@ -275,17 +288,18 @@ func (s *MemoryJobStore) CompleteJob(ctx context.Context, taskToken string, resu
 
 	jobId, exists := s.taskTokens[taskToken]
 	if !exists {
-		return fmt.Errorf("invalid task token")
+		return ErrInvalidTaskToken
 	}
 
 	job := s.jobs[jobId]
 	if job == nil {
-		return fmt.Errorf("job not found")
+		return fmt.Errorf("%w: %s", ErrJobNotFound, jobId)
 	}
 
 	// Verify job ID matches
 	if result.JobId != jobId {
-		return fmt.Errorf("job ID mismatch")
+		log.Warn().Str("token_job_id", jobId).Str("result_job_id", result.JobId).Msg("Job ID mismatch")
+		return fmt.Errorf("%w: expected %s, got %s", ErrJobIDMismatch, jobId, result.JobId)
 	}
 
 	// Update job state
@@ -301,6 +315,7 @@ func (s *MemoryJobStore) CompleteJob(ctx context.Context, taskToken string, resu
 	delete(s.taskTokens, taskToken)
 	delete(s.jobTokens, jobId)
 
+	log.Info().Str("job_id", jobId).Bool("success", result.Success).Msg("Job completed")
 	return nil
 }
 
@@ -311,12 +326,12 @@ func (s *MemoryJobStore) ReleaseJob(ctx context.Context, taskToken string) error
 
 	jobId, exists := s.taskTokens[taskToken]
 	if !exists {
-		return fmt.Errorf("invalid task token")
+		return ErrInvalidTaskToken
 	}
 
 	job := s.jobs[jobId]
 	if job == nil {
-		return fmt.Errorf("job not found")
+		return fmt.Errorf("%w: %s", ErrJobNotFound, jobId)
 	}
 
 	// Reset job state to SCHEDULED
@@ -332,6 +347,7 @@ func (s *MemoryJobStore) ReleaseJob(ctx context.Context, taskToken string) error
 	delete(s.taskTokens, taskToken)
 	delete(s.jobTokens, jobId)
 
+	log.Info().Str("job_id", jobId).Str("queue", queueName).Msg("Job released back to queue")
 	return nil
 }
 
@@ -396,7 +412,7 @@ func (s *MemoryJobStore) PublishEvents(ctx context.Context, taskToken string, ev
 
 	jobId, exists := s.taskTokens[taskToken]
 	if !exists {
-		return fmt.Errorf("invalid task token")
+		return ErrInvalidTaskToken
 	}
 
 	// Set timestamp if not already set
@@ -414,6 +430,7 @@ func (s *MemoryJobStore) PublishEvents(ctx context.Context, taskToken string, ev
 		s.fanoutEvent(jobId, event)
 	}
 
+	log.Debug().Str("job_id", jobId).Int("event_count", len(events)).Msg("Published events")
 	return nil
 }
 
@@ -424,7 +441,7 @@ func (s *MemoryJobStore) StreamEvents(ctx context.Context, jobId string, fromSeq
 
 	// Verify job exists
 	if _, exists := s.jobs[jobId]; !exists {
-		return nil, fmt.Errorf("job not found")
+		return nil, fmt.Errorf("%w: %s", ErrJobNotFound, jobId)
 	}
 
 	// Create event filter map for efficient lookup
@@ -497,7 +514,8 @@ func (s *MemoryJobStore) fanoutEvent(jobId string, event *jobv1.JobEvent) {
 		select {
 		case ch <- event:
 		default:
-			// Channel full, skip this stream
+			// Channel full, skip this stream - DATA LOSS
+			log.Error().Str("job_id", jobId).Int64("sequence", event.Sequence).Msg("Event channel full, dropping event")
 		}
 	}
 }

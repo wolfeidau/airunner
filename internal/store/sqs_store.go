@@ -30,16 +30,6 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// Sentinel errors for common error conditions
-var (
-	ErrInvalidTaskToken = errors.New("invalid task token")
-	ErrQueueMismatch    = errors.New("queue mismatch")
-	ErrJobNotFound      = errors.New("job not found")
-	ErrJobIDMismatch    = errors.New("job ID mismatch")
-	ErrThrottled        = errors.New("AWS request throttled")
-	ErrEventTooLarge    = errors.New("event exceeds maximum size")
-)
-
 // SQS and AWS service limits
 const (
 	sqsMaxMessages          = 10    // SQS maximum messages per ReceiveMessage call

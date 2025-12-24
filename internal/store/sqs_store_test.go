@@ -432,5 +432,4 @@ func TestEventSizeValidation(t *testing.T) {
 		require.Contains(t, err.Error(), "seq=2") // Verify it identifies the correct event
 		require.ErrorIs(t, err, ErrEventTooLarge)
 	})
-
 }

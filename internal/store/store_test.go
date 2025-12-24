@@ -115,7 +115,7 @@ func TestMemoryJobStoreReleaseJob(t *testing.T) {
 
 		err := store.ReleaseJob(ctx, "invalid-token")
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "invalid task token")
+		require.ErrorIs(t, err, ErrInvalidTaskToken)
 	})
 
 	t.Run("release cleans up task token", func(t *testing.T) {
@@ -154,6 +154,186 @@ func TestMemoryJobStoreReleaseJob(t *testing.T) {
 		// Using the old token again should fail
 		err = store.ReleaseJob(ctx, taskToken)
 		require.Error(t, err)
+	})
+}
+
+func TestMemoryJobStoreCompleteJob(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("complete job marks it as completed", func(t *testing.T) {
+		store := NewMemoryJobStore()
+		require.NoError(t, store.Start())
+		defer func() { _ = store.Stop() }()
+
+		// Enqueue and dequeue a job
+		resp, err := store.EnqueueJob(ctx, &jobv1.EnqueueJobRequest{
+			RequestId: "req-1",
+			Queue:     "default",
+			JobParams: &jobv1.JobParams{Command: "echo"},
+		})
+		require.NoError(t, err)
+		jobID := resp.JobId
+
+		jobs, err := store.DequeueJobs(ctx, "default", 1, 300)
+		require.NoError(t, err)
+		require.Len(t, jobs, 1)
+		taskToken := jobs[0].TaskToken
+
+		// Complete the job
+		err = store.CompleteJob(ctx, taskToken, &jobv1.JobResult{
+			JobId:   jobID,
+			Success: true,
+		})
+		require.NoError(t, err)
+
+		// Verify job state is completed
+		store.mu.RLock()
+		job := store.jobs[jobID]
+		store.mu.RUnlock()
+		require.Equal(t, jobv1.JobState_JOB_STATE_COMPLETED, job.State)
+	})
+
+	t.Run("complete job with invalid token fails", func(t *testing.T) {
+		store := NewMemoryJobStore()
+		require.NoError(t, store.Start())
+		defer func() { _ = store.Stop() }()
+
+		err := store.CompleteJob(ctx, "invalid-token", &jobv1.JobResult{
+			JobId:   "job-123",
+			Success: true,
+		})
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrInvalidTaskToken)
+	})
+
+	t.Run("complete job with mismatched job ID fails", func(t *testing.T) {
+		store := NewMemoryJobStore()
+		require.NoError(t, store.Start())
+		defer func() { _ = store.Stop() }()
+
+		// Enqueue and dequeue a job
+		resp, err := store.EnqueueJob(ctx, &jobv1.EnqueueJobRequest{
+			RequestId: "req-1",
+			Queue:     "default",
+			JobParams: &jobv1.JobParams{Command: "echo"},
+		})
+		require.NoError(t, err)
+		jobID := resp.JobId
+
+		jobs, err := store.DequeueJobs(ctx, "default", 1, 300)
+		require.NoError(t, err)
+		taskToken := jobs[0].TaskToken
+
+		// Try to complete with wrong job ID
+		err = store.CompleteJob(ctx, taskToken, &jobv1.JobResult{
+			JobId:   "wrong-job-id",
+			Success: true,
+		})
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrJobIDMismatch)
+
+		// Verify job state is still RUNNING (not changed)
+		store.mu.RLock()
+		job := store.jobs[jobID]
+		store.mu.RUnlock()
+		require.Equal(t, jobv1.JobState_JOB_STATE_RUNNING, job.State)
+	})
+
+	t.Run("complete job cleans up task token", func(t *testing.T) {
+		store := NewMemoryJobStore()
+		require.NoError(t, store.Start())
+		defer func() { _ = store.Stop() }()
+
+		// Enqueue and dequeue a job
+		resp, err := store.EnqueueJob(ctx, &jobv1.EnqueueJobRequest{
+			RequestId: "req-1",
+			Queue:     "default",
+			JobParams: &jobv1.JobParams{Command: "echo"},
+		})
+		require.NoError(t, err)
+		jobID := resp.JobId
+
+		jobs, err := store.DequeueJobs(ctx, "default", 1, 300)
+		require.NoError(t, err)
+		taskToken := jobs[0].TaskToken
+
+		// Complete the job
+		err = store.CompleteJob(ctx, taskToken, &jobv1.JobResult{
+			JobId:   jobID,
+			Success: true,
+		})
+		require.NoError(t, err)
+
+		// Verify task token is cleaned up
+		store.mu.RLock()
+		_, tokenExists := store.taskTokens[taskToken]
+		_, jobTokenExists := store.jobTokens[jobID]
+		_, invisibleExists := store.invisibleJobs[jobID]
+		store.mu.RUnlock()
+
+		require.False(t, tokenExists, "task token should be deleted")
+		require.False(t, jobTokenExists, "job token mapping should be deleted")
+		require.False(t, invisibleExists, "invisible job entry should be deleted")
+	})
+}
+
+func TestMemoryJobStorePublishAndStreamEvents(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("publish events to active streams", func(t *testing.T) {
+		store := NewMemoryJobStore()
+		require.NoError(t, store.Start())
+		defer func() { _ = store.Stop() }()
+
+		// Enqueue and dequeue a job
+		resp, err := store.EnqueueJob(ctx, &jobv1.EnqueueJobRequest{
+			RequestId: "req-1",
+			Queue:     "default",
+			JobParams: &jobv1.JobParams{Command: "echo"},
+		})
+		require.NoError(t, err)
+		jobID := resp.JobId
+
+		jobs, err := store.DequeueJobs(ctx, "default", 1, 300)
+		require.NoError(t, err)
+		taskToken := jobs[0].TaskToken
+
+		// Create an event stream
+		eventChan, err := store.StreamEvents(ctx, jobID, 0, 0, nil)
+		require.NoError(t, err)
+
+		// Publish events
+		err = store.PublishEvents(ctx, taskToken, []*jobv1.JobEvent{
+			{EventType: jobv1.EventType_EVENT_TYPE_UNSPECIFIED},
+			{EventType: jobv1.EventType_EVENT_TYPE_UNSPECIFIED},
+		})
+		require.NoError(t, err)
+
+		// Receive events
+		event1 := <-eventChan
+		require.NotNil(t, event1)
+		event2 := <-eventChan
+		require.NotNil(t, event2)
+	})
+
+	t.Run("stream events for non-existent job fails", func(t *testing.T) {
+		store := NewMemoryJobStore()
+		require.NoError(t, store.Start())
+		defer func() { _ = store.Stop() }()
+
+		_, err := store.StreamEvents(ctx, "non-existent-job-id", 0, 0, nil)
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrJobNotFound)
+	})
+
+	t.Run("publish events with invalid token fails", func(t *testing.T) {
+		store := NewMemoryJobStore()
+		require.NoError(t, store.Start())
+		defer func() { _ = store.Stop() }()
+
+		err := store.PublishEvents(ctx, "invalid-token", []*jobv1.JobEvent{})
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrInvalidTaskToken)
 	})
 }
 

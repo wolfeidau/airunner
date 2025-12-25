@@ -34,9 +34,9 @@ Replace the current single shared JWT public key authentication model with a per
   - [6. Protocol Buffers](#6-protocol-buffers)
   - [7. CLI Commands](#7-cli-commands)
 - [Implementation Plan](#implementation-plan)
-  - [Phase 1: Infrastructure](#phase-1-infrastructure)
-  - [Phase 2: Application Code](#phase-2-application-code)
-  - [Phase 3: Testing](#phase-3-testing)
+  - [Phase 1: Core Code](#phase-1-core-code)
+  - [Phase 2: Local Integration Testing](#phase-2-local-integration-testing)
+  - [Phase 3: Infrastructure](#phase-3-infrastructure)
   - [Phase 4: Deployment](#phase-4-deployment)
   - [Phase 5: Cleanup](#phase-5-cleanup)
 - [Operational Runbook](#operational-runbook)
@@ -2784,95 +2784,124 @@ func (c *BootstrapCmd) saveKeyAndCert(keyPath, certPath string, key *ecdsa.Priva
 
 ## Implementation Plan
 
-### Phase 1: Infrastructure
+**Rationale:** Code-first approach allows faster iteration and validates the mTLS implementation before investing in infrastructure changes. The existing docker-compose setup with LocalStack provides a production-like environment for integration testing.
 
-1. **Update Terraform** (`infra/`)
-   - Remove JWT-related resources
-   - Add principals and certificates DynamoDB tables
-   - Add SSM parameters for CA cert, server cert/key
-   - Add Secrets Manager for CA key
-   - Change ALB → NLB with TCP passthrough
-   - Add dual target groups (443, 8080)
-   - Update security groups
+### Phase 1: Core Code
 
-2. **Apply infrastructure**
-   ```bash
-   cd infra
-   terraform plan
-   terraform apply
-   ```
+Build and unit test the core authentication components.
 
-### Phase 2: Application Code
+1. **PKI Package** (`internal/pki/`)
+   - `oid.go` - Custom OID definitions and extraction functions
+   - `cert.go` - Certificate generation helpers
+   - `oid_test.go` - Unit tests for OID extraction
 
-1. **Store interfaces** (`internal/store/`)
-   - `principal_store.go` - PrincipalStore interface
-   - `certificate_store.go` - CertificateStore interface
+2. **Store Interfaces** (`internal/store/`)
+   - `principal_store.go` - PrincipalStore interface and types
+   - `certificate_store.go` - CertificateStore interface and types
    - `memory_principal_store.go` - In-memory implementation
    - `memory_cert_store.go` - In-memory implementation
-   - `dynamodb_principal_store.go` - DynamoDB implementation
-   - `dynamodb_cert_store.go` - DynamoDB implementation
 
-2. **Authentication** (`internal/auth/`)
+3. **Authentication** (`internal/auth/`)
    - `mtls.go` - MTLSAuthenticator with caching
-   - `authz.go` - Permission checking
-   - Delete `jwt.go` and `token.go`
-
-3. **Server** (`cmd/server/`)
-   - Update `rpc.go` for dual listeners
-   - Add health check handler
+   - `authz.go` - Permission checking per principal type
+   - `mtls_test.go` - Unit tests with mock stores
 
 4. **Protocol Buffers** (`api/job/v1/`)
-   - Add `principal.proto`
+   - Add `principal.proto` for principal/certificate management
    - Run `make proto-generate`
 
-5. **RPC Handlers** (`internal/server/`)
-   - `principal.go` - Principal management
-   - `certificate.go` - Certificate management
-
-6. **CLI Commands** (`cmd/cli/internal/commands/`)
-   - `bootstrap.go` - Bootstrap command
-   - `principal.go` - Principal management
-   - `cert.go` - Certificate management
-   - Update `worker.go` for mTLS
-
-### Phase 3: Testing
-
-1. **Unit tests**
-   - Store implementations
-   - MTLSAuthenticator
-   - Authorization
-
-2. **Integration tests**
-   - Bootstrap flow
-   - mTLS handshake
-   - Principal lifecycle
-   - Certificate revocation
-
-3. **Local testing**
+5. **Verification checkpoint:**
    ```bash
-   # Bootstrap locally
-   ./bin/airunner-cli bootstrap --environment=local --domain=localhost
+   make test  # All unit tests pass
+   ```
 
-   # Start server
+### Phase 2: Local Integration Testing
+
+Validate the full mTLS flow using docker-compose with LocalStack.
+
+1. **DynamoDB Store Implementations** (`internal/store/`)
+   - `dynamodb_principal_store.go` - DynamoDB implementation
+   - `dynamodb_cert_store.go` - DynamoDB implementation
+   - `dynamodb_principal_store_test.go` - Integration tests
+   - `dynamodb_cert_store_test.go` - Integration tests
+
+2. **Server Updates** (`internal/server/`)
+   - Update for dual listeners (mTLS on 8443, health on 8080)
+   - Add health check handler
+   - `principal.go` - Principal management RPC handlers
+   - `certificate.go` - Certificate management RPC handlers
+
+3. **CLI Commands** (`cmd/cli/internal/commands/`)
+   - `bootstrap.go` - Bootstrap command (local cert generation)
+   - `principal.go` - Principal management commands
+   - `cert.go` - Certificate management commands
+   - Update `worker.go` for mTLS client config
+
+4. **Integration test with docker-compose:**
+   ```bash
+   # Start LocalStack (DynamoDB, SQS)
+   docker-compose up -d
+
+   # Create local test certificates
+   ./bin/airunner-cli bootstrap \
+     --environment=local \
+     --domain=localhost \
+     --output-dir=./test-certs
+
+   # Start server with LocalStack backend
    ./bin/airunner-server \
      --mtls-listen=0.0.0.0:8443 \
      --health-listen=0.0.0.0:8080 \
-     --ca-cert=./bootstrap-output/ca-cert.pem \
-     --server-cert=./bootstrap-output/server-cert.pem \
-     --server-key=./bootstrap-output/server-key.pem \
-     --store-type=memory
+     --ca-cert=./test-certs/ca-cert.pem \
+     --server-cert=./test-certs/server-cert.pem \
+     --server-key=./test-certs/server-key.pem \
+     --store-type=dynamodb \
+     --dynamodb-endpoint=http://localhost:4566
 
-   # Test with admin cert
+   # Verify mTLS handshake works
    ./bin/airunner-cli principal list \
      --server=https://localhost:8443 \
-     --ca-cert=./bootstrap-output/ca-cert.pem \
-     --client-cert=./bootstrap-output/admin-cert.pem \
-     --client-key=./bootstrap-output/admin-key.pem
+     --ca-cert=./test-certs/ca-cert.pem \
+     --client-cert=./test-certs/admin-cert.pem \
+     --client-key=./test-certs/admin-key.pem
+
+   # Verify authorization (worker should be denied admin operations)
+   ./bin/airunner-cli principal create test-worker --type=worker ...
+   # Then try admin operation with worker cert - should get PermissionDenied
+   ```
+
+5. **Verification checkpoint:**
+   - mTLS handshake succeeds with valid certs
+   - mTLS handshake fails with invalid/expired/revoked certs
+   - Authorization allows correct operations per principal type
+   - Authorization denies incorrect operations
+   - Health check endpoint responds without TLS
+   - DynamoDB stores correctly persist principals and certificates
+
+### Phase 3: Infrastructure
+
+Update Terraform with confidence that the code works.
+
+1. **Update Terraform** (`infra/`)
+   - Add principals DynamoDB table with GSIs
+   - Add certificates DynamoDB table with GSIs and TTL
+   - Add SSM parameters for CA cert, server cert/key
+   - Add Secrets Manager secret for CA key
+   - Change ALB → NLB with TCP passthrough on port 443
+   - Add second target group for health checks on port 8080
+   - Update security groups for dual ports
+   - Update ECS task definition for new server flags
+
+2. **Plan and review:**
+   ```bash
+   cd infra
+   terraform plan -out=mtls.tfplan
+   # Review changes carefully before applying
    ```
 
 ### Phase 4: Deployment
 
-1. **Bootstrap production**
+1. **Bootstrap production environment:**
    ```bash
    ./bin/airunner-cli bootstrap \
      --environment=prod \
@@ -2880,7 +2909,13 @@ func (c *BootstrapCmd) saveKeyAndCert(keyPath, certPath string, key *ecdsa.Priva
      --aws-region=ap-southeast-2
    ```
 
-2. **Deploy ECS service**
+2. **Apply infrastructure:**
+   ```bash
+   cd infra
+   terraform apply mtls.tfplan
+   ```
+
+3. **Deploy new server:**
    ```bash
    aws ecs update-service \
      --cluster airunner-prod \
@@ -2888,21 +2923,39 @@ func (c *BootstrapCmd) saveKeyAndCert(keyPath, certPath string, key *ecdsa.Priva
      --force-new-deployment
    ```
 
-3. **Create worker principals**
+4. **Verify deployment:**
    ```bash
-   ./bin/airunner-cli principal create worker-01 \
-     --type=worker \
+   # Health check should work
+   curl http://airunner.example.com:8080/health
+
+   # mTLS should work with admin cert
+   ./bin/airunner-cli principal list \
      --server=https://airunner.example.com \
      --ca-cert=./bootstrap-output/ca-cert.pem \
      --client-cert=./bootstrap-output/admin-cert.pem \
      --client-key=./bootstrap-output/admin-key.pem
    ```
 
+5. **Create worker principals:**
+   ```bash
+   ./bin/airunner-cli principal create worker-prod-01 \
+     --type=worker \
+     --server=https://airunner.example.com \
+     ...
+   ```
+
 ### Phase 5: Cleanup
 
-1. Delete JWT code
-2. Update documentation
-3. Update AGENT.md
+1. **Remove JWT code:**
+   - Delete `internal/auth/jwt.go`
+   - Delete `internal/auth/token.go`
+   - Remove `token` CLI command
+   - Remove `JWT_PUBLIC_KEY` env var handling
+   - Remove `--no-auth` flag
+
+2. **Update documentation:**
+   - Update AGENT.md authentication section
+   - Update README with new auth flow
 
 ## Operational Runbook
 

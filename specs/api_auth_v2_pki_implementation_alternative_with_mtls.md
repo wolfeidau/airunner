@@ -4,6 +4,49 @@
 
 Replace the current single shared JWT public key authentication model with a per-principal PKI model using **mutual TLS (mTLS)** where each user/worker maintains their own ECDSA P-256 key pair and X.509 certificate. This enables distributed credential management, automatic certificate rotation, per-principal revocation capabilities, and provides message integrity and replay protection via TLS.
 
+## Table of Contents
+
+- [Goals](#goals)
+- [Why mTLS Over JWT or HTTP Message Signatures?](#why-mtls-over-jwt-or-http-message-signatures)
+  - [Security Benefits](#security-benefits)
+  - [Architectural Benefits](#architectural-benefits)
+- [Current State vs Desired State](#current-state-vs-desired-state)
+  - [Current Authentication Model](#current-authentication-model)
+  - [Desired Authentication Model (mTLS)](#desired-authentication-model-mtls)
+- [Architecture Design](#architecture-design)
+  - [Component Overview](#component-overview)
+  - [Single CA Architecture](#single-ca-architecture)
+  - [Data Model](#data-model)
+  - [X.509 Certificate Structure](#x509-certificate-structure)
+  - [Role-Based Authorization](#role-based-authorization)
+- [Infrastructure Configuration](#infrastructure-configuration)
+  - [AWS Resources Overview](#aws-resources-overview)
+  - [Terraform Resources](#terraform-resources)
+- [Bootstrap Process](#bootstrap-process)
+  - [Bootstrap Command Flow](#bootstrap-command-flow)
+  - [Bootstrap Command Output](#bootstrap-command-output)
+- [Implementation Details](#implementation-details)
+  - [1. Store Interfaces](#1-store-interfaces)
+  - [2. mTLS Authentication](#2-mtls-authentication)
+  - [3. Authorization](#3-authorization)
+  - [4. Server Configuration](#4-server-configuration)
+  - [5. RPC Handlers with Authorization](#5-rpc-handlers-with-authorization)
+  - [6. Protocol Buffers](#6-protocol-buffers)
+  - [7. CLI Commands](#7-cli-commands)
+- [Implementation Plan](#implementation-plan)
+  - [Phase 1: Infrastructure](#phase-1-infrastructure)
+  - [Phase 2: Application Code](#phase-2-application-code)
+  - [Phase 3: Testing](#phase-3-testing)
+  - [Phase 4: Deployment](#phase-4-deployment)
+  - [Phase 5: Cleanup](#phase-5-cleanup)
+- [Operational Runbook](#operational-runbook)
+  - [Suspend a Principal](#suspend-a-principal-immediate-revocation)
+  - [Revoke a Specific Certificate](#revoke-a-specific-certificate)
+  - [Rotate Server Certificate](#rotate-server-certificate)
+  - [Monitor Certificate Expiry](#monitor-certificate-expiry)
+- [Metrics](#metrics)
+- [Conclusion](#conclusion)
+
 ## Goals
 
 1. **Eliminate shared credentials**: Each principal (user, worker, service) has unique credentials

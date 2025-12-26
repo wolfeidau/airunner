@@ -23,6 +23,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/wolfeidau/airunner/internal/pki"
 	"github.com/wolfeidau/airunner/internal/store"
@@ -61,6 +62,8 @@ type CertValidation struct {
 
 // Run executes the bootstrap command
 func (cmd *BootstrapCmd) Run(ctx context.Context, globals *Globals) error {
+	log.Logger = zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.TimeOnly}).With().Timestamp().Logger()
+
 	log.Info().
 		Str("environment", cmd.Environment).
 		Str("domain", cmd.Domain).

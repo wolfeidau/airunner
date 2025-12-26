@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -60,7 +61,7 @@ func (h *LocalBootstrapHandler) Finalize(ctx context.Context, paths certificateP
 func (h *LocalBootstrapHandler) verifyLocalStackHealth(ctx context.Context) error {
 	awsConfig, err := h.cmd.loadAWSConfig(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
 	// Try to list tables - simple health check
@@ -83,7 +84,7 @@ func (h *LocalBootstrapHandler) createDynamoDBTables(ctx context.Context) error 
 
 	awsConfig, err := h.cmd.loadAWSConfig(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
 	dynamoClient := dynamodb.NewFromConfig(awsConfig)
@@ -168,11 +169,22 @@ func (h *LocalBootstrapHandler) createPrincipalsTable(ctx context.Context, clien
 		},
 		BillingMode: types.BillingModePayPerRequest,
 	})
-
 	if err != nil {
-		// Table might already exist, log and continue
-		log.Info().Str("table", tableName).Msg("Principals table created or already exists")
+		var resourceInUse *types.ResourceInUseException
+		if errors.As(err, &resourceInUse) {
+			log.Info().Str("table", tableName).Msg("Table already exists")
+			return nil
+		}
+		return fmt.Errorf("failed to create principals table %s: %w", tableName, err)
 	}
+
+	log.Info().Str("table", tableName).Msg("Created principals table")
+
+	// Wait for table to become active
+	if err := h.waitForTableActive(ctx, client, tableName); err != nil {
+		return fmt.Errorf("table creation succeeded but table did not become active: %w", err)
+	}
+
 	return nil
 }
 
@@ -236,11 +248,41 @@ func (h *LocalBootstrapHandler) createCertificatesTable(ctx context.Context, cli
 		},
 		BillingMode: types.BillingModePayPerRequest,
 	})
+	if err != nil {
+		var resourceInUse *types.ResourceInUseException
+		if errors.As(err, &resourceInUse) {
+			log.Info().Str("table", tableName).Msg("Table already exists")
+			return nil
+		}
+		return fmt.Errorf("failed to create certificates table %s: %w", tableName, err)
+	}
+
+	log.Info().Str("table", tableName).Msg("Created certificates table")
+
+	// Wait for table to become active
+	if err := h.waitForTableActive(ctx, client, tableName); err != nil {
+		return fmt.Errorf("table creation succeeded but table did not become active: %w", err)
+	}
+
+	return nil
+}
+
+// waitForTableActive waits for a DynamoDB table to become active
+func (h *LocalBootstrapHandler) waitForTableActive(ctx context.Context, client *dynamodb.Client, tableName string) error {
+	waiter := dynamodb.NewTableExistsWaiter(client)
+	maxWaitTime := 2 * time.Minute
+
+	log.Info().Str("table", tableName).Msg("Waiting for table to become active...")
+
+	err := waiter.Wait(ctx, &dynamodb.DescribeTableInput{
+		TableName: aws.String(tableName),
+	}, maxWaitTime)
 
 	if err != nil {
-		// Table might already exist, log and continue
-		log.Info().Str("table", tableName).Msg("Certificates table created or already exists")
+		return fmt.Errorf("table %s did not become active within %v: %w", tableName, maxWaitTime, err)
 	}
+
+	log.Info().Str("table", tableName).Msg("Table is now active")
 	return nil
 }
 
@@ -250,7 +292,7 @@ func (h *LocalBootstrapHandler) createSQSQueues(ctx context.Context) error {
 
 	awsConfig, err := h.cmd.loadAWSConfig(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
 	sqsClient := sqs.NewFromConfig(awsConfig)
@@ -274,11 +316,15 @@ func (h *LocalBootstrapHandler) createSQSQueues(ctx context.Context) error {
 		})
 
 		if err != nil {
-			// Queue might already exist, log and continue
-			log.Info().Str("queue", queueName).Msg("Queue created or already exists")
-		} else {
-			log.Info().Str("queue", queueName).Msg("Queue created")
+			var queueExists *sqstypes.QueueNameExists
+			if errors.As(err, &queueExists) {
+				log.Info().Str("queue", queueName).Msg("Queue already exists")
+				continue
+			}
+			return fmt.Errorf("failed to create queue %s: %w", queueName, err)
 		}
+
+		log.Info().Str("queue", queueName).Msg("Created queue")
 	}
 
 	log.Info().Msg("SQS queues created/verified")
@@ -313,7 +359,7 @@ func (cmd *BootstrapCmd) getBootstrapHandler(ctx context.Context) (BootstrapHand
 
 	awsConfig, err := cmd.loadAWSConfig(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to load AWS config for %s environment: %w", cmd.Environment, err)
 	}
 
 	return &AWSBootstrapHandler{cmd: cmd, awsConfig: awsConfig}, nil

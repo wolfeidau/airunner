@@ -7,7 +7,7 @@ services:
     ports:
       - "4566:4566"
     environment:
-      - SERVICES=dynamodb,sqs,secretsmanager,ssm
+      - SERVICES=dynamodb,sqs,ssm
       - DEFAULT_REGION=us-east-1
       - DEBUG=0
       - PERSISTENCE=0

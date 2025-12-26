@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -33,7 +34,7 @@ type BootstrapCmd struct {
 	Domain      string `help:"server domain name" default:"localhost"`
 	AWSRegion   string `help:"AWS region" default:"us-east-1" env:"AWS_REGION"`
 	OutputDir   string `help:"output directory for certificates" default:"./certs"`
-	AWSEndpoint string `help:"AWS endpoint (for LocalStack)" default:"" env:"AWS_ENDPOINT"`
+	AWSEndpoint string `help:"AWS endpoint (for LocalStack)" env:"AWS_ENDPOINT" default:""`
 	Force       bool   `help:"force regeneration of all certificates" default:"false"`
 }
 
@@ -63,7 +64,6 @@ func (cmd *BootstrapCmd) Run(ctx context.Context, globals *Globals) error {
 	log.Info().
 		Str("environment", cmd.Environment).
 		Str("domain", cmd.Domain).
-		Str("output_dir", cmd.OutputDir).
 		Msg("Starting mTLS bootstrap")
 
 	// Create output directory
@@ -71,71 +71,41 @@ func (cmd *BootstrapCmd) Run(ctx context.Context, globals *Globals) error {
 		return fmt.Errorf("failed to create output directory: %w", err)
 	}
 
-	paths := certificatePaths{
-		caCert:     filepath.Join(cmd.OutputDir, "ca-cert.pem"),
-		caKey:      filepath.Join(cmd.OutputDir, "ca-key.pem"),
-		serverCert: filepath.Join(cmd.OutputDir, "server-cert.pem"),
-		serverKey:  filepath.Join(cmd.OutputDir, "server-key.pem"),
-		adminCert:  filepath.Join(cmd.OutputDir, "admin-cert.pem"),
-		adminKey:   filepath.Join(cmd.OutputDir, "admin-key.pem"),
+	paths := cmd.certificatePaths()
+
+	// Get environment-specific handler
+	handler, err := cmd.getBootstrapHandler(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get bootstrap handler: %w", err)
 	}
 
-	// Create appropriate signer based on environment
-	var signer pki.CASigner
-	var err error
-
-	if cmd.Environment == "local" {
-		// Local mode: use file-based signing
-		signer, err = cmd.setupLocalSigner(ctx, paths)
-		if err != nil {
-			return fmt.Errorf("failed to setup local signer: %w", err)
-		}
-	} else {
-		// AWS mode: use KMS signing
-		signer, err = cmd.setupKMSSigner(ctx, paths)
-		if err != nil {
-			return fmt.Errorf("failed to setup KMS signer: %w", err)
-		}
+	// Setup environment-specific infrastructure and CA signer
+	signer, err := handler.Setup(ctx, paths)
+	if err != nil {
+		return err
 	}
 
-	// Step 2: Ensure server certificate exists
-	if err := cmd.ensureServerCert(paths, signer); err != nil {
+	// Shared operations: ensure certificates and principals
+	if err = cmd.ensureServerCert(paths, signer); err != nil {
 		return fmt.Errorf("failed to ensure server certificate: %w", err)
 	}
 
-	// Initialize AWS clients if not local
-	if cmd.Environment != "local" {
-		awsConfig, err := cmd.loadAWSConfig(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to load AWS config: %w", err)
-		}
-
-		// Step 5: Upload certificates to AWS
-		if err := cmd.uploadToAWS(ctx, awsConfig, paths); err != nil {
-			return fmt.Errorf("failed to upload to AWS: %w", err)
-		}
-	}
-
-	// Initialize stores
+	// Initialize stores for certificate registration
 	principalStore, certStore, err := cmd.createStores(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create stores: %w", err)
 	}
 
-	// Step 3: Ensure admin principal exists
-	if err := cmd.ensureAdminPrincipal(ctx, principalStore); err != nil {
+	if err = cmd.ensureAdminPrincipal(ctx, principalStore); err != nil {
 		return fmt.Errorf("failed to ensure admin principal: %w", err)
 	}
 
-	// Step 4: Ensure admin certificate exists
-	if err := cmd.ensureAdminCert(ctx, paths, signer, certStore); err != nil {
+	if err = cmd.ensureAdminCert(ctx, paths, signer, certStore); err != nil {
 		return fmt.Errorf("failed to ensure admin certificate: %w", err)
 	}
 
-	// Step 6: Print summary
-	cmd.printSummary(paths)
-
-	return nil
+	// Environment-specific finalization
+	return handler.Finalize(ctx, paths)
 }
 
 // setupLocalSigner creates a FileSigner for local development
@@ -531,7 +501,46 @@ func (cmd *BootstrapCmd) ensureAdminCert(ctx context.Context, paths certificateP
 	case adminValidation.Exists && fileExists(paths.adminKey):
 		log.Info().
 			Int("days_remaining", adminValidation.DaysRemaining).
-			Msg("Admin certificate is valid, using existing...")
+			Msg("Admin certificate is valid, checking registration...")
+
+		// Load existing certificate to check registration
+		cert, err := loadCertificate(paths.adminCert)
+		if err != nil {
+			return fmt.Errorf("failed to load existing admin certificate: %w", err)
+		}
+
+		serialNumber := cert.SerialNumber.Text(16)
+
+		// Check if certificate is registered in the store
+		_, err = certStore.Get(ctx, serialNumber)
+		if err != nil {
+			if errors.Is(err, store.ErrCertNotFound) {
+				// Certificate exists but not registered - register it now
+				log.Info().
+					Str("serial_number", serialNumber).
+					Msg("Existing certificate not registered, registering now...")
+
+				certMeta := store.NewCertMetadataFromX509(cert)
+				certMeta.Description = "Bootstrap admin certificate"
+
+				if err := certStore.Register(ctx, certMeta); err != nil && !errors.Is(err, store.ErrCertAlreadyExists) {
+					return fmt.Errorf("failed to register existing certificate: %w", err)
+				}
+
+				log.Info().
+					Str("serial_number", serialNumber).
+					Msg("Successfully registered existing certificate")
+			} else {
+				// Other error checking registration
+				log.Error().Err(err).Msg("failed to check certificate registration")
+				return fmt.Errorf("failed to check certificate registration: %w", err)
+			}
+		} else {
+			log.Info().
+				Str("serial_number", serialNumber).
+				Msg("Certificate already registered")
+		}
+
 		return nil
 	default:
 		log.Info().Msg("Generating admin certificate with custom OID extensions...")
@@ -625,12 +634,8 @@ func (cmd *BootstrapCmd) ensureAdminCert(ctx context.Context, paths certificateP
 
 // createStores creates principal and certificate stores
 func (cmd *BootstrapCmd) createStores(ctx context.Context) (store.PrincipalStore, store.CertificateStore, error) {
-	if cmd.Environment == "local" {
-		// Use in-memory stores for local development
-		return store.NewMemoryPrincipalStore(), store.NewMemoryCertificateStore(), nil
-	}
-
-	// Use DynamoDB stores for dev/prod
+	// Always use DynamoDB stores (LocalStack for local, AWS for dev/prod)
+	// This ensures principals and certificates persist between bootstrap and server runs
 	awsConfig, err := cmd.loadAWSConfig(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to load AWS config: %w", err)
@@ -721,35 +726,77 @@ func (cmd *BootstrapCmd) putSSMParameter(ctx context.Context, client *ssm.Client
 	return nil
 }
 
-// printSummary prints a summary of the bootstrap operation
-func (cmd *BootstrapCmd) printSummary(paths certificatePaths) {
-	fmt.Println("\n=== Bootstrap Complete ===")
-	fmt.Printf("Environment: %s\n", cmd.Environment)
-	fmt.Printf("Domain: %s\n", cmd.Domain)
-	fmt.Printf("Output directory: %s\n\n", cmd.OutputDir)
+// certificatePaths creates the certificate paths for the configured output directory
+func (cmd *BootstrapCmd) certificatePaths() certificatePaths {
+	return certificatePaths{
+		caCert:     filepath.Join(cmd.OutputDir, "ca-cert.pem"),
+		caKey:      filepath.Join(cmd.OutputDir, "ca-key.pem"),
+		serverCert: filepath.Join(cmd.OutputDir, "server-cert.pem"),
+		serverKey:  filepath.Join(cmd.OutputDir, "server-key.pem"),
+		adminCert:  filepath.Join(cmd.OutputDir, "admin-cert.pem"),
+		adminKey:   filepath.Join(cmd.OutputDir, "admin-key.pem"),
+	}
+}
 
-	fmt.Println("Generated certificates:")
+// printLocalBootstrapSummary prints the summary for local development bootstrap
+func (cmd *BootstrapCmd) printLocalBootstrapSummary(paths certificatePaths) {
+	fmt.Println("\n" + strings.Repeat("=", 50))
+	fmt.Println("Bootstrap Complete - Local Development")
+	fmt.Println(strings.Repeat("=", 50))
+	fmt.Printf("\nEnvironment: %s\n", cmd.Environment)
+	fmt.Printf("Domain:     %s\n\n", cmd.Domain)
+
+	fmt.Println("Infrastructure created:")
+	fmt.Printf("  DynamoDB:       airunner_%s_principals, airunner_%s_certificates\n", cmd.Environment, cmd.Environment)
+	fmt.Printf("  SQS Queues:     airunner_%s_default, airunner_%s_priority, airunner_%s_dlq\n", cmd.Environment, cmd.Environment, cmd.Environment)
+	fmt.Printf("  Certificates:   %s\n\n", cmd.OutputDir)
+
+	fmt.Println("Certificate paths:")
 	fmt.Printf("  CA Certificate:     %s\n", paths.caCert)
 	fmt.Printf("  CA Key:             %s\n", paths.caKey)
 	fmt.Printf("  Server Certificate: %s\n", paths.serverCert)
 	fmt.Printf("  Server Key:         %s\n", paths.serverKey)
 	fmt.Printf("  Admin Certificate:  %s\n", paths.adminCert)
-	fmt.Printf("  Admin Key:          %s\n", paths.adminKey)
+	fmt.Printf("  Admin Key:          %s\n\n", paths.adminKey)
 
-	fmt.Println("\nNext steps:")
+	fmt.Println("Next steps:")
 	fmt.Println("  1. Start the server with mTLS enabled:")
-	fmt.Printf("     ./bin/airunner-server --enable-mtls \\\n")
+	fmt.Printf("     ./bin/airunner-server rpc-server --enable-mtls \\\n")
 	fmt.Printf("       --mtls-listen=0.0.0.0:443 \\\n")
 	fmt.Printf("       --health-listen=0.0.0.0:8080 \\\n")
 	fmt.Printf("       --ca-cert=%s \\\n", paths.caCert)
 	fmt.Printf("       --server-cert=%s \\\n", paths.serverCert)
 	fmt.Printf("       --server-key=%s\n\n", paths.serverKey)
 
-	fmt.Println("  2. Test with admin certificate:")
+	fmt.Println("  2. Test connectivity:")
 	fmt.Printf("     curl --cacert %s \\\n", paths.caCert)
 	fmt.Printf("          --cert %s \\\n", paths.adminCert)
 	fmt.Printf("          --key %s \\\n", paths.adminKey)
 	fmt.Printf("          https://%s:443/health\n\n", cmd.Domain)
+}
+
+// printAWSBootstrapSummary prints the summary for AWS production bootstrap
+func (cmd *BootstrapCmd) printAWSBootstrapSummary(paths certificatePaths) {
+	fmt.Println("\n" + strings.Repeat("=", 50))
+	fmt.Println("Bootstrap Complete - AWS Production")
+	fmt.Println(strings.Repeat("=", 50))
+	fmt.Printf("\nEnvironment: %s\n", cmd.Environment)
+	fmt.Printf("Region:     %s\n", cmd.AWSRegion)
+	fmt.Printf("Domain:     %s\n\n", cmd.Domain)
+
+	fmt.Println("AWS resources configured:")
+	fmt.Printf("  KMS Key:              Retrieved from /airunner/%s/ca-kms-key-id\n", cmd.Environment)
+	fmt.Printf("  SSM Parameters:       /airunner/%s/{ca-cert,server-cert,server-key}\n", cmd.Environment)
+	fmt.Printf("  DynamoDB Tables:      airunner_%s_principals, airunner_%s_certificates\n", cmd.Environment, cmd.Environment)
+	fmt.Printf("  Local Certificates:  %s\n\n", cmd.OutputDir)
+
+	fmt.Println("Certificate paths (local copy):")
+	fmt.Printf("  CA Certificate:     %s\n", paths.caCert)
+	fmt.Printf("  Server Certificate: %s\n", paths.serverCert)
+	fmt.Printf("  Server Key:         %s\n\n", paths.serverKey)
+
+	fmt.Println("Note: CA private key exists only in KMS and was never extracted.")
+	fmt.Println("All certificates are also stored in AWS SSM Parameter Store.")
 }
 
 // File utility functions

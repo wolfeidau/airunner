@@ -146,21 +146,24 @@ func (a *MTLSAuthenticator) validate(ctx context.Context, cert *x509.Certificate
 		return nil, authn.Errorf("principal type mismatch")
 	}
 
-	// Check certificate revocation
+	// Check certificate registration and revocation
+	// All certificates must be registered in the certificate store
 	certMeta, err := a.certStore.Get(ctx, serialNumber)
 	if err != nil {
 		if errors.Is(err, store.ErrCertNotFound) {
-			// Certificate not registered - this is allowed
-			// (supports certificates issued before tracking was enabled)
-			log.Debug().
+			// Certificate not registered - reject for security
+			log.Warn().
 				Str("serial", serialNumber).
 				Str("principal_id", principalID).
-				Msg("certificate not registered, allowing")
-		} else {
-			log.Error().Err(err).Str("serial", serialNumber).Msg("failed to check certificate")
-			return nil, authn.Errorf("authentication error")
+				Msg("certificate not registered, rejecting")
+			return nil, authn.Errorf("certificate not registered")
 		}
-	} else if certMeta.Revoked {
+		log.Error().Err(err).Str("serial", serialNumber).Msg("failed to check certificate")
+		return nil, authn.Errorf("authentication error")
+	}
+
+	// Check if certificate is revoked
+	if certMeta.Revoked {
 		log.Warn().
 			Str("serial", serialNumber).
 			Str("principal_id", principalID).

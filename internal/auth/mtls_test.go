@@ -120,6 +120,10 @@ func TestMTLSAuthenticator_AuthFunc(t *testing.T) {
 		// Create test certificate
 		cert := createTestCert("user", "user-123")
 
+		// Register the certificate
+		certMeta := store.NewCertMetadataFromX509(cert)
+		require.NoError(t, cs.Register(context.Background(), certMeta))
+
 		req := &http.Request{
 			TLS: &tls.ConnectionState{
 				VerifiedChains: [][]*x509.Certificate{{cert}},
@@ -291,6 +295,10 @@ func TestMTLSAuthenticator_AuthFunc(t *testing.T) {
 		require.NoError(t, ps.Create(context.Background(), principal))
 
 		cert := createTestCert("user", "user-123")
+
+		// Register the certificate
+		certMeta := store.NewCertMetadataFromX509(cert)
+		require.NoError(t, cs.Register(context.Background(), certMeta))
 
 		req := &http.Request{
 			TLS: &tls.ConnectionState{

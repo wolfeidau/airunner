@@ -353,42 +353,85 @@ fi
 
 ## Emergency Procedures
 
-### Emergency: Mass Revocation
+### Emergency: Mass Revocation / CA Compromise
 
-**Scenario:** CA key compromised, need to revoke all certificates
+**Scenario:** CA key suspected compromised or unauthorized certificate signing operations detected
 
-**Procedure:**
+**Note:** With KMS, the CA private key cannot be extracted. However, if KMS key policy is compromised or unauthorized signing operations are detected, follow these steps:
+
+**Immediate Actions:**
 
 ```bash
-# 1. Suspend all principals except emergency admin
+# 1. Disable KMS key immediately (prevents new certificate signing)
+aws kms disable-key --key-id alias/airunner-prod-ca
+
+# Verify disabled
+aws kms describe-key --key-id alias/airunner-prod-ca | jq '.KeyMetadata.Enabled'
+# Should return: false
+```
+
+**Investigation:**
+
+```bash
+# 2. Review CloudTrail for unauthorized KMS Sign operations
+aws cloudtrail lookup-events \
+  --lookup-attributes AttributeKey=ResourceName,AttributeValue=$(aws kms describe-key --key-id alias/airunner-prod-ca --query 'KeyMetadata.Arn' --output text) \
+  --start-time $(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%S) \
+  --max-results 1000 | \
+  jq '.Events[] | select(.EventName == "Sign") | {Time: .EventTime, User: .Username, IP: .SourceIPAddress}'
+
+# 3. Identify suspicious certificate issuances
 aws dynamodb scan \
-  --table-name airunner_prod_principals \
-  --filter-expression "principal_id <> :admin" \
-  --expression-attribute-values '{":admin": {"S": "admin-emergency"}}' \
-  --projection-expression "principal_id" | \
-  jq -r '.Items[].principal_id.S' | \
-  while read principal_id; do
+  --table-name airunner_prod_certificates \
+  --filter-expression "created_at > :recent" \
+  --expression-attribute-values '{":recent": {"S": "'$(date -u -d '7 days ago' --iso-8601=seconds)'"}}' \
+  --projection-expression "serial_number,principal_id,created_at"
+```
+
+**Recovery:**
+
+```bash
+# 4. Revoke all certificates (update status=revoked in DynamoDB)
+aws dynamodb scan \
+  --table-name airunner_prod_certificates \
+  --projection-expression "serial_number" | \
+  jq -r '.Items[].serial_number.S' | \
+  while read serial; do
     aws dynamodb update-item \
-      --table-name airunner_prod_principals \
-      --key '{"principal_id": {"S": "'"$principal_id"'"}}' \
-      --update-expression "SET #status = :suspended, suspended_reason = :reason" \
-      --expression-attribute-names '{"#status": "status"}' \
+      --table-name airunner_prod_certificates \
+      --key '{"serial_number": {"S": "'"$serial"'"}}' \
+      --update-expression "SET revoked = :true, revoked_at = :now, revoked_reason = :reason" \
       --expression-attribute-values '{
-        ":suspended": {"S": "suspended"},
-        ":reason": {"S": "Emergency: CA compromise"}
+        ":true": {"BOOL": true},
+        ":now": {"S": "'$(date -u --iso-8601=seconds)'"},
+        ":reason": {"S": "Emergency: CA key compromise"}
       }'
   done
 
-# 2. Generate new CA
+# 5. Create new KMS key via Terraform
+cd infra/
+# Update kms.tf to create new KMS key with different alias
+terraform plan
+terraform apply
+
+# 6. Run bootstrap with new KMS key
 airunner-cli bootstrap \
   --environment=prod \
   --domain=airunner.example.com \
-  --force-new-ca
+  --force
 
-# 3. Distribute new CA certificate to all clients
-# 4. Re-issue certificates for all principals
-# 5. Gradually re-activate principals with new certificates
+# 7. Schedule old KMS key deletion (30-day window)
+aws kms schedule-key-deletion \
+  --key-id alias/airunner-prod-ca-old \
+  --pending-window-in-days 30
 ```
+
+**Post-Recovery:**
+
+- Distribute new CA certificate to all clients
+- Re-issue certificates for all principals
+- Update monitoring and alerts
+- Conduct post-mortem analysis
 
 ### Emergency: Complete Service Outage
 
@@ -406,9 +449,64 @@ airunner-cli bootstrap \
 
 **Permanent Fix:** Follow rollback procedures in deployment runbook.
 
+### Emergency: Disable Certificate Issuance
+
+**Scenario:** Need to stop all new certificate issuance immediately while keeping existing certificates valid
+
+**Procedure:**
+
+```bash
+# Disable KMS key (prevents all new certificate signing)
+aws kms disable-key --key-id alias/airunner-prod-ca
+
+# Verify disabled
+aws kms describe-key --key-id alias/airunner-prod-ca | jq '.KeyMetadata.Enabled'
+# Should return: false
+```
+
+**Effect:**
+- ✅ Existing certificates continue to work (mTLS still validates)
+- ❌ Cannot sign new certificates (bootstrap fails, rotations fail)
+- ❌ Workers cannot rotate expiring certificates
+
+**Re-enable when ready:**
+
+```bash
+aws kms enable-key --key-id alias/airunner-prod-ca
+```
+
 ---
 
 ## Metrics and Monitoring
+
+### KMS Signing Metrics
+
+Monitor KMS operations via CloudWatch and CloudTrail:
+
+**CloudWatch Metrics (AWS/KMS namespace):**
+- `SignOperationFailureCount` - Failed KMS signing operations
+- `SignOperationSuccessCount` - Successful KMS signing operations
+
+**CloudTrail Events to Monitor:**
+- `Sign` - Certificate signing operations (should be infrequent, ~1-2 per worker per year)
+- `DisableKey` - Unauthorized key disabling
+- `ScheduleKeyDeletion` - Unauthorized key deletion attempts
+- `PutKeyPolicy` - Key policy changes (should be rare)
+
+**Alert Thresholds:**
+- >10 Sign operations per hour (potential abuse or automated attack)
+- Any DisableKey or ScheduleKeyDeletion events
+- Any PutKeyPolicy changes
+- Sign operations outside business hours (if applicable)
+
+**CloudWatch Logs Insights Query:**
+
+```
+fields @timestamp, userIdentity.principalId, eventName, requestParameters.keyId
+| filter eventSource = "kms.amazonaws.com"
+| filter eventName in ["Sign", "DisableKey", "ScheduleKeyDeletion", "PutKeyPolicy"]
+| sort @timestamp desc
+```
 
 ### Prometheus Metrics
 

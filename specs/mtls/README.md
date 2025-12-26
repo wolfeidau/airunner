@@ -39,13 +39,13 @@ Before starting the implementation, ensure you have the following:
 - Access to AWS account with permissions for:
   - DynamoDB table creation and management
   - SSM Parameter Store access
-  - Secrets Manager access
+  - KMS key creation and signing permissions
   - ECS task definition updates
   - Network Load Balancer configuration
 
 **AWS Account Requirements:**
-- IAM role for ECS task execution with SSM/Secrets Manager access
-- IAM role for ECS tasks with DynamoDB/SQS access
+- IAM role for ECS task execution with SSM Parameter Store access
+- IAM role for ECS tasks with DynamoDB, SSM, and KMS signing permissions
 - VPC with public and private subnets
 - Existing ECS cluster (if deploying to production)
 
@@ -127,8 +127,8 @@ make test  # All tests pass
 |-------|------|----------|-------------|--------------|
 | 1 | [01-phase1-core-code.md](01-phase1-core-code.md) | 2-3 hours | Implement store interfaces, auth, authz, proto | None |
 | 2 | [02-phase2-integration.md](02-phase2-integration.md) | 2-3 hours | Local integration testing with docker-compose | Phase 1 complete, tests passing |
-| 3 | [03-phase3-infrastructure.md](03-phase3-infrastructure.md) | 1-2 hours | Terraform for DynamoDB, SSM, NLB, ECS | Phase 2 verified locally |
-| 4 | [04-phase4-deployment.md](04-phase4-deployment.md) | 1-2 hours | Bootstrap command, production deployment | Phase 3 Terraform applied |
+| 3 | [03-phase3-infrastructure.md](03-phase3-infrastructure.md) | 1-2 hours | Terraform for DynamoDB, SSM, KMS, NLB, ECS | Phase 2 verified locally |
+| 4 | [04-phase4-deployment.md](04-phase4-deployment.md) | 1-2 hours | Bootstrap (uses KMS for signing), production deployment | Phase 3 Terraform applied |
 | 5 | [05-phase5-cleanup.md](05-phase5-cleanup.md) | 1 hour | Remove JWT code, update docs | Phase 4 deployed and verified |
 
 **Total estimated time:** 7-10 hours of focused implementation
@@ -317,7 +317,7 @@ git status
 - **Solution:** Ensure `buf` is installed and up to date: `go install github.com/bufbuild/buf/cmd/buf@latest`
 
 **Problem:** Bootstrap command fails to create CA
-- **Solution:** Check AWS credentials and permissions for Secrets Manager
+- **Solution:** Check AWS credentials and permissions for KMS (kms:Sign, kms:GetPublicKey). Verify KMS key exists: `aws kms describe-key --key-id alias/airunner-{env}-ca`
 
 **Problem:** mTLS connection refused
 - **Solution:** Verify server has correct CA certificate loaded and client is presenting valid cert

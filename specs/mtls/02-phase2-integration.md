@@ -13,10 +13,18 @@
 - Docker and Docker Compose installed
 
 **Success Criteria:**
-- [ ] Bootstrap command creates CA and certificates
-- [ ] Server starts with mTLS enabled
+
+**Local Mode:**
+- [ ] Bootstrap command creates CA key in `./certs/ca-key.pem`
+- [ ] FileSigner signs certificates locally
+- [ ] Server starts with mTLS enabled using local certs
 - [ ] Health check endpoint responds
-- [ ] mTLS authentication works locally
+- [ ] mTLS authentication works with local certificates
+
+**AWS Mode (if testing with LocalStack KMS):**
+- [ ] KMS key created (or stub in LocalStack)
+- [ ] KMSSigner signs certificates via KMS API
+- [ ] Bootstrap completes without creating local CA key
 - [ ] Principal and certificate stores work with DynamoDB
 
 ## DynamoDB Store Implementations
@@ -114,9 +122,153 @@ func (s *RPCCmd) healthHandler(store store.PrincipalStore) http.HandlerFunc {
 
 **Complete Implementation:** See original spec lines 2279-2783 (505 lines)
 
+### Bootstrap Modes: Local vs AWS
+
+The bootstrap command supports two modes based on the `--environment` flag:
+
+#### Local Mode (`--environment=local`)
+
+**Purpose:** Development and testing without AWS dependencies
+
+**CA Key Handling:**
+- Generates CA private key to local file (`./certs/ca-key.pem`)
+- Uses `FileSigner` for signing operations
+- No AWS resources accessed
+- Simple, fast development workflow
+
+**Command:**
+```bash
+./bin/airunner-cli bootstrap --environment=local --output-dir=./certs
+```
+
+**Output:**
+- `./certs/ca-key.pem` - CA private key (local file only)
+- `./certs/ca-cert.pem` - CA certificate
+- `./certs/server-cert.pem`, `server-key.pem` - Server cert/key
+- `./certs/admin-cert.pem`, `admin-key.pem` - Admin cert/key
+
+#### AWS Mode (`--environment=dev|staging|prod`)
+
+**Purpose:** Production deployment with KMS-backed security
+
+**CA Key Handling:**
+- Uses KMS key created by Terraform (Phase 3)
+- CA private key created in KMS, never exported
+- Uses `KMSSigner` for signing operations via KMS API
+- Never creates or stores CA private key locally
+- Production-grade security (FIPS 140-2 Level 2)
+
+**Prerequisites:**
+- Terraform applied (Phase 3) - KMS key must exist
+- KMS key alias: `alias/airunner-{env}-ca`
+- SSM parameter exists: `/airunner/{env}/ca-kms-key-id`
+
+**Command:**
+```bash
+./bin/airunner-cli bootstrap --environment=prod --domain=airunner.example.com
+```
+
+**Output:**
+- KMS signing operations (CA cert, server cert, admin cert)
+- Certificates uploaded to SSM Parameter Store
+- Principal and certificate records in DynamoDB
+- **No local CA private key created**
+
 ### Bootstrap Flow
 
-The bootstrap command performs 6 steps:
+**Local Mode:** The bootstrap command performs 6 steps:
+
+1. **Check/Create CA**
+   - Check if `ca-cert.pem` exists locally
+   - Generate new CA key pair to `./certs/ca-key.pem` if needed (ECDSA P-256, 10-year validity)
+   - Create FileSigner with local CA key
+
+2. **Check/Create Server Certificate**
+   - Generate server key pair
+   - Sign with FileSigner (local CA key)
+   - Add SAN: domain, localhost, 127.0.0.1
+   - Save to `./certs/`
+
+3. **Check/Create Admin Certificate**
+   - Generate admin key pair
+   - Add OID extensions (type=admin, id=admin-bootstrap)
+   - Sign with FileSigner
+   - Save to `./certs/`
+
+**AWS Mode:** The bootstrap command performs 7 steps:
+
+1. **Load KMS Key**
+   - Read KMS key ID from SSM: `/airunner/{env}/ca-kms-key-id`
+   - Verify KMS key accessible
+   - Create KMSSigner with KMS key
+
+2. **Create CA Certificate**
+   - Build self-signed CA certificate template
+   - Sign via KMS API (never creates CA private key locally)
+   - 10-year validity
+
+3. **Create Server Certificate**
+   - Generate server key pair
+   - Sign via KMS API
+   - Add SAN: domain, localhost, 127.0.0.1
+   - 90-day validity
+
+4. **Create Admin Principal**
+   - Check if principal exists in DynamoDB
+   - Create with status=active, type=admin
+
+5. **Create Admin Certificate**
+   - Generate admin key pair
+   - Add OID extensions (type=admin, id=admin-bootstrap)
+   - Sign via KMS API
+   - Register in DynamoDB certificates table
+
+6. **Upload to AWS**
+   - Put `ca-cert.pem` to SSM Parameter Store
+   - Put `server-cert.pem` to SSM
+   - Put `server-key.pem` to SSM SecureString
+   - **Note:** CA private key never uploaded (exists only in KMS)
+
+7. **Verify and Report**
+   - Verify all resources accessible
+   - Print summary with next steps
+
+**Implementation Pattern:**
+
+```go
+func (cmd *BootstrapCommand) Run(ctx context.Context) error {
+    switch cmd.config.Environment {
+    case "local":
+        return cmd.runLocalBootstrap(ctx)
+    case "dev", "staging", "prod":
+        return cmd.runAWSBootstrap(ctx)
+    default:
+        return fmt.Errorf("unknown environment: %s", cmd.config.Environment)
+    }
+}
+
+func (cmd *BootstrapCommand) runLocalBootstrap(ctx context.Context) error {
+    // 1. Generate CA key pair to ./certs/ca-key.pem
+    // 2. Create FileSigner
+    // 3. Sign server certificate
+    // 4. Sign admin certificate
+    // 5. Save all to local files
+}
+
+func (cmd *BootstrapCommand) runAWSBootstrap(ctx context.Context) error {
+    // 1. Read KMS key ID from SSM: /airunner/{env}/ca-kms-key-id
+    // 2. Create KMSSigner with KMS key
+    // 3. Sign CA certificate (self-signed via KMS)
+    // 4. Sign server certificate via KMS
+    // 5. Sign admin certificate via KMS
+    // 6. Upload certificates to SSM (public certs only, no private keys!)
+    // 7. Store principal and certificate records in DynamoDB
+}
+```
+
+### Original Bootstrap Flow (for reference)
+
+The original bootstrap command performs these steps (now split between local/AWS modes):
 
 1. **Check/Create CA**
    - Check if `ca-cert.pem` exists locally

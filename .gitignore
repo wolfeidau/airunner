@@ -29,3 +29,5 @@ bin/
 coverage.*
 .claude
 tmp/
+
+test-certs/

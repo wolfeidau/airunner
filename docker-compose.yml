@@ -1,0 +1,20 @@
+version: "3.8"
+
+services:
+  # LocalStack for AWS services (DynamoDB, SQS, Secrets Manager, SSM)
+  localstack:
+    image: localstack/localstack:latest
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=dynamodb,sqs,secretsmanager,ssm
+      - DEFAULT_REGION=us-east-1
+      - DEBUG=0
+      - PERSISTENCE=0
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10

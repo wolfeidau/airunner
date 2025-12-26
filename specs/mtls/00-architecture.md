@@ -1,5 +1,7 @@
 # mTLS Authentication Architecture and Design
 
+[← Back to README](README.md) | [Phase 1: Core Code →](01-phase1-core-code.md)
+
 ## Summary
 
 Replace the current single shared JWT public key authentication model with a per-principal PKI model using **mutual TLS (mTLS)** where each user/worker maintains their own ECDSA P-256 key pair and X.509 certificate. This enables distributed credential management, automatic certificate rotation, per-principal revocation capabilities, and provides message integrity and replay protection via TLS.
@@ -456,4 +458,8 @@ var RolePermissions = map[store.PrincipalType][]Permission{
 - **Authorization Logic:** `examples/auth/authz.go`
 - **Protocol Buffers:** `examples/proto/principal.proto`
 
-**For complete implementation details including bootstrap process, infrastructure setup, and operational procedures, see the phase-specific documentation files (01-05) and the operations runbook.**
+**For complete implementation details including bootstrap process, infrastructure setup, and operational procedures, see the phase-specific documentation files ([Phase 1](01-phase1-core-code.md) - [Phase 5](05-phase5-cleanup.md)) and the [operations runbook](operations-runbook.md).**
+
+---
+
+[← Back to README](README.md) | [Phase 1: Core Code →](01-phase1-core-code.md)

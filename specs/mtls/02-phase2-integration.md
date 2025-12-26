@@ -1,5 +1,7 @@
 # Phase 2: Local Integration Testing
 
+[← Back to README](README.md) | [← Phase 1: Core Code](01-phase1-core-code.md) | [Phase 3: Infrastructure →](03-phase3-infrastructure.md)
+
 ## Overview
 
 **Goal:** Validate mTLS flow with local DynamoDB (LocalStack) and implement the bootstrap command for certificate management.
@@ -282,4 +284,8 @@ curl http://localhost:8080/health  # Should return "ok"
 
 ## Next Steps
 
-Once Phase 2 is complete and integration tests pass, proceed to **Phase 3: Infrastructure** (`03-phase3-infrastructure.md`).
+Once Phase 2 is complete and integration tests pass, proceed to **[Phase 3: Infrastructure](03-phase3-infrastructure.md)**.
+
+---
+
+[← Back to README](README.md) | [← Phase 1: Core Code](01-phase1-core-code.md) | [Phase 3: Infrastructure →](03-phase3-infrastructure.md)

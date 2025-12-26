@@ -1,5 +1,7 @@
 # Phase 4: Deployment
 
+[← Back to README](README.md) | [← Phase 3: Infrastructure](03-phase3-infrastructure.md) | [Phase 5: Cleanup →](05-phase5-cleanup.md) | [Operations Runbook](operations-runbook.md)
+
 ## Overview
 
 **Goal:** Deploy mTLS authentication to production environment.
@@ -341,4 +343,8 @@ terraform apply -target=... # Revert specific resources
 
 ## Next Steps
 
-Once Phase 4 is complete and production deployment is verified, proceed to **Phase 5: Cleanup** (`05-phase5-cleanup.md`) to remove old JWT code.
+Once Phase 4 is complete and production deployment is verified, proceed to **[Phase 5: Cleanup](05-phase5-cleanup.md)** to remove old JWT code.
+
+---
+
+[← Back to README](README.md) | [← Phase 3: Infrastructure](03-phase3-infrastructure.md) | [Phase 5: Cleanup →](05-phase5-cleanup.md) | [Operations Runbook](operations-runbook.md)

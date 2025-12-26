@@ -225,40 +225,54 @@ specs/<feature-name>/
 
 ### File Guidelines
 
+**Navigation and Hyperlinks:**
+- All spec files MUST include markdown hyperlinks to related files
+- Use breadcrumb navigation at top and bottom of each file (e.g., `[← README](README.md) | [Next Phase →](02-phase2.md)`)
+- Link all file references in tables and text (e.g., `[00-architecture.md](00-architecture.md)` not `00-architecture.md`)
+- Create a navigation section in README with direct links to all major files
+- This dramatically improves navigation when viewing on GitHub or in markdown viewers
+
 **README.md** (250-400 lines):
 - Overview of what the feature provides
 - Prerequisites (tools, access, knowledge)
-- Quick start guide (5-step summary)
-- File navigation table with duration estimates
-- Phase-by-phase execution guide with success criteria
+- Quick start guide (5-step summary) with links to phase files
+- File navigation table with hyperlinks and duration estimates
+- Phase-by-phase execution guide with success criteria and links
 - Troubleshooting section
-- Next steps
+- Next steps with links
 
 **00-architecture.md** (400-800 lines):
+- Breadcrumb navigation at top: `[← README](README.md) | [Phase 1 →](01-phase1.md)`
 - Summary and goals (what/why)
 - Design decisions and trade-offs
 - Architecture diagrams (Mermaid)
 - Data models (DynamoDB schemas, structs)
 - Key concepts and terminology
-- References to example code
+- References to example code (with links to phase files where applicable)
+- Breadcrumb navigation at bottom
 
 **Phase Files** (250-500 lines each):
+- Breadcrumb navigation at top: `[← README](README.md) | [← Previous](01-phase1.md) | [Next →](03-phase3.md)`
 - Clear goal and duration estimate
 - Prerequisites (previous phase completion)
 - Success criteria (checkboxes)
 - Package-by-package implementation guide
 - Code snippets for interfaces and key patterns (inline)
-- References to complete implementations in examples/
+- References to complete implementations in examples/ (with links)
 - Verification steps with specific commands
-- Next phase reference
+- Next phase reference with hyperlink
+- Breadcrumb navigation at bottom (same as top)
 
 **operations-runbook.md** (300-500 lines):
+- Breadcrumb navigation at top: `[← README](README.md) | [Architecture](00-architecture.md) | [Deployment](04-phase4.md)`
 - Common operational procedures
 - Emergency procedures
 - Monitoring and alerting guidance
 - Troubleshooting scenarios
 - Metrics definitions
 - AWS CLI commands for manual operations
+- Additional Resources section with links to all spec files
+- Breadcrumb navigation at bottom
 
 **examples/** directory:
 - **Complete files** for small, critical code (interfaces, small utilities)
@@ -320,6 +334,8 @@ Please create a layered spec structure with:
 5. examples/ directory with code references
 
 Follow the pattern established in specs/mtls/ including:
+- Hyperlinks between all spec files (breadcrumbs at top/bottom of each file)
+- All file references as markdown links in tables and text
 - Inline code for interfaces and small snippets
 - Examples directory for complete implementations
 - Success criteria for each phase
@@ -345,8 +361,11 @@ This spec demonstrates:
 
 **Key principles demonstrated:**
 - Each file is independently readable
-- Cross-references between files are clear
+- Cross-references between files are clear and use hyperlinks
+- Breadcrumb navigation at top and bottom of every file
+- All file references in tables and text are clickable links
 - Developers can start at README and execute sequentially
+- Easy navigation when viewing on GitHub or in markdown viewers
 - Examples are copy-paste ready when needed
 - Original consolidated spec preserved for reference
 

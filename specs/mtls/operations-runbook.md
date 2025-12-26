@@ -1,5 +1,7 @@
 # mTLS Operations Runbook
 
+[← Back to README](README.md) | [Architecture](00-architecture.md) | [Phase 4: Deployment](04-phase4-deployment.md)
+
 ## Overview
 
 This runbook provides operational procedures for managing mTLS authentication in production. These procedures cover common Day 2 operations including principal management, certificate revocation, rotation, and monitoring.
@@ -483,9 +485,13 @@ fields @timestamp, principal_id, serial, revocation_reason
 
 ## Additional Resources
 
-- **Architecture Documentation:** `00-architecture.md`
-- **Implementation Guide:** `README.md`
-- **Deployment Procedures:** `04-phase4-deployment.md`
-- **Cleanup Procedures:** `05-phase5-cleanup.md`
+- **Architecture Documentation:** [00-architecture.md](00-architecture.md)
+- **Implementation Guide:** [README.md](README.md)
+- **Deployment Procedures:** [04-phase4-deployment.md](04-phase4-deployment.md)
+- **Cleanup Procedures:** [05-phase5-cleanup.md](05-phase5-cleanup.md)
 
 **For questions or issues:** Contact the platform engineering team or file an issue in the project repository.
+
+---
+
+[← Back to README](README.md) | [Architecture](00-architecture.md) | [Phase 4: Deployment](04-phase4-deployment.md)

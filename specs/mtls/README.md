@@ -85,6 +85,11 @@ cat 05-phase5-cleanup.md
 # Remove old JWT code
 ```
 
+Or navigate directly:
+- [Architecture](00-architecture.md) - Design decisions and diagrams
+- [Phase 1](01-phase1-core-code.md) → [Phase 2](02-phase2-integration.md) → [Phase 3](03-phase3-infrastructure.md) → [Phase 4](04-phase4-deployment.md) → [Phase 5](05-phase5-cleanup.md)
+- [Operations Runbook](operations-runbook.md) - Day 2 procedures
+
 **Success verification at each phase:**
 ```bash
 # Phase 1 checkpoint
@@ -113,18 +118,18 @@ make test  # All tests pass
 | File | Purpose | When to Read |
 |------|---------|--------------|
 | `README.md` (this file) | Entry point, navigation guide | Start here |
-| `00-architecture.md` | Design decisions, diagrams, context | Read before implementation |
-| `operations-runbook.md` | Day 2 operations | After deployment |
+| [00-architecture.md](00-architecture.md) | Design decisions, diagrams, context | Read before implementation |
+| [operations-runbook.md](operations-runbook.md) | Day 2 operations | After deployment |
 
 ### Implementation Phases (Execute in Order)
 
 | Phase | File | Duration | Description | Dependencies |
 |-------|------|----------|-------------|--------------|
-| 1 | `01-phase1-core-code.md` | 2-3 hours | Implement store interfaces, auth, authz, proto | None |
-| 2 | `02-phase2-integration.md` | 2-3 hours | Local integration testing with docker-compose | Phase 1 complete, tests passing |
-| 3 | `03-phase3-infrastructure.md` | 1-2 hours | Terraform for DynamoDB, SSM, NLB, ECS | Phase 2 verified locally |
-| 4 | `04-phase4-deployment.md` | 1-2 hours | Bootstrap command, production deployment | Phase 3 Terraform applied |
-| 5 | `05-phase5-cleanup.md` | 1 hour | Remove JWT code, update docs | Phase 4 deployed and verified |
+| 1 | [01-phase1-core-code.md](01-phase1-core-code.md) | 2-3 hours | Implement store interfaces, auth, authz, proto | None |
+| 2 | [02-phase2-integration.md](02-phase2-integration.md) | 2-3 hours | Local integration testing with docker-compose | Phase 1 complete, tests passing |
+| 3 | [03-phase3-infrastructure.md](03-phase3-infrastructure.md) | 1-2 hours | Terraform for DynamoDB, SSM, NLB, ECS | Phase 2 verified locally |
+| 4 | [04-phase4-deployment.md](04-phase4-deployment.md) | 1-2 hours | Bootstrap command, production deployment | Phase 3 Terraform applied |
+| 5 | [05-phase5-cleanup.md](05-phase5-cleanup.md) | 1 hour | Remove JWT code, update docs | Phase 4 deployed and verified |
 
 **Total estimated time:** 7-10 hours of focused implementation
 
@@ -159,7 +164,7 @@ examples/
 
 ### Phase 1: Core Code
 
-**File:** `01-phase1-core-code.md`
+**File:** [01-phase1-core-code.md](01-phase1-core-code.md)
 
 **Goal:** Implement core authentication components (stores, auth, authz, proto)
 
@@ -190,7 +195,7 @@ make lint
 
 ### Phase 2: Local Integration Testing
 
-**File:** `02-phase2-integration.md`
+**File:** [02-phase2-integration.md](02-phase2-integration.md)
 
 **Goal:** Validate mTLS flow with LocalStack and docker-compose
 
@@ -219,7 +224,7 @@ curl http://localhost:8080/health
 
 ### Phase 3: Infrastructure
 
-**File:** `03-phase3-infrastructure.md`
+**File:** [03-phase3-infrastructure.md](03-phase3-infrastructure.md)
 
 **Goal:** Update Terraform for AWS resources
 
@@ -248,7 +253,7 @@ terraform apply
 
 ### Phase 4: Deployment
 
-**File:** `04-phase4-deployment.md`
+**File:** [04-phase4-deployment.md](04-phase4-deployment.md)
 
 **Goal:** Deploy to production and verify
 
@@ -279,7 +284,7 @@ curl http://airunner.example.com:8080/health
 
 ### Phase 5: Cleanup
 
-**File:** `05-phase5-cleanup.md`
+**File:** [05-phase5-cleanup.md](05-phase5-cleanup.md)
 
 **Goal:** Remove old JWT code and finalize
 
@@ -329,8 +334,8 @@ git status
 ### Getting Help
 
 **Documentation:**
-- Architecture decisions: See `00-architecture.md`
-- Operational procedures: See `operations-runbook.md`
+- Architecture decisions: See [00-architecture.md](00-architecture.md)
+- Operational procedures: See [operations-runbook.md](operations-runbook.md)
 - Original consolidated spec: See `ARCHIVE_original_consolidated_spec.md`
 
 **Code Examples:**
@@ -351,10 +356,10 @@ aws dynamodb describe-table --table-name airunner_prod_principals
 
 ## Next Steps
 
-1. **Start Here:** Read `00-architecture.md` to understand the design
-2. **Phase 1:** Follow `01-phase1-core-code.md` to implement core components
+1. **Start Here:** Read [00-architecture.md](00-architecture.md) to understand the design
+2. **Phase 1:** Follow [01-phase1-core-code.md](01-phase1-core-code.md) to implement core components
 3. **Iterate:** Complete phases 2-5 sequentially
-4. **Operate:** Use `operations-runbook.md` for Day 2 operations
+4. **Operate:** Use [operations-runbook.md](operations-runbook.md) for Day 2 operations
 
 **Estimated Total Time:** 7-10 hours for complete implementation
 

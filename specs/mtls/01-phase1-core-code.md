@@ -1,5 +1,7 @@
 # Phase 1: Core Code Implementation
 
+[← Back to README](README.md) | [← Architecture](00-architecture.md) | [Phase 2: Integration →](02-phase2-integration.md)
+
 ## Overview
 
 **Goal:** Implement core authentication components including store interfaces, authentication logic, authorization, and Protocol Buffers definitions.
@@ -274,4 +276,8 @@ make lint
 
 ## Next Steps
 
-Once Phase 1 is complete and all tests pass, proceed to **Phase 2: Local Integration Testing** (`02-phase2-integration.md`).
+Once Phase 1 is complete and all tests pass, proceed to **[Phase 2: Local Integration Testing](02-phase2-integration.md)**.
+
+---
+
+[← Back to README](README.md) | [← Architecture](00-architecture.md) | [Phase 2: Integration →](02-phase2-integration.md)

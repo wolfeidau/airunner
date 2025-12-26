@@ -1,5 +1,7 @@
 # Phase 3: Infrastructure
 
+[← Back to README](README.md) | [← Phase 2: Integration](02-phase2-integration.md) | [Phase 4: Deployment →](04-phase4-deployment.md)
+
 ## Overview
 
 **Goal:** Update Terraform configuration for AWS resources (DynamoDB, SSM, Secrets Manager, NLB, ECS).
@@ -448,4 +450,8 @@ terraform plan
 
 ## Next Steps
 
-Once Phase 3 Terraform is ready and reviewed, proceed to **Phase 4: Deployment** (`04-phase4-deployment.md`).
+Once Phase 3 Terraform is ready and reviewed, proceed to **[Phase 4: Deployment](04-phase4-deployment.md)**.
+
+---
+
+[← Back to README](README.md) | [← Phase 2: Integration](02-phase2-integration.md) | [Phase 4: Deployment →](04-phase4-deployment.md)

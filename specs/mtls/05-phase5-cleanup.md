@@ -1,5 +1,7 @@
 # Phase 5: Cleanup
 
+[← Back to README](README.md) | [← Phase 4: Deployment](04-phase4-deployment.md) | [Operations Runbook](operations-runbook.md)
+
 ## Overview
 
 **Goal:** Remove old JWT authentication code and finalize the migration to mTLS.
@@ -391,4 +393,8 @@ The JWT authentication system has been completely removed. The system now uses:
 - **Certificate management**: Bootstrap command and PrincipalService RPCs
 - **Industry-standard PKI**: Self-managed CA with ECDSA P-256
 
-For operational procedures, see `operations-runbook.md`.
+For operational procedures, see [operations-runbook.md](operations-runbook.md).
+
+---
+
+[← Back to README](README.md) | [← Phase 4: Deployment](04-phase4-deployment.md) | [Operations Runbook](operations-runbook.md)

@@ -224,10 +224,11 @@ The bootstrap command supports two modes based on the `--environment` flag:
    - Register in DynamoDB certificates table
 
 6. **Upload to AWS**
-   - Put `ca-cert.pem` to SSM Parameter Store
-   - Put `server-cert.pem` to SSM
-   - Put `server-key.pem` to SSM SecureString
-   - **Note:** CA private key never uploaded (exists only in KMS)
+   - Put `ca-cert.pem` to SSM Parameter Store (public certificate only)
+   - Put `server-cert.pem` to SSM (public certificate only)
+   - Put `server-key.pem` to SSM SecureString (server private key for TLS)
+   - **IMPORTANT:** CA private key never uploaded or exported - it exists only in KMS HSM
+   - Only public certificates and server key (needed for TLS termination) are stored in SSM
 
 7. **Verify and Report**
    - Verify all resources accessible
@@ -266,39 +267,20 @@ func (cmd *BootstrapCommand) runAWSBootstrap(ctx context.Context) error {
 }
 ```
 
-### Original Bootstrap Flow (for reference)
+### Key Differences: Local vs AWS Bootstrap
 
-The original bootstrap command performs these steps (now split between local/AWS modes):
+**Local Mode:**
+- CA private key stored in `./certs/ca-key.pem` (file on disk)
+- Uses `FileSigner` for all certificate signing
+- No AWS resources required
+- Fast iteration for development
 
-1. **Check/Create CA**
-   - Check if `ca-cert.pem` exists locally
-   - Check if `ca-key` exists in Secrets Manager
-   - Generate new CA if needed (ECDSA P-256, 10-year validity)
-
-2. **Check/Create Server Certificate**
-   - Check if `server-cert.pem` exists locally
-   - Generate server key pair
-   - Sign with CA
-   - Add SAN: domain, localhost, 127.0.0.1
-
-3. **Check/Create Admin Principal**
-   - Check if principal exists in DynamoDB
-   - Create with status=active, type=admin
-
-4. **Check/Create Admin Certificate**
-   - Generate admin key pair
-   - Add OID extensions (type=admin, id=admin-bootstrap)
-   - Register in DynamoDB
-
-5. **Upload to AWS**
-   - Put `ca-cert.pem` to SSM
-   - Put `server-cert.pem` to SSM
-   - Put `server-key.pem` to SSM SecureString
-   - Put `ca-key.pem` to Secrets Manager
-
-6. **Verify and Report**
-   - Verify all resources accessible
-   - Print summary with next steps
+**AWS Mode:**
+- CA private key stored in KMS (never exported)
+- Uses `KMSSigner` for all certificate signing via KMS API
+- Certificates and metadata stored in SSM and DynamoDB
+- Production-grade security with CloudTrail audit logs
+- **CA key never exists as a file** - only in KMS HSM
 
 ### Key Functions
 

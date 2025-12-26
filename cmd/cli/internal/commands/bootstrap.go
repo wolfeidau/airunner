@@ -19,7 +19,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
-	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
 	"github.com/rs/zerolog/log"
@@ -80,14 +80,26 @@ func (cmd *BootstrapCmd) Run(ctx context.Context, globals *Globals) error {
 		adminKey:   filepath.Join(cmd.OutputDir, "admin-key.pem"),
 	}
 
-	// Step 1: Ensure CA exists
-	caCert, caKey, err := cmd.ensureCA(paths)
-	if err != nil {
-		return fmt.Errorf("failed to ensure CA: %w", err)
+	// Create appropriate signer based on environment
+	var signer pki.CASigner
+	var err error
+
+	if cmd.Environment == "local" {
+		// Local mode: use file-based signing
+		signer, err = cmd.setupLocalSigner(ctx, paths)
+		if err != nil {
+			return fmt.Errorf("failed to setup local signer: %w", err)
+		}
+	} else {
+		// AWS mode: use KMS signing
+		signer, err = cmd.setupKMSSigner(ctx, paths)
+		if err != nil {
+			return fmt.Errorf("failed to setup KMS signer: %w", err)
+		}
 	}
 
 	// Step 2: Ensure server certificate exists
-	if err := cmd.ensureServerCert(paths, caCert, caKey); err != nil {
+	if err := cmd.ensureServerCert(paths, signer); err != nil {
 		return fmt.Errorf("failed to ensure server certificate: %w", err)
 	}
 
@@ -116,7 +128,7 @@ func (cmd *BootstrapCmd) Run(ctx context.Context, globals *Globals) error {
 	}
 
 	// Step 4: Ensure admin certificate exists
-	if err := cmd.ensureAdminCert(ctx, paths, caCert, caKey, certStore); err != nil {
+	if err := cmd.ensureAdminCert(ctx, paths, signer, certStore); err != nil {
 		return fmt.Errorf("failed to ensure admin certificate: %w", err)
 	}
 
@@ -126,12 +138,14 @@ func (cmd *BootstrapCmd) Run(ctx context.Context, globals *Globals) error {
 	return nil
 }
 
-// ensureCA ensures the CA certificate and key exist
-func (cmd *BootstrapCmd) ensureCA(paths certificatePaths) (*x509.Certificate, *ecdsa.PrivateKey, error) {
+// setupLocalSigner creates a FileSigner for local development
+func (cmd *BootstrapCmd) setupLocalSigner(ctx context.Context, paths certificatePaths) (pki.CASigner, error) {
+	log.Info().Msg("Setting up local file-based signer...")
+
 	// Validate existing CA certificate (365-day rotation threshold)
 	caValidation, err := validateCertificate(paths.caCert, 365*24*time.Hour)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to validate CA certificate: %w", err)
+		return nil, fmt.Errorf("failed to validate CA certificate: %w", err)
 	}
 
 	// Determine if we should regenerate and log appropriately
@@ -151,31 +165,22 @@ func (cmd *BootstrapCmd) ensureCA(paths certificatePaths) (*x509.Certificate, *e
 			Int("days_remaining", caValidation.DaysRemaining).
 			Msg("CA certificate is valid, using existing...")
 
-		caCert, err := loadCertificate(paths.caCert)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to load CA certificate: %w", err)
-		}
-
-		caKey, err := loadPrivateKey(paths.caKey)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to load CA key: %w", err)
-		}
-
-		return caCert, caKey, nil
+		// Create signer from existing files
+		return pki.NewFileSigner(paths.caKey, paths.caCert)
 	default:
 		log.Info().Msg("Generating new CA certificate...")
 	}
 
-	// Generate CA key pair
+	// Generate new CA key pair
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to generate CA key: %w", err)
+		return nil, fmt.Errorf("failed to generate CA key: %w", err)
 	}
 
 	// Create CA certificate template
 	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to generate serial number: %w", err)
+		return nil, fmt.Errorf("failed to generate serial number: %w", err)
 	}
 
 	template := &x509.Certificate{
@@ -195,22 +200,22 @@ func (cmd *BootstrapCmd) ensureCA(paths certificatePaths) (*x509.Certificate, *e
 	// Self-sign the CA certificate
 	caCertDER, err := x509.CreateCertificate(rand.Reader, template, template, &caKey.PublicKey, caKey)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create CA certificate: %w", err)
+		return nil, fmt.Errorf("failed to create CA certificate: %w", err)
 	}
 
 	caCert, err := x509.ParseCertificate(caCertDER)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to parse CA certificate: %w", err)
+		return nil, fmt.Errorf("failed to parse CA certificate: %w", err)
 	}
 
 	// Save CA certificate
 	if err := saveCertificate(paths.caCert, caCert); err != nil {
-		return nil, nil, fmt.Errorf("failed to save CA certificate: %w", err)
+		return nil, fmt.Errorf("failed to save CA certificate: %w", err)
 	}
 
 	// Save CA key
 	if err := savePrivateKey(paths.caKey, caKey); err != nil {
-		return nil, nil, fmt.Errorf("failed to save CA key: %w", err)
+		return nil, fmt.Errorf("failed to save CA key: %w", err)
 	}
 
 	log.Info().
@@ -218,11 +223,167 @@ func (cmd *BootstrapCmd) ensureCA(paths certificatePaths) (*x509.Certificate, *e
 		Str("path_key", paths.caKey).
 		Msg("Generated and saved CA certificate")
 
-	return caCert, caKey, nil
+	// Create signer from generated files
+	return pki.NewFileSigner(paths.caKey, paths.caCert)
+}
+
+// setupKMSSigner creates a KMSSigner for AWS production
+func (cmd *BootstrapCmd) setupKMSSigner(ctx context.Context, paths certificatePaths) (pki.CASigner, error) {
+	log.Info().Msg("Setting up KMS-based signer...")
+
+	// Load AWS config
+	awsConfig, err := cmd.loadAWSConfig(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load AWS config: %w", err)
+	}
+
+	// Get KMS key ID from SSM parameter
+	kmsKeyID, err := cmd.getKMSKeyID(ctx, awsConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get KMS key ID: %w", err)
+	}
+
+	log.Info().Str("kms_key_id", kmsKeyID).Msg("Using KMS key for CA signing")
+
+	// Check if CA certificate already exists
+	caValidation, err := validateCertificate(paths.caCert, 365*24*time.Hour)
+	if err != nil {
+		return nil, fmt.Errorf("failed to validate CA certificate: %w", err)
+	}
+
+	var caCertPEM []byte
+
+	if caValidation.Exists && !cmd.Force && !caValidation.ShouldRotate {
+		log.Info().
+			Int("days_remaining", caValidation.DaysRemaining).
+			Msg("CA certificate is valid, using existing...")
+
+		// Load existing CA certificate
+		caCertPEM, err = os.ReadFile(paths.caCert)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read CA certificate: %w", err)
+		}
+	} else {
+		// Generate new CA certificate using KMS
+		log.Info().Msg("Generating new CA certificate with KMS...")
+
+		caCertPEM, err = cmd.generateKMSCACertificate(ctx, awsConfig, kmsKeyID, paths.caCert)
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate KMS CA certificate: %w", err)
+		}
+	}
+
+	// Create KMS signer
+	return pki.NewKMSSigner(ctx, awsConfig, kmsKeyID, caCertPEM)
+}
+
+// getKMSKeyID retrieves the KMS key ID from SSM Parameter Store
+func (cmd *BootstrapCmd) getKMSKeyID(ctx context.Context, awsConfig aws.Config) (string, error) {
+	ssmClient := ssm.NewFromConfig(awsConfig)
+	paramName := fmt.Sprintf("/airunner/%s/ca-kms-key-id", cmd.Environment)
+
+	output, err := ssmClient.GetParameter(ctx, &ssm.GetParameterInput{
+		Name: aws.String(paramName),
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to get KMS key ID from SSM parameter %s: %w", paramName, err)
+	}
+
+	return *output.Parameter.Value, nil
+}
+
+// generateKMSCACertificate generates a self-signed CA certificate using KMS
+func (cmd *BootstrapCmd) generateKMSCACertificate(ctx context.Context, awsConfig aws.Config, kmsKeyID, certPath string) ([]byte, error) {
+	kmsClient := kms.NewFromConfig(awsConfig)
+
+	// Get the public key from KMS
+	pubKeyOutput, err := kmsClient.GetPublicKey(ctx, &kms.GetPublicKeyInput{
+		KeyId: aws.String(kmsKeyID),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get public key from KMS: %w", err)
+	}
+
+	// Parse the public key
+	pubKey, err := x509.ParsePKIXPublicKey(pubKeyOutput.PublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse KMS public key: %w", err)
+	}
+
+	ecdsaPubKey, ok := pubKey.(*ecdsa.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("KMS key is not ECDSA")
+	}
+
+	// Create CA certificate template
+	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate serial number: %w", err)
+	}
+
+	template := &x509.Certificate{
+		SerialNumber: serialNumber,
+		Subject: pkix.Name{
+			CommonName:   fmt.Sprintf("Airunner CA (%s)", cmd.Environment),
+			Organization: []string{"Airunner"},
+		},
+		NotBefore:             time.Now(),
+		NotAfter:              time.Now().Add(10 * 365 * 24 * time.Hour), // 10 years
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		MaxPathLen:            1,
+		PublicKey:             ecdsaPubKey,
+	}
+
+	// Create a temporary KMS signer just for signing the CA cert
+	// We need a placeholder CA cert to bootstrap the signer
+	placeholderCACertDER, err := x509.CreateCertificate(rand.Reader, template, template, ecdsaPubKey, ecdsaPubKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create placeholder CA cert: %w", err)
+	}
+
+	placeholderCACertPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: placeholderCACertDER,
+	})
+
+	// Now create the real signer and sign properly
+	kmsSigner, err := pki.NewKMSSigner(ctx, awsConfig, kmsKeyID, placeholderCACertPEM)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create KMS signer: %w", err)
+	}
+
+	// Sign the CA certificate (self-signed via KMS)
+	caCertDER, err := kmsSigner.SignCertificate(template)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign CA certificate with KMS: %w", err)
+	}
+
+	// Parse and save the certificate
+	caCert, err := x509.ParseCertificate(caCertDER)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse CA certificate: %w", err)
+	}
+
+	if err := saveCertificate(certPath, caCert); err != nil {
+		return nil, fmt.Errorf("failed to save CA certificate: %w", err)
+	}
+
+	caCertPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: caCertDER,
+	})
+
+	log.Info().
+		Str("path_cert", certPath).
+		Msg("Generated and saved KMS-signed CA certificate")
+
+	return caCertPEM, nil
 }
 
 // ensureServerCert ensures the server certificate exists
-func (cmd *BootstrapCmd) ensureServerCert(paths certificatePaths, caCert *x509.Certificate, caKey *ecdsa.PrivateKey) error {
+func (cmd *BootstrapCmd) ensureServerCert(paths certificatePaths, signer pki.CASigner) error {
 	// Validate existing server certificate (7-day rotation window)
 	serverValidation, err := validateCertificate(paths.serverCert, 7*24*time.Hour)
 	if err != nil {
@@ -274,10 +435,11 @@ func (cmd *BootstrapCmd) ensureServerCert(paths certificatePaths, caCert *x509.C
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		DNSNames:    []string{cmd.Domain, "localhost"},
 		IPAddresses: nil, // Add IP addresses if needed
+		PublicKey:   &serverKey.PublicKey,
 	}
 
-	// Sign the server certificate with CA
-	serverCertDER, err := x509.CreateCertificate(rand.Reader, template, caCert, &serverKey.PublicKey, caKey)
+	// Sign the server certificate with CA (via signer)
+	serverCertDER, err := signer.SignCertificate(template)
 	if err != nil {
 		return fmt.Errorf("failed to create server certificate: %w", err)
 	}
@@ -347,7 +509,7 @@ func (cmd *BootstrapCmd) ensureAdminPrincipal(ctx context.Context, principalStor
 }
 
 // ensureAdminCert ensures the admin client certificate exists
-func (cmd *BootstrapCmd) ensureAdminCert(ctx context.Context, paths certificatePaths, caCert *x509.Certificate, caKey *ecdsa.PrivateKey, certStore store.CertificateStore) error {
+func (cmd *BootstrapCmd) ensureAdminCert(ctx context.Context, paths certificatePaths, signer pki.CASigner, certStore store.CertificateStore) error {
 	// Validate existing admin certificate (7-day rotation window)
 	adminValidation, err := validateCertificate(paths.adminCert, 7*24*time.Hour)
 	if err != nil {
@@ -408,6 +570,7 @@ func (cmd *BootstrapCmd) ensureAdminCert(ctx context.Context, paths certificateP
 		NotAfter:    time.Now().Add(90 * 24 * time.Hour), // 90 days
 		KeyUsage:    x509.KeyUsageDigitalSignature,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		PublicKey:   &adminKey.PublicKey,
 		ExtraExtensions: []pkix.Extension{
 			{
 				Id:       pki.OIDPrincipalType,
@@ -422,8 +585,8 @@ func (cmd *BootstrapCmd) ensureAdminCert(ctx context.Context, paths certificateP
 		},
 	}
 
-	// Sign the admin certificate with CA
-	adminCertDER, err := x509.CreateCertificate(rand.Reader, template, caCert, &adminKey.PublicKey, caKey)
+	// Sign the admin certificate with CA (via signer)
+	adminCertDER, err := signer.SignCertificate(template)
 	if err != nil {
 		return fmt.Errorf("failed to create admin certificate: %w", err)
 	}
@@ -498,16 +661,15 @@ func (cmd *BootstrapCmd) loadAWSConfig(ctx context.Context) (aws.Config, error) 
 	return config.LoadDefaultConfig(ctx, opts...)
 }
 
-// uploadToAWS uploads certificates to AWS SSM and Secrets Manager
+// uploadToAWS uploads certificates to AWS SSM Parameter Store
+// Note: CA private key is NOT uploaded - it exists only in KMS
 func (cmd *BootstrapCmd) uploadToAWS(ctx context.Context, awsConfig aws.Config, paths certificatePaths) error {
-	log.Info().Msg("Uploading certificates to AWS...")
+	log.Info().Msg("Uploading certificates to AWS SSM Parameter Store...")
 
 	ssmClient := ssm.NewFromConfig(awsConfig)
-	secretsClient := secretsmanager.NewFromConfig(awsConfig)
-
 	prefix := fmt.Sprintf("/airunner/%s", cmd.Environment)
 
-	// Upload CA cert to SSM
+	// Upload CA cert to SSM (public certificate only)
 	caCertPEM, err := os.ReadFile(paths.caCert)
 	if err != nil {
 		return fmt.Errorf("failed to read CA cert: %w", err)
@@ -517,7 +679,7 @@ func (cmd *BootstrapCmd) uploadToAWS(ctx context.Context, awsConfig aws.Config, 
 		return fmt.Errorf("failed to upload CA cert: %w", err)
 	}
 
-	// Upload server cert to SSM
+	// Upload server cert to SSM (public certificate only)
 	serverCertPEM, err := os.ReadFile(paths.serverCert)
 	if err != nil {
 		return fmt.Errorf("failed to read server cert: %w", err)
@@ -527,7 +689,7 @@ func (cmd *BootstrapCmd) uploadToAWS(ctx context.Context, awsConfig aws.Config, 
 		return fmt.Errorf("failed to upload server cert: %w", err)
 	}
 
-	// Upload server key to SSM (SecureString)
+	// Upload server key to SSM (SecureString - needed for TLS termination)
 	serverKeyPEM, err := os.ReadFile(paths.serverKey)
 	if err != nil {
 		return fmt.Errorf("failed to read server key: %w", err)
@@ -537,17 +699,8 @@ func (cmd *BootstrapCmd) uploadToAWS(ctx context.Context, awsConfig aws.Config, 
 		return fmt.Errorf("failed to upload server key: %w", err)
 	}
 
-	// Upload CA key to Secrets Manager
-	caKeyPEM, err := os.ReadFile(paths.caKey)
-	if err != nil {
-		return fmt.Errorf("failed to read CA key: %w", err)
-	}
-
-	if err := cmd.putSecret(ctx, secretsClient, fmt.Sprintf("%s/ca-key", prefix), string(caKeyPEM)); err != nil {
-		return fmt.Errorf("failed to upload CA key: %w", err)
-	}
-
-	log.Info().Msg("Successfully uploaded all certificates to AWS")
+	log.Info().Msg("Successfully uploaded certificates to AWS SSM Parameter Store")
+	log.Info().Msg("Note: CA private key remains in KMS and is never uploaded")
 
 	return nil
 }
@@ -565,28 +718,6 @@ func (cmd *BootstrapCmd) putSSMParameter(ctx context.Context, client *ssm.Client
 	}
 
 	log.Info().Str("parameter", name).Msg("Uploaded to SSM Parameter Store")
-	return nil
-}
-
-// putSecret puts a secret in Secrets Manager
-func (cmd *BootstrapCmd) putSecret(ctx context.Context, client *secretsmanager.Client, name, value string) error {
-	// Try to create the secret first
-	_, err := client.CreateSecret(ctx, &secretsmanager.CreateSecretInput{
-		Name:         aws.String(name),
-		SecretString: aws.String(value),
-	})
-	if err != nil {
-		// If secret exists, update it
-		_, err = client.PutSecretValue(ctx, &secretsmanager.PutSecretValueInput{
-			SecretId:     aws.String(name),
-			SecretString: aws.String(value),
-		})
-		if err != nil {
-			return err
-		}
-	}
-
-	log.Info().Str("secret", name).Msg("Uploaded to Secrets Manager")
 	return nil
 }
 
@@ -640,20 +771,6 @@ func loadCertificate(path string) (*x509.Certificate, error) {
 	}
 
 	return x509.ParseCertificate(block.Bytes)
-}
-
-func loadPrivateKey(path string) (*ecdsa.PrivateKey, error) {
-	keyPEM, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-
-	block, _ := pem.Decode(keyPEM)
-	if block == nil {
-		return nil, errors.New("failed to decode PEM block")
-	}
-
-	return x509.ParseECPrivateKey(block.Bytes)
 }
 
 func saveCertificate(path string, cert *x509.Certificate) error {

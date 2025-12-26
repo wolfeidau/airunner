@@ -75,15 +75,19 @@ type CASigner interface {
 
 **Implementations:**
 
-1. **FileSigner** (`internal/pki/file_signer.go`) - For local development
+1. **FileSigner** (`internal/pki/file_signer.go`) - For local development only
    - Loads CA private key from file (`./certs/ca-key.pem`)
    - Uses standard Go `x509.CreateCertificate()` for signing
    - Simple, fast, no AWS dependencies
+   - **Use only for local testing - not for production**
 
-2. **KMSSigner** (`internal/pki/kms_signer.go`) - For AWS production
-   - Uses AWS KMS API for signing operations
-   - CA private key never leaves KMS HSM
-   - Defense-in-depth security model
+2. **KMSSigner** (`internal/pki/kms_signer.go`) - For AWS production (recommended)
+   - Uses AWS KMS API for all signing operations
+   - CA private key generated and stored in KMS HSM (FIPS 140-2 Level 2)
+   - Private key never exported or stored outside KMS
+   - Defense-in-depth security model with KMS access policies
+   - Supports CloudTrail audit logging for all signing operations
+   - **Production-ready and recommended for all deployed environments**
 
 **Usage in Bootstrap Command:**
 

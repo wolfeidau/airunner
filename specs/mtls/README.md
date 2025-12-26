@@ -151,7 +151,7 @@ examples/
 ├── server/rpc.go          # Server config (reference, see spec lines 1872-2032)
 └── terraform/
     ├── dynamodb.tf        # DynamoDB tables (reference, see spec lines 602-708)
-    ├── ssm.tf             # SSM/Secrets Manager (reference, see spec lines 710-783)
+    ├── ssm.tf             # SSM parameters and KMS key (reference, see spec lines 710-783)
     ├── nlb.tf             # Network Load Balancer (reference, see spec lines 784-869)
     └── ecs.tf             # ECS task updates (reference, see spec lines 870-967)
 ```
@@ -231,7 +231,7 @@ curl http://localhost:8080/health
 **What you'll create:**
 - DynamoDB tables (principals, certificates)
 - SSM parameters (ca-cert, server-cert, server-key)
-- Secrets Manager (ca-key with restricted access)
+- KMS key for CA signing operations (FIPS 140-2 Level 2 HSM)
 - Network Load Balancer (TCP passthrough for mTLS)
 - ECS task definition updates
 
@@ -258,8 +258,8 @@ terraform apply
 **Goal:** Deploy to production and verify
 
 **What you'll do:**
-- Run bootstrap command for production environment
-- Upload certificates to AWS (SSM/Secrets Manager)
+- Run bootstrap command for production environment (uses KMS for CA signing)
+- Upload certificates to AWS SSM Parameter Store (public certs only)
 - Apply Terraform changes
 - Update ECS service
 - Verify mTLS connections

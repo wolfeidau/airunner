@@ -34,6 +34,7 @@ type BootstrapCmd struct {
 	AWSRegion   string `help:"AWS region" default:"us-east-1" env:"AWS_REGION"`
 	OutputDir   string `help:"output directory for certificates" default:"./certs"`
 	AWSEndpoint string `help:"AWS endpoint (for LocalStack)" default:"" env:"AWS_ENDPOINT"`
+	Force       bool   `help:"force regeneration of all certificates" default:"false"`
 }
 
 // certificatePaths holds paths to generated certificates
@@ -44,6 +45,17 @@ type certificatePaths struct {
 	serverKey  string
 	adminCert  string
 	adminKey   string
+}
+
+// CertValidation holds certificate validation results
+type CertValidation struct {
+	Path          string
+	Exists        bool
+	Expired       bool
+	NotBefore     time.Time
+	NotAfter      time.Time
+	DaysRemaining int
+	ShouldRotate  bool
 }
 
 // Run executes the bootstrap command
@@ -116,9 +128,28 @@ func (cmd *BootstrapCmd) Run(ctx context.Context, globals *Globals) error {
 
 // ensureCA ensures the CA certificate and key exist
 func (cmd *BootstrapCmd) ensureCA(paths certificatePaths) (*x509.Certificate, *ecdsa.PrivateKey, error) {
-	// Check if CA cert and key already exist
-	if fileExists(paths.caCert) && fileExists(paths.caKey) {
-		log.Info().Msg("CA certificate and key already exist, loading...")
+	// Validate existing CA certificate (365-day rotation threshold)
+	caValidation, err := validateCertificate(paths.caCert, 365*24*time.Hour)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to validate CA certificate: %w", err)
+	}
+
+	// Determine if we should regenerate and log appropriately
+	switch {
+	case cmd.Force:
+		log.Info().Msg("Force flag set, regenerating CA certificate...")
+	case caValidation.ShouldRotate && caValidation.Expired:
+		log.Error().
+			Int("days_expired", -caValidation.DaysRemaining).
+			Msg("CA certificate is expired, regenerating...")
+	case caValidation.ShouldRotate:
+		log.Warn().
+			Int("days_remaining", caValidation.DaysRemaining).
+			Msg("CA certificate approaching expiry, regenerating...")
+	case caValidation.Exists && fileExists(paths.caKey):
+		log.Info().
+			Int("days_remaining", caValidation.DaysRemaining).
+			Msg("CA certificate is valid, using existing...")
 
 		caCert, err := loadCertificate(paths.caCert)
 		if err != nil {
@@ -130,16 +161,10 @@ func (cmd *BootstrapCmd) ensureCA(paths certificatePaths) (*x509.Certificate, *e
 			return nil, nil, fmt.Errorf("failed to load CA key: %w", err)
 		}
 
-		log.Info().
-			Str("subject", caCert.Subject.CommonName).
-			Time("not_before", caCert.NotBefore).
-			Time("not_after", caCert.NotAfter).
-			Msg("Loaded existing CA certificate")
-
 		return caCert, caKey, nil
+	default:
+		log.Info().Msg("Generating new CA certificate...")
 	}
-
-	log.Info().Msg("Generating new CA certificate...")
 
 	// Generate CA key pair
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -198,13 +223,32 @@ func (cmd *BootstrapCmd) ensureCA(paths certificatePaths) (*x509.Certificate, *e
 
 // ensureServerCert ensures the server certificate exists
 func (cmd *BootstrapCmd) ensureServerCert(paths certificatePaths, caCert *x509.Certificate, caKey *ecdsa.PrivateKey) error {
-	// Check if server cert and key already exist
-	if fileExists(paths.serverCert) && fileExists(paths.serverKey) {
-		log.Info().Msg("Server certificate already exists")
-		return nil
+	// Validate existing server certificate (7-day rotation window)
+	serverValidation, err := validateCertificate(paths.serverCert, 7*24*time.Hour)
+	if err != nil {
+		return fmt.Errorf("failed to validate server certificate: %w", err)
 	}
 
-	log.Info().Msg("Generating server certificate...")
+	// Determine if we should regenerate and log appropriately
+	switch {
+	case cmd.Force:
+		log.Info().Msg("Force flag set, regenerating server certificate...")
+	case serverValidation.ShouldRotate && serverValidation.Expired:
+		log.Error().
+			Int("days_expired", -serverValidation.DaysRemaining).
+			Msg("Server certificate is expired, regenerating...")
+	case serverValidation.ShouldRotate:
+		log.Warn().
+			Int("days_remaining", serverValidation.DaysRemaining).
+			Msg("Server certificate within rotation window, regenerating...")
+	case serverValidation.Exists && fileExists(paths.serverKey):
+		log.Info().
+			Int("days_remaining", serverValidation.DaysRemaining).
+			Msg("Server certificate is valid, using existing...")
+		return nil
+	default:
+		log.Info().Msg("Generating server certificate...")
+	}
 
 	// Generate server key pair
 	serverKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -304,13 +348,32 @@ func (cmd *BootstrapCmd) ensureAdminPrincipal(ctx context.Context, principalStor
 
 // ensureAdminCert ensures the admin client certificate exists
 func (cmd *BootstrapCmd) ensureAdminCert(ctx context.Context, paths certificatePaths, caCert *x509.Certificate, caKey *ecdsa.PrivateKey, certStore store.CertificateStore) error {
-	// Check if admin cert already exists
-	if fileExists(paths.adminCert) && fileExists(paths.adminKey) {
-		log.Info().Msg("Admin certificate already exists")
-		return nil
+	// Validate existing admin certificate (7-day rotation window)
+	adminValidation, err := validateCertificate(paths.adminCert, 7*24*time.Hour)
+	if err != nil {
+		return fmt.Errorf("failed to validate admin certificate: %w", err)
 	}
 
-	log.Info().Msg("Generating admin certificate with custom OID extensions...")
+	// Determine if we should regenerate and log appropriately
+	switch {
+	case cmd.Force:
+		log.Info().Msg("Force flag set, regenerating admin certificate...")
+	case adminValidation.ShouldRotate && adminValidation.Expired:
+		log.Error().
+			Int("days_expired", -adminValidation.DaysRemaining).
+			Msg("Admin certificate is expired, regenerating...")
+	case adminValidation.ShouldRotate:
+		log.Warn().
+			Int("days_remaining", adminValidation.DaysRemaining).
+			Msg("Admin certificate within rotation window, regenerating...")
+	case adminValidation.Exists && fileExists(paths.adminKey):
+		log.Info().
+			Int("days_remaining", adminValidation.DaysRemaining).
+			Msg("Admin certificate is valid, using existing...")
+		return nil
+	default:
+		log.Info().Msg("Generating admin certificate with custom OID extensions...")
+	}
 
 	// Generate admin key pair
 	adminKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -614,4 +677,43 @@ func savePrivateKey(path string, key *ecdsa.PrivateKey) error {
 	})
 
 	return os.WriteFile(path, keyPEM, 0600)
+}
+
+// validateCertificate checks if a certificate exists and its validity status
+func validateCertificate(path string, rotationThreshold time.Duration) (*CertValidation, error) {
+	validation := &CertValidation{Path: path}
+
+	// Check if file exists
+	if !fileExists(path) {
+		validation.Exists = false
+		validation.ShouldRotate = true
+		return validation, nil
+	}
+
+	validation.Exists = true
+
+	// Load and parse certificate
+	cert, err := loadCertificate(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load certificate: %w", err)
+	}
+
+	now := time.Now()
+	validation.NotBefore = cert.NotBefore
+	validation.NotAfter = cert.NotAfter
+	validation.DaysRemaining = int(time.Until(cert.NotAfter).Hours() / 24)
+
+	// Check if expired
+	if now.After(cert.NotAfter) {
+		validation.Expired = true
+		validation.ShouldRotate = true
+		return validation, nil
+	}
+
+	// Check if within rotation threshold
+	if time.Until(cert.NotAfter) < rotationThreshold {
+		validation.ShouldRotate = true
+	}
+
+	return validation, nil
 }

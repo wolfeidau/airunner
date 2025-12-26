@@ -187,6 +187,188 @@ When creating any documentation (README files, code comments, design docs), writ
 - Always include implementation details and edge cases
 - Use the passive voice sparingly; prefer active, direct statements
 
+## Specification Documentation Standards
+
+For complex features requiring significant implementation work (multi-package changes, infrastructure updates, new authentication systems), follow the **layered specification pattern** demonstrated in `specs/mtls/`.
+
+### When to Use Layered Specs
+
+Use this pattern when:
+- Implementation spans 3+ packages or components
+- Requires infrastructure changes (Terraform, AWS resources)
+- Involves architectural decisions with multiple approaches
+- Takes 7+ hours to implement
+- Benefits from phase-by-phase execution
+
+**Do NOT use for:**
+- Simple bug fixes or single-file changes
+- Documentation-only updates
+- Trivial feature additions
+
+### Layered Spec Structure
+
+```
+specs/<feature-name>/
+├── README.md                    ← Entry point & navigation guide
+├── 00-architecture.md           ← Design decisions, diagrams, data models
+├── 01-phase1-<name>.md         ← First implementation phase
+├── 02-phase2-<name>.md         ← Second implementation phase
+├── 03-phase3-<name>.md         ← Third implementation phase
+├── ...                          ← Additional phases as needed
+├── operations-runbook.md        ← Day 2 operational procedures
+├── ARCHIVE_*.md                 ← Original consolidated spec (if migrated)
+└── examples/                    ← Complete code examples
+    ├── <package1>/              ← Examples organized by package
+    ├── <package2>/
+    └── <package3>/
+```
+
+### File Guidelines
+
+**Navigation and Hyperlinks:**
+- All spec files MUST include markdown hyperlinks to related files
+- Use breadcrumb navigation at top and bottom of each file (e.g., `[← README](README.md) | [Next Phase →](02-phase2.md)`)
+- Link all file references in tables and text (e.g., `[00-architecture.md](00-architecture.md)` not `00-architecture.md`)
+- Create a navigation section in README with direct links to all major files
+- This dramatically improves navigation when viewing on GitHub or in markdown viewers
+
+**README.md** (250-400 lines):
+- Overview of what the feature provides
+- Prerequisites (tools, access, knowledge)
+- Quick start guide (5-step summary) with links to phase files
+- File navigation table with hyperlinks and duration estimates
+- Phase-by-phase execution guide with success criteria and links
+- Troubleshooting section
+- Next steps with links
+
+**00-architecture.md** (400-800 lines):
+- Breadcrumb navigation at top: `[← README](README.md) | [Phase 1 →](01-phase1.md)`
+- Summary and goals (what/why)
+- Design decisions and trade-offs
+- Architecture diagrams (Mermaid)
+- Data models (DynamoDB schemas, structs)
+- Key concepts and terminology
+- References to example code (with links to phase files where applicable)
+- Breadcrumb navigation at bottom
+
+**Phase Files** (250-500 lines each):
+- Breadcrumb navigation at top: `[← README](README.md) | [← Previous](01-phase1.md) | [Next →](03-phase3.md)`
+- Clear goal and duration estimate
+- Prerequisites (previous phase completion)
+- Success criteria (checkboxes)
+- Package-by-package implementation guide
+- Code snippets for interfaces and key patterns (inline)
+- References to complete implementations in examples/ (with links)
+- Verification steps with specific commands
+- Next phase reference with hyperlink
+- Breadcrumb navigation at bottom (same as top)
+
+**operations-runbook.md** (300-500 lines):
+- Breadcrumb navigation at top: `[← README](README.md) | [Architecture](00-architecture.md) | [Deployment](04-phase4.md)`
+- Common operational procedures
+- Emergency procedures
+- Monitoring and alerting guidance
+- Troubleshooting scenarios
+- Metrics definitions
+- AWS CLI commands for manual operations
+- Additional Resources section with links to all spec files
+- Breadcrumb navigation at bottom
+
+**examples/** directory:
+- **Complete files** for small, critical code (interfaces, small utilities)
+- **Reference/skeleton files** for large implementations (500+ lines)
+- Organized by package structure (mirrors actual codebase)
+- Include comments about imports and dependencies
+- Reference back to original spec line numbers for full implementations
+
+### Code in Specs: Inline vs Examples
+
+**Keep inline in spec files:**
+- Interface definitions (<100 lines)
+- Struct definitions (<50 lines)
+- Key method signatures
+- Small code snippets demonstrating patterns (<30 lines)
+- Configuration examples (<50 lines)
+- All Mermaid diagrams
+- All tables and matrices
+
+**Move to examples/ directory:**
+- Complete implementations (>100 lines)
+- Full file contents (even if <100 lines, if it's a complete file)
+- Large Terraform modules (>80 lines)
+- Complete CLI commands (>200 lines)
+- Any code that would be copy-pasted wholesale
+
+### Phase Organization
+
+Organize phases by natural implementation flow:
+
+1. **Phase 1: Core Code** - Interfaces, core logic, no infrastructure
+2. **Phase 2: Integration** - Local testing, docker-compose, integration tests
+3. **Phase 3: Infrastructure** - Terraform, AWS resources
+4. **Phase 4: Deployment** - Production deployment, verification
+5. **Phase 5: Cleanup** - Remove old code, update docs
+
+**Checkpoint between each phase:**
+- Each phase must have clear success criteria
+- Must be verifiable independently
+- Next phase should not start until previous succeeds
+
+### Instructing Claude Code
+
+When asking Claude Code to create layered specs, provide this template:
+
+```
+I need to create a layered specification for [FEATURE NAME] following the pattern in specs/mtls/.
+
+The feature involves:
+- [List key components/packages affected]
+- [Infrastructure changes needed]
+- [Estimated complexity: X hours]
+
+Please create a layered spec structure with:
+1. README.md as entry point
+2. 00-architecture.md with design decisions and diagrams
+3. Phase files (01-0X) for sequential implementation
+4. operations-runbook.md for Day 2 operations
+5. examples/ directory with code references
+
+Follow the pattern established in specs/mtls/ including:
+- Hyperlinks between all spec files (breadcrumbs at top/bottom of each file)
+- All file references as markdown links in tables and text
+- Inline code for interfaces and small snippets
+- Examples directory for complete implementations
+- Success criteria for each phase
+- Verification commands
+- Mermaid diagrams where appropriate
+
+See AGENT.md "Specification Documentation Standards" section for complete guidelines.
+```
+
+### Example: mTLS Authentication Spec
+
+**Reference implementation:** `specs/mtls/`
+
+This spec demonstrates:
+- ✅ Clear README with navigation and quick start
+- ✅ Architecture file with design decisions and Mermaid diagrams
+- ✅ 5 phase files for sequential implementation
+- ✅ Operations runbook with procedures and metrics
+- ✅ Examples directory with 12 code reference files
+- ✅ Original 3,056-line spec archived for reference
+- ✅ Each phase independently actionable
+- ✅ Total: 3,062 lines across 8 focused spec files
+
+**Key principles demonstrated:**
+- Each file is independently readable
+- Cross-references between files are clear and use hyperlinks
+- Breadcrumb navigation at top and bottom of every file
+- All file references in tables and text are clickable links
+- Developers can start at README and execute sequentially
+- Easy navigation when viewing on GitHub or in markdown viewers
+- Examples are copy-paste ready when needed
+- Original consolidated spec preserved for reference
+
 ## Authentication
 
 JWT-based authentication using ECDSA ES256:
@@ -232,9 +414,16 @@ Key files:
 - `cmd/cli/internal/commands/` - Worker, submit, monitor, list, token commands
 
 ### Design Specs
-- `specs/sqs_dynamodb_backend.md` - AWS backend architecture
-- `specs/event_batching.md` - Event batching design
-- `specs/api_auth.md` - Authentication specification
+
+**Layered Specifications** (follow this pattern for complex features):
+- `specs/mtls/` - mTLS authentication (layered spec with 5 phases, examples, runbook)
+  - See `specs/mtls/README.md` for entry point
+  - Reference implementation of layered spec pattern
+
+**Legacy Specifications** (deprecated, archived):
+- `specs/sqs_dynamodb_backend.md` - AWS backend architecture (archived)
+- `specs/event_batching.md` - Event batching design (archived)
+- `specs/api_auth.md` - JWT authentication (deprecated, see specs/mtls/)
 
 ### Infrastructure
 - `infra/` - Terraform configuration for AWS resources

@@ -156,6 +156,7 @@ type BootstrapCmd struct {
     Domain      string
     AWSRegion   string
     OutputDir   string
+    Force       bool // Force regeneration of all certificates
 }
 
 func (cmd *BootstrapCmd) ensureCA() error
@@ -166,6 +167,227 @@ func (cmd *BootstrapCmd) uploadToAWS(ctx context.Context) error
 func (cmd *BootstrapCmd) verify(ctx context.Context) error
 func (cmd *BootstrapCmd) printSummary()
 ```
+
+### Certificate Lifecycle Management
+
+**Problem:** Certificates expire and need rotation. The bootstrap command must handle:
+- Detecting expired certificates
+- Warning about certificates approaching expiry
+- Automatic or forced regeneration
+- Different rotation thresholds per certificate type
+
+**Solution:** Implement certificate validation and rotation logic.
+
+#### Rotation Thresholds
+
+Different certificate types have different rotation windows:
+
+| Certificate Type | Validity Period | Rotation Threshold | Auto-Regenerate |
+|-----------------|-----------------|-------------------|-----------------|
+| CA Certificate | 10 years | 365 days | No (warn only) |
+| Server Certificate | 90 days | 7 days | Yes |
+| Admin Certificate | 90 days | 7 days | Yes |
+
+**Rationale:**
+- **CA**: Long-lived, rarely rotated, warning gives time to plan rotation
+- **Server/Admin**: Short-lived (90 days), auto-rotate within 7 days of expiry
+- **Force flag**: Override any checks and regenerate everything
+
+#### Certificate Validation Logic
+
+```go
+type CertValidation struct {
+    Path          string
+    Exists        bool
+    Expired       bool
+    NotBefore     time.Time
+    NotAfter      time.Time
+    DaysRemaining int
+    ShouldRotate  bool
+}
+
+// validateCertificate checks if a certificate exists and its validity status
+func validateCertificate(path string, rotationThreshold time.Duration) (*CertValidation, error) {
+    validation := &CertValidation{Path: path}
+
+    // Check if file exists
+    if _, err := os.Stat(path); err != nil {
+        validation.Exists = false
+        validation.ShouldRotate = true
+        return validation, nil
+    }
+
+    validation.Exists = true
+
+    // Load and parse certificate
+    cert, err := loadCertificate(path)
+    if err != nil {
+        return nil, fmt.Errorf("failed to load certificate: %w", err)
+    }
+
+    now := time.Now()
+    validation.NotBefore = cert.NotBefore
+    validation.NotAfter = cert.NotAfter
+    validation.DaysRemaining = int(time.Until(cert.NotAfter).Hours() / 24)
+
+    // Check if expired
+    if now.After(cert.NotAfter) {
+        validation.Expired = true
+        validation.ShouldRotate = true
+        return validation, nil
+    }
+
+    // Check if within rotation threshold
+    if time.Until(cert.NotAfter) < rotationThreshold {
+        validation.ShouldRotate = true
+    }
+
+    return validation, nil
+}
+```
+
+#### Bootstrap Command Flags
+
+Add `--force` flag to override all validation:
+
+```go
+type BootstrapCmd struct {
+    Environment string `help:"environment name (local, dev, prod)" default:"local"`
+    Domain      string `help:"server domain name" default:"localhost"`
+    AWSRegion   string `help:"AWS region" default:"us-east-1"`
+    OutputDir   string `help:"output directory for certificates" default:"./certs"`
+    AWSEndpoint string `help:"AWS endpoint (for LocalStack)" default:""`
+    Force       bool   `help:"force regeneration of all certificates" default:"false"`
+}
+```
+
+#### Updated Bootstrap Flow
+
+Each certificate check now includes validation:
+
+**1. Check/Create CA:**
+```go
+// Validate existing CA certificate
+caValidation, err := validateCertificate(paths.caCert, 365*24*time.Hour)
+if err != nil {
+    return nil, nil, err
+}
+
+if cmd.Force {
+    log.Info().Msg("Force flag set, regenerating CA certificate...")
+    // Generate new CA
+} else if caValidation.ShouldRotate {
+    if caValidation.Expired {
+        log.Error().Msg("CA certificate is expired, regenerating...")
+    } else {
+        log.Warn().
+            Int("days_remaining", caValidation.DaysRemaining).
+            Msg("CA certificate approaching expiry, regenerating...")
+    }
+    // Generate new CA
+} else if caValidation.Exists {
+    log.Info().
+        Int("days_remaining", caValidation.DaysRemaining).
+        Msg("CA certificate is valid, using existing...")
+    // Load existing CA
+}
+```
+
+**2. Check/Create Server Certificate:**
+```go
+// Validate existing server certificate (7-day rotation window)
+serverValidation, err := validateCertificate(paths.serverCert, 7*24*time.Hour)
+if err != nil {
+    return err
+}
+
+if cmd.Force || serverValidation.ShouldRotate {
+    if serverValidation.Expired {
+        log.Error().Msg("Server certificate is expired, regenerating...")
+    } else if serverValidation.ShouldRotate {
+        log.Warn().
+            Int("days_remaining", serverValidation.DaysRemaining).
+            Msg("Server certificate within rotation window, regenerating...")
+    }
+    // Generate new server certificate
+}
+```
+
+**3. Check/Create Admin Certificate:**
+```go
+// Validate existing admin certificate (7-day rotation window)
+adminValidation, err := validateCertificate(paths.adminCert, 7*24*time.Hour)
+if err != nil {
+    return err
+}
+
+if cmd.Force || adminValidation.ShouldRotate {
+    // Generate new admin certificate and register in store
+}
+```
+
+#### Validation Output Examples
+
+**All certificates valid:**
+```
+INFO CA certificate is valid (3562 days remaining)
+INFO Server certificate is valid (82 days remaining)
+INFO Admin certificate is valid (85 days remaining)
+```
+
+**Server certificate approaching expiry:**
+```
+INFO CA certificate is valid (3562 days remaining)
+WARN Server certificate within rotation window (5 days remaining), regenerating...
+INFO Generated new server certificate (90 days validity)
+INFO Admin certificate is valid (85 days remaining)
+```
+
+**Expired certificate:**
+```
+INFO CA certificate is valid (3562 days remaining)
+ERROR Server certificate is expired (-3 days), regenerating...
+INFO Generated new server certificate (90 days validity)
+INFO Admin certificate is valid (85 days remaining)
+```
+
+**Force regeneration:**
+```
+INFO Force flag set, regenerating all certificates...
+INFO Regenerated CA certificate (10 years validity)
+INFO Regenerated server certificate (90 days validity)
+INFO Regenerated admin certificate (90 days validity)
+```
+
+#### Testing Certificate Rotation
+
+```bash
+# Test with certificates approaching expiry
+# 1. Generate initial certificates
+./bin/airunner-cli bootstrap --environment=local --domain=localhost
+
+# 2. Modify certificate to simulate near-expiry (for testing)
+# In production, certificates naturally approach expiry
+
+# 3. Run bootstrap again - should detect and rotate
+./bin/airunner-cli bootstrap --environment=local --domain=localhost
+# Expected: "Server certificate within rotation window (X days remaining), regenerating..."
+
+# 4. Force regeneration regardless of validity
+./bin/airunner-cli bootstrap --environment=local --domain=localhost --force
+# Expected: "Force flag set, regenerating all certificates..."
+```
+
+#### Implementation Checklist
+
+- [ ] Add `validateCertificate` function with rotation threshold
+- [ ] Add `--force` flag to BootstrapCmd
+- [ ] Update `ensureCA` with validation logic
+- [ ] Update `ensureServerCert` with validation logic
+- [ ] Update `ensureAdminCert` with validation logic
+- [ ] Add validation logging (INFO/WARN/ERROR based on status)
+- [ ] Update summary output to show certificate validity status
+- [ ] Add integration tests for rotation scenarios
 
 ## Docker Compose Setup
 

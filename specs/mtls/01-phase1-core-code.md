@@ -45,6 +45,65 @@ func MustExtractPrincipal(cert *x509.Certificate) (principalType, principalID st
 2. Copy from `examples/pki/oid.go` or implement based on architecture doc
 3. Add unit tests for OID extraction
 
+### CA Signer Interface
+
+**Location:** `internal/pki/signer.go`
+
+**References:**
+- `examples/pki/signer.go` (interface definition)
+- `examples/pki/file_signer.go` (local development implementation)
+- `examples/pki/kms_signer.go` (AWS production implementation)
+
+Create an interface to abstract CA signing operations, allowing both file-based (local) and KMS-based (AWS) implementations:
+
+```go
+package pki
+
+import (
+    "crypto/x509"
+)
+
+// CASigner signs certificate requests to create certificates
+type CASigner interface {
+    // SignCertificate signs a certificate template and returns the certificate bytes
+    SignCertificate(template *x509.Certificate) ([]byte, error)
+
+    // GetCACertificate returns the CA certificate (public key)
+    GetCACertificate() (*x509.Certificate, error)
+}
+```
+
+**Implementations:**
+
+1. **FileSigner** (`internal/pki/file_signer.go`) - For local development
+   - Loads CA private key from file (`./certs/ca-key.pem`)
+   - Uses standard Go `x509.CreateCertificate()` for signing
+   - Simple, fast, no AWS dependencies
+
+2. **KMSSigner** (`internal/pki/kms_signer.go`) - For AWS production
+   - Uses AWS KMS API for signing operations
+   - CA private key never leaves KMS HSM
+   - Defense-in-depth security model
+
+**Usage in Bootstrap Command:**
+
+```go
+// Local mode
+signer, err := pki.NewFileSigner("./certs/ca-key.pem", "./certs/ca-cert.pem")
+
+// AWS mode
+signer, err := pki.NewKMSSigner(awsConfig, kmsKeyID, caCertPEM)
+
+// Sign certificate (same interface)
+certBytes, err := signer.SignCertificate(certTemplate)
+```
+
+**Implementation Steps:**
+1. Create `internal/pki/signer.go` with interface definition
+2. Implement `FileSigner` for local mode (Phase 2)
+3. Implement `KMSSigner` for AWS mode (Phase 2)
+4. Add unit tests for both implementations
+
 ## Package: Store Interfaces
 
 **Location:** `internal/store/`
@@ -240,6 +299,7 @@ service PrincipalService {
 ## Implementation Checklist
 
 - [ ] Create `internal/pki/oid.go` with OID extraction
+- [ ] Create `internal/pki/signer.go` with CASigner interface
 - [ ] Create `internal/store/principal_store.go` with interface
 - [ ] Create `internal/store/certificate_store.go` with interface
 - [ ] Create `internal/store/memory_principal_store.go` (in-memory impl)

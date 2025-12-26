@@ -4,7 +4,7 @@
 
 ## Overview
 
-**Goal:** Update Terraform configuration for AWS resources (DynamoDB, SSM, Secrets Manager, NLB, ECS).
+**Goal:** Update Terraform configuration for AWS resources (DynamoDB, SSM, KMS, NLB, ECS).
 
 **Duration:** 1-2 hours
 
@@ -132,7 +132,7 @@ resource "aws_dynamodb_table" "certificates" {
 }
 ```
 
-## SSM Parameters and Secrets Manager
+## SSM Parameters
 
 **Location:** `infra/ssm.tf` (or similar)
 
@@ -183,36 +183,70 @@ resource "aws_ssm_parameter" "server_key" {
 }
 ```
 
-### Secrets Manager (CA Key)
+### KMS Key for CA Signing
+
+**Location:** `infra/kms.tf`
+
+**Reference:** `examples/terraform/kms.tf` (complete implementation)
+
+Create KMS key for CA signing operations:
 
 ```hcl
-resource "aws_secretsmanager_secret" "ca_key" {
-  name        = "/${var.application}/${var.environment}/ca-key"
-  description = "CA private key (admin access only)"
+# KMS key for CA signing (ECDSA P-256)
+resource "aws_kms_key" "ca_signing_key" {
+  description              = "${var.application} ${var.environment} CA signing key"
+  key_usage                = "SIGN_VERIFY"
+  customer_master_key_spec = "ECC_NIST_P256"
+
+  deletion_window_in_days = 30
+  enable_key_rotation     = false  # Don't rotate CA keys
+
+  tags = merge(local.tags, {
+    Purpose = "ca-signing"
+  })
+}
+
+# KMS key alias for easy reference
+resource "aws_kms_alias" "ca_signing_key" {
+  name          = "alias/${var.application}-${var.environment}-ca"
+  target_key_id = aws_kms_key.ca_signing_key.id
+}
+
+# Store KMS key ID in SSM so bootstrap can find it
+resource "aws_ssm_parameter" "ca_kms_key_id" {
+  name  = "/${var.application}/${var.environment}/ca-kms-key-id"
+  type  = "String"
+  value = aws_kms_key.ca_signing_key.id
 
   tags = local.tags
 }
 
-# Restrict access to CA key
-resource "aws_secretsmanager_secret_policy" "ca_key" {
-  secret_arn = aws_secretsmanager_secret.ca_key.arn
+# Output KMS key information
+output "ca_kms_key_id" {
+  description = "KMS key ID for CA signing"
+  value       = aws_kms_key.ca_signing_key.id
+}
 
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "AllowAdminAccess"
-        Effect = "Allow"
-        Principal = {
-          AWS = var.admin_role_arn
-        }
-        Action   = ["secretsmanager:GetSecretValue"]
-        Resource = "*"
-      }
-    ]
-  })
+output "ca_kms_key_alias" {
+  description = "KMS key alias for CA signing"
+  value       = aws_kms_alias.ca_signing_key.name
 }
 ```
+
+**Why ECDSA P-256?**
+- Matches certificate key type (ECDSA with P-256 curve)
+- Signing algorithm: ECDSA_SHA_256
+- Compatible with X.509 certificate standards
+
+**Key Policy:**
+
+The KMS key uses IAM-based permissions (default key policy allows account root). Specific permissions are granted via IAM role policies (see IAM section below).
+
+**Security Notes:**
+- CA private key never leaves KMS HSM
+- Cannot be exported or extracted
+- All signing operations logged in CloudTrail
+- FIPS 140-2 Level 2 validated
 
 ## Network Load Balancer
 
@@ -348,13 +382,14 @@ resource "aws_lb_listener" "mtls" {
 
 ### ECS Task Role
 
-Add DynamoDB access for new tables:
+Add DynamoDB access and KMS signing permissions:
 
 ```hcl
 resource "aws_iam_role_policy" "task" {
   policy = jsonencode({
     Statement = [
       {
+        Sid    = "AllowDynamoDBAccess"
         Effect = "Allow"
         Action = [
           "dynamodb:PutItem",
@@ -369,11 +404,29 @@ resource "aws_iam_role_policy" "task" {
           aws_dynamodb_table.certificates.arn,
           "${aws_dynamodb_table.certificates.arn}/index/*"
         ]
+      },
+      {
+        Sid    = "AllowKMSSigning"
+        Effect = "Allow"
+        Action = [
+          "kms:Sign",
+          "kms:GetPublicKey",
+          "kms:DescribeKey"
+        ]
+        Resource = aws_kms_key.ca_signing_key.arn
+      },
+      {
+        Sid    = "AllowReadKMSKeyID"
+        Effect = "Allow"
+        Action = ["ssm:GetParameter"]
+        Resource = [aws_ssm_parameter.ca_kms_key_id.arn]
       }
     ]
   })
 }
 ```
+
+**Note:** The task role needs KMS signing permissions for future certificate rotation operations (when workers request certificate renewal).
 
 ### ECS Execution Role
 
@@ -417,13 +470,14 @@ resource "aws_iam_role_policy" "execution" {
 
 - [ ] Create DynamoDB tables (principals, certificates)
 - [ ] Create SSM parameters with lifecycle ignore_changes
-- [ ] Create Secrets Manager secret for CA key with restricted policy
+- [ ] Create KMS key for CA signing (ECDSA P-256) with alias
+- [ ] Store KMS key ID in SSM parameter
 - [ ] Create Network Load Balancer with TCP passthrough
 - [ ] Create target groups for mTLS (443) and health (8080)
 - [ ] Update ECS task definition with new command and ports
 - [ ] Add environment variables for DynamoDB tables
 - [ ] Add secrets for certificates
-- [ ] Update IAM policies for DynamoDB and SSM access
+- [ ] Update IAM policies for DynamoDB, SSM, and KMS access
 - [ ] Run `terraform plan` and review changes
 
 ## Verification
@@ -436,13 +490,14 @@ terraform plan
 
 # Expected changes:
 # + 2 DynamoDB tables
-# + 3 SSM parameters
-# + 1 Secrets Manager secret
+# + 4 SSM parameters (ca-cert, server-cert, server-key, ca-kms-key-id)
+# + 1 KMS key (ECDSA P-256)
+# + 1 KMS alias
 # + 1 NLB
 # + 2 target groups
 # + 2 listeners
 # ~ 1 ECS task definition (updated)
-# ~ 2 IAM policies (updated)
+# ~ 2 IAM policies (updated with KMS permissions)
 
 # Apply changes (DO NOT apply yet - wait for Phase 4)
 # terraform apply

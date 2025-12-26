@@ -24,83 +24,110 @@
 
 ## Step 1: Run Bootstrap Command
 
+**Prerequisites:**
+- Terraform applied (Phase 3 complete)
+- KMS key created: `alias/airunner-prod-ca`
+- SSM parameter exists: `/airunner/prod/ca-kms-key-id`
+- DynamoDB tables created
+- IAM permissions configured
+
+**Verify KMS key exists:**
+
+```bash
+aws kms describe-key --key-id alias/airunner-prod-ca
+```
+
 Run the bootstrap command to create CA, server certificates, and admin credentials for production:
 
 ```bash
 ./bin/airunner-cli bootstrap \
   --environment=prod \
-  --domain=airunner.example.com \
-  --aws-region=ap-southeast-2 \
-  --output-dir=./prod-certs
+  --domain=airunner.example.com
 ```
 
 **Expected Output:**
 
 ```
-Bootstrap: airunner.example.com
-═══════════════════════════════
+Bootstrap: airunner.example.com (prod)
+═══════════════════════════════════════
 
-[1/6] Certificate Authority
-      ✓ CA exists: ./prod-certs/ca-cert.pem
-      ✓ CA key exists: ./prod-certs/ca-key.pem
-      ✓ CA valid until: 2034-12-25
+[1/7] Load KMS Key
+      ✓ Read KMS key ID from SSM: /airunner/prod/ca-kms-key-id
+      ✓ KMS key accessible: alias/airunner-prod-ca
+      ✓ KMS key type: ECC_NIST_P256 (SIGN_VERIFY)
 
-[2/6] Server Certificate
-      ✓ Generated new server certificate
+[2/7] CA Certificate
+      ✓ Signed CA certificate via KMS (self-signed)
+      ✓ Subject: CN=Airunner CA (prod)
+      ✓ Valid until: 2034-12-25
+      ✓ CA private key never created locally
+
+[3/7] Server Certificate
+      ✓ Generated server key pair
+      ✓ Signed server certificate via KMS
       ✓ Subject: CN=airunner.example.com
       ✓ SAN: airunner.example.com, localhost, 127.0.0.1
       ✓ Valid until: 2025-03-25
 
-[3/6] Admin Principal
-      ✓ Principal exists: admin-bootstrap (active)
+[4/7] Admin Principal
+      ✓ Created principal: admin-bootstrap (type=admin, status=active)
+      ✓ Stored in DynamoDB: airunner_prod_principals
 
-[4/6] Admin Certificate
-      ✓ Generated new admin certificate
+[5/7] Admin Certificate
+      ✓ Generated admin key pair
+      ✓ Signed admin certificate via KMS
       ✓ Subject: CN=admin-bootstrap
       ✓ OID extensions: type=admin, id=admin-bootstrap
-      ✓ Registered in certificates table
+      ✓ Registered in DynamoDB: airunner_prod_certificates
       ✓ Valid until: 2025-03-25
 
-[5/6] AWS Upload
-      ✓ SSM: /airunner/prod/ca-cert (updated)
-      ✓ SSM: /airunner/prod/server-cert (updated)
-      ✓ SSM: /airunner/prod/server-key (updated)
-      ✓ Secrets Manager: /airunner/prod/ca-key (updated)
+[6/7] Upload to AWS
+      ✓ SSM Parameter Store: /airunner/prod/ca-cert (updated)
+      ✓ SSM Parameter Store: /airunner/prod/server-cert (updated)
+      ✓ SSM Parameter Store: /airunner/prod/server-key (updated, SecureString)
 
-[6/6] Verification
+[7/7] Verification
       ✓ All DynamoDB tables accessible
       ✓ All SSM parameters set
-      ✓ CA key in Secrets Manager
+      ✓ KMS key permissions verified
 
 Bootstrap complete!
 ══════════════════
 
-Files created in ./prod-certs/:
+Certificates saved to current directory:
   ca-cert.pem          - CA certificate (distribute to all clients)
-  ca-key.pem           - CA private key (DELETE after backup!)
   server-cert.pem      - Server certificate
   server-key.pem       - Server private key
-  admin-cert.pem       - Admin certificate
+  admin-cert.pem       - Admin client certificate
   admin-key.pem        - Admin private key
 
-IMPORTANT: Back up ca-key.pem securely, then delete local copy!
-           The CA key is now stored in AWS Secrets Manager.
+SECURITY NOTE:
+  ✓ CA private key exists only in KMS (cannot be exported)
+  ✓ All certificate signing operations performed via KMS API
+  ✓ No CA private key created or stored locally
 ```
 
 **Post-Bootstrap Actions:**
 
 ```bash
-# 1. Back up CA key securely (e.g., encrypted archive)
-tar -czf ca-key-backup-$(date +%Y%m%d).tar.gz prod-certs/ca-key.pem
-# Upload to secure location (S3 with encryption, vault, etc.)
+# Verify KMS key policy
+aws kms get-key-policy --key-id alias/airunner-prod-ca --policy-name default
 
-# 2. Delete local CA key
-rm prod-certs/ca-key.pem
+# Verify CloudTrail is logging KMS operations
+aws cloudtrail lookup-events \
+  --lookup-attributes AttributeKey=ResourceName,AttributeValue=$(aws kms describe-key --key-id alias/airunner-prod-ca --query 'KeyMetadata.Arn' --output text) \
+  --max-results 10
 
-# 3. Distribute CA certificate to clients
+# Distribute CA certificate to clients
 # This file is needed by all clients to verify the server certificate
-cp prod-certs/ca-cert.pem ~/.airunner/ca-cert.pem
+cp ca-cert.pem ~/.airunner/ca-cert.pem
 ```
+
+**Important Notes:**
+
+- **No CA key to back up or delete** - The CA private key exists only in KMS and cannot be exported
+- **Server does NOT use the CA private key** - It only loads CA cert for client verification
+- **KMS handles all signing** - Certificate rotations will use KMS Sign API
 
 ## Step 2: Apply Terraform Changes
 
@@ -331,7 +358,10 @@ terraform apply -target=... # Revert specific resources
 ## Success Checklist
 
 - [ ] Bootstrap command completed successfully
-- [ ] CA and certificates created and uploaded to AWS
+- [ ] KMS key accessible via alias
+- [ ] Certificates created and uploaded to AWS (SSM)
+- [ ] CloudTrail logging KMS Sign operations
+- [ ] CA private key never created locally
 - [ ] Terraform apply successful (no errors)
 - [ ] ECS service deployed and healthy
 - [ ] Health check returns "ok"
@@ -339,7 +369,6 @@ terraform apply -target=... # Revert specific resources
 - [ ] Authorization enforced (admin can manage, worker cannot)
 - [ ] First worker principal created and tested
 - [ ] Monitoring shows no errors
-- [ ] CA key backed up and local copy deleted
 
 ## Next Steps
 

@@ -114,6 +114,49 @@ resource "aws_ssm_parameter" "jwt_public_key" {
 }
 ```
 
+### Remove Old Secrets Manager CA Key Resources (if migrating from old spec)
+
+**Note:** If you previously used Secrets Manager for CA key storage (before migrating to KMS), remove those resources:
+
+```hcl
+# DELETE from infra/secrets.tf or similar (if exists):
+
+resource "aws_secretsmanager_secret" "ca_key" {
+  name        = "/${var.application}/${var.environment}/ca-key"
+  description = "CA private key (admin access only)"
+  tags        = local.tags
+}
+
+resource "aws_secretsmanager_secret_policy" "ca_key" {
+  secret_arn = aws_secretsmanager_secret.ca_key.arn
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowAdminAccess"
+        Effect = "Allow"
+        Principal = { AWS = var.admin_role_arn }
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = "*"
+      }
+    ]
+  })
+}
+```
+
+**Clean up AWS:**
+
+```bash
+# Delete any existing CA key in Secrets Manager (if migrating)
+aws secretsmanager delete-secret \
+  --secret-id /airunner/prod/ca-key \
+  --force-delete-without-recovery
+
+# Verify deleted
+aws secretsmanager list-secrets | grep ca-key
+# Should return no results
+```
+
 ### Update ECS Task Definition
 
 **File:** `infra/ecs.tf`

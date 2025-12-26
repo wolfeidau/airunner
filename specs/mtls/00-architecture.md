@@ -92,6 +92,56 @@ sequenceDiagram
 
 ## Architecture Design
 
+### CA Key Storage: KMS vs Secrets Manager
+
+**Decision:** Use AWS KMS for CA private key storage and signing operations.
+
+**Rationale:**
+
+1. **Defense-in-depth**: CA private key never leaves KMS HSM, cannot be extracted
+2. **No rotation needed**: CA keys are long-lived (10 years), so Secrets Manager rotation features don't apply
+3. **Infrequent signing**: Workers rotate certificates every 60-90 days, KMS throttling not a concern
+4. **Audit trail**: CloudTrail logs every KMS signing operation
+5. **Compliance**: FIPS 140-2 Level 2 validated HSMs
+6. **Catastrophic compromise**: CA key compromise requires complete PKI rebuild, KMS prevents extraction
+
+**Tradeoffs:**
+
+| Factor | KMS | Secrets Manager |
+|--------|-----|-----------------|
+| Security | Key never exported, HSM-backed | Key retrievable with IAM permissions |
+| Performance | ~50-200ms per sign (network call) | <1ms (local crypto) |
+| Cost | ~$1/month + $0.03/10k signs | ~$0.40/month |
+| Complexity | More complex (KMS API integration) | Simpler (standard Go crypto) |
+| Compliance | FIPS 140-2 Level 2 | Encrypted at rest only |
+
+**For CA keys specifically:** KMS is the better choice due to zero rotation requirements and catastrophic impact of key compromise.
+
+**Local development:** Use file-based CA key for simplicity (LocalStack KMS optional).
+
+**KMS Signing Flow:**
+
+```mermaid
+sequenceDiagram
+    participant B as Bootstrap/Server
+    participant KMS as AWS KMS
+    participant HSM as Hardware Security Module
+
+    B->>KMS: CreateKey (ECDSA P-256)
+    KMS->>HSM: Generate key pair
+    HSM-->>KMS: Key created (never leaves HSM)
+    KMS-->>B: Key ID
+
+    Note over B: Build certificate request
+
+    B->>KMS: Sign (message=cert hash, key_id)
+    KMS->>HSM: Sign with private key
+    HSM-->>KMS: Signature
+    KMS-->>B: Signature bytes
+
+    Note over B: Assemble signed certificate
+```
+
 ### Component Overview
 
 ```mermaid
@@ -153,7 +203,7 @@ All certificates (server and client) are issued by a single self-managed CA:
 flowchart TB
     subgraph CA["🔐 Airunner CA (Self-Signed)<br/>ECDSA P-256, 10-year validity"]
         direction TB
-        CAKey["ca-key.pem<br/>(Secrets Manager only)"]
+        CAKey["CA Private Key<br/>(KMS only, never exported)"]
         CACert["ca-cert.pem<br/>(distributed to all)"]
     end
 
@@ -185,9 +235,8 @@ flowchart TB
 ```
 
 **Distribution:**
-- `ca-cert.pem` → All clients (verify server cert)
-- `ca-cert.pem` → All servers (verify client certs)
-- `ca-key.pem` → Secrets Manager only (admin signing)
+- `ca-cert.pem` → SSM Parameter Store (public, all clients/servers)
+- CA private key → KMS (never exported, signing via API only)
 
 **TLS Configuration:**
 

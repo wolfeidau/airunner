@@ -176,16 +176,20 @@ output "sqs_queue_arns" {
 output "dynamodb_tables" {
   description = "DynamoDB table names"
   value = {
-    jobs       = aws_dynamodb_table.jobs.name
-    job_events = aws_dynamodb_table.job_events.name
+    jobs         = aws_dynamodb_table.jobs.name
+    job_events   = aws_dynamodb_table.job_events.name
+    principals   = aws_dynamodb_table.principals.name
+    certificates = aws_dynamodb_table.certificates.name
   }
 }
 
 output "dynamodb_table_arns" {
   description = "DynamoDB table ARNs"
   value = {
-    jobs       = aws_dynamodb_table.jobs.arn
-    job_events = aws_dynamodb_table.job_events.arn
+    jobs         = aws_dynamodb_table.jobs.arn
+    job_events   = aws_dynamodb_table.job_events.arn
+    principals   = aws_dynamodb_table.principals.arn
+    certificates = aws_dynamodb_table.certificates.arn
   }
 }
 
@@ -195,6 +199,10 @@ output "ssm_parameters" {
   value = {
     jwt_signing_key        = aws_ssm_parameter.jwt_signing_key.name
     token_signing_secret   = aws_ssm_parameter.token_signing_secret.name
+    ca_cert                = aws_ssm_parameter.ca_cert.name
+    server_cert            = aws_ssm_parameter.server_cert.name
+    server_key             = aws_ssm_parameter.server_key.name
+    ca_kms_key_id          = aws_ssm_parameter.ca_kms_key_id.name
     otel_exporter_endpoint = try(aws_ssm_parameter.otel_exporter_endpoint[0].name, null)
     otel_exporter_headers  = try(aws_ssm_parameter.otel_exporter_headers[0].name, null)
   }
@@ -204,7 +212,47 @@ output "ssm_parameter_arns" {
   description = "SSM parameter ARNs"
   value = {
     token_signing_secret   = aws_ssm_parameter.token_signing_secret.arn
+    ca_cert                = aws_ssm_parameter.ca_cert.arn
+    server_cert            = aws_ssm_parameter.server_cert.arn
+    server_key             = aws_ssm_parameter.server_key.arn
+    ca_kms_key_id          = aws_ssm_parameter.ca_kms_key_id.arn
     otel_exporter_endpoint = try(aws_ssm_parameter.otel_exporter_endpoint[0].arn, null)
     otel_exporter_headers  = try(aws_ssm_parameter.otel_exporter_headers[0].arn, null)
   }
+}
+
+# mTLS Infrastructure Outputs
+output "mtls_nlb_dns_name" {
+  description = "DNS name of the mTLS Network Load Balancer"
+  value       = aws_lb.mtls.dns_name
+}
+
+output "mtls_nlb_arn" {
+  description = "ARN of the mTLS Network Load Balancer"
+  value       = aws_lb.mtls.arn
+}
+
+output "mtls_service_url" {
+  description = "URL of the mTLS service"
+  value       = "https://${aws_route53_record.nlb.name}:443"
+}
+
+output "mtls_health_url" {
+  description = "URL of the health check endpoint"
+  value       = "http://${aws_route53_record.nlb.name}:8080/health"
+}
+
+output "ca_kms_key_id" {
+  description = "KMS key ID for CA signing operations"
+  value       = aws_kms_key.ca_signing_key.id
+}
+
+output "ca_kms_key_arn" {
+  description = "KMS key ARN for CA signing operations"
+  value       = aws_kms_key.ca_signing_key.arn
+}
+
+output "ca_kms_key_alias" {
+  description = "KMS key alias for CA signing operations"
+  value       = aws_kms_alias.ca_signing_key.name
 }

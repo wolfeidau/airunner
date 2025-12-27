@@ -562,6 +562,18 @@ resource "aws_iam_role_policy" "task_sqs_dynamodb" {
           "ssm:GetParameter"
         ]
         Resource = aws_ssm_parameter.ca_kms_key_id.arn
+      },
+      {
+        Sid    = "AllowReadCertificates"
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParameter"
+        ]
+        Resource = [
+          aws_ssm_parameter.ca_cert.arn,
+          aws_ssm_parameter.server_cert.arn,
+          aws_ssm_parameter.server_key.arn
+        ]
       }
     ]
   })
@@ -945,6 +957,18 @@ resource "aws_ecs_task_definition" "airunner" {
             value = aws_dynamodb_table.certificates.name
           },
           {
+            name  = "AIRUNNER_CA_CERT_SSM"
+            value = "/airunner/${var.environment}/ca-cert"
+          },
+          {
+            name  = "AIRUNNER_SERVER_CERT_SSM"
+            value = "/airunner/${var.environment}/server-cert"
+          },
+          {
+            name  = "AIRUNNER_SERVER_KEY_SSM"
+            value = "/airunner/${var.environment}/server-key"
+          },
+          {
             name  = "AIRUNNER_DEFAULT_VISIBILITY_TIMEOUT"
             value = "300"
           },
@@ -978,18 +1002,6 @@ resource "aws_ecs_task_definition" "airunner" {
           {
             name      = "AIRUNNER_AWS_TOKEN_SECRET"
             valueFrom = aws_ssm_parameter.token_signing_secret.arn
-          },
-          {
-            name  = "AIRUNNER_CA_CERT_SSM"
-            value = "/airunner/${var.environment}/ca-cert"
-          },
-          {
-            name  = "AIRUNNER_SERVER_CERT_SSM"
-            value = "/airunner/${var.environment}/server-cert"
-          },
-          {
-            name  = "AIRUNNER_SERVER_KEY_SSM"
-            value = "/airunner/${var.environment}/server-key"
           }
         ],
         var.otel_exporter_endpoint != "" ? [

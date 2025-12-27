@@ -1,4 +1,4 @@
-package store
+package aws
 
 import (
 	"context"
@@ -12,24 +12,25 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/rs/zerolog/log"
+	"github.com/wolfeidau/airunner/internal/store"
 )
 
-// DynamoDBPrincipalStore is a DynamoDB implementation of PrincipalStore
-type DynamoDBPrincipalStore struct {
+// PrincipalStore is a DynamoDB implementation of PrincipalStore
+type PrincipalStore struct {
 	client    *dynamodb.Client
 	tableName string
 }
 
-// NewDynamoDBPrincipalStore creates a new DynamoDB principal store
-func NewDynamoDBPrincipalStore(client *dynamodb.Client, tableName string) *DynamoDBPrincipalStore {
-	return &DynamoDBPrincipalStore{
+// NewPrincipalStore creates a new DynamoDB principal store
+func NewPrincipalStore(client *dynamodb.Client, tableName string) *PrincipalStore {
+	return &PrincipalStore{
 		client:    client,
 		tableName: tableName,
 	}
 }
 
 // Get retrieves principal metadata by ID
-func (s *DynamoDBPrincipalStore) Get(ctx context.Context, principalID string) (*PrincipalMetadata, error) {
+func (s *PrincipalStore) Get(ctx context.Context, principalID string) (*store.PrincipalMetadata, error) {
 	result, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(s.tableName),
 		Key: map[string]types.AttributeValue{
@@ -41,10 +42,10 @@ func (s *DynamoDBPrincipalStore) Get(ctx context.Context, principalID string) (*
 	}
 
 	if result.Item == nil {
-		return nil, ErrPrincipalNotFound
+		return nil, store.ErrPrincipalNotFound
 	}
 
-	var principal PrincipalMetadata
+	var principal store.PrincipalMetadata
 	if err := attributevalue.UnmarshalMap(result.Item, &principal); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal principal: %w", err)
 	}
@@ -53,7 +54,7 @@ func (s *DynamoDBPrincipalStore) Get(ctx context.Context, principalID string) (*
 }
 
 // Create creates a new principal
-func (s *DynamoDBPrincipalStore) Create(ctx context.Context, principal *PrincipalMetadata) error {
+func (s *PrincipalStore) Create(ctx context.Context, principal *store.PrincipalMetadata) error {
 	item, err := attributevalue.MarshalMap(principal)
 	if err != nil {
 		return fmt.Errorf("failed to marshal principal: %w", err)
@@ -68,7 +69,7 @@ func (s *DynamoDBPrincipalStore) Create(ctx context.Context, principal *Principa
 	if err != nil {
 		var condErr *types.ConditionalCheckFailedException
 		if errors.As(err, &condErr) {
-			return ErrPrincipalAlreadyExists
+			return store.ErrPrincipalAlreadyExists
 		}
 		return wrapAWSError(err, "failed to create principal")
 	}
@@ -82,7 +83,7 @@ func (s *DynamoDBPrincipalStore) Create(ctx context.Context, principal *Principa
 }
 
 // Update updates principal metadata
-func (s *DynamoDBPrincipalStore) Update(ctx context.Context, principal *PrincipalMetadata) error {
+func (s *PrincipalStore) Update(ctx context.Context, principal *store.PrincipalMetadata) error {
 	item, err := attributevalue.MarshalMap(principal)
 	if err != nil {
 		return fmt.Errorf("failed to marshal principal: %w", err)
@@ -97,7 +98,7 @@ func (s *DynamoDBPrincipalStore) Update(ctx context.Context, principal *Principa
 	if err != nil {
 		var condErr *types.ConditionalCheckFailedException
 		if errors.As(err, &condErr) {
-			return ErrPrincipalNotFound
+			return store.ErrPrincipalNotFound
 		}
 		return wrapAWSError(err, "failed to update principal")
 	}
@@ -110,12 +111,12 @@ func (s *DynamoDBPrincipalStore) Update(ctx context.Context, principal *Principa
 }
 
 // Suspend suspends a principal
-func (s *DynamoDBPrincipalStore) Suspend(ctx context.Context, principalID string, reason string) error {
+func (s *PrincipalStore) Suspend(ctx context.Context, principalID string, reason string) error {
 	now := time.Now()
 
 	update := expression.Set(
 		expression.Name("status"),
-		expression.Value(PrincipalStatusSuspended),
+		expression.Value(store.PrincipalStatusSuspended),
 	).Set(
 		expression.Name("suspended_at"),
 		expression.Value(now),
@@ -145,7 +146,7 @@ func (s *DynamoDBPrincipalStore) Suspend(ctx context.Context, principalID string
 	if err != nil {
 		var condErr *types.ConditionalCheckFailedException
 		if errors.As(err, &condErr) {
-			return ErrPrincipalNotFound
+			return store.ErrPrincipalNotFound
 		}
 		return wrapAWSError(err, "failed to suspend principal")
 	}
@@ -159,10 +160,10 @@ func (s *DynamoDBPrincipalStore) Suspend(ctx context.Context, principalID string
 }
 
 // Activate activates a suspended principal
-func (s *DynamoDBPrincipalStore) Activate(ctx context.Context, principalID string) error {
+func (s *PrincipalStore) Activate(ctx context.Context, principalID string) error {
 	update := expression.Set(
 		expression.Name("status"),
-		expression.Value(PrincipalStatusActive),
+		expression.Value(store.PrincipalStatusActive),
 	).Remove(
 		expression.Name("suspended_at"),
 	).Remove(
@@ -190,7 +191,7 @@ func (s *DynamoDBPrincipalStore) Activate(ctx context.Context, principalID strin
 	if err != nil {
 		var condErr *types.ConditionalCheckFailedException
 		if errors.As(err, &condErr) {
-			return ErrPrincipalNotFound
+			return store.ErrPrincipalNotFound
 		}
 		return wrapAWSError(err, "failed to activate principal")
 	}
@@ -203,10 +204,10 @@ func (s *DynamoDBPrincipalStore) Activate(ctx context.Context, principalID strin
 }
 
 // Delete soft-deletes a principal
-func (s *DynamoDBPrincipalStore) Delete(ctx context.Context, principalID string) error {
+func (s *PrincipalStore) Delete(ctx context.Context, principalID string) error {
 	update := expression.Set(
 		expression.Name("status"),
-		expression.Value(PrincipalStatusDeleted),
+		expression.Value(store.PrincipalStatusDeleted),
 	)
 
 	condition := expression.AttributeExists(expression.Name("principal_id"))
@@ -230,7 +231,7 @@ func (s *DynamoDBPrincipalStore) Delete(ctx context.Context, principalID string)
 	if err != nil {
 		var condErr *types.ConditionalCheckFailedException
 		if errors.As(err, &condErr) {
-			return ErrPrincipalNotFound
+			return store.ErrPrincipalNotFound
 		}
 		return wrapAWSError(err, "failed to delete principal")
 	}
@@ -243,7 +244,7 @@ func (s *DynamoDBPrincipalStore) Delete(ctx context.Context, principalID string)
 }
 
 // List returns principals matching filters
-func (s *DynamoDBPrincipalStore) List(ctx context.Context, opts ListPrincipalsOptions) ([]*PrincipalMetadata, error) {
+func (s *PrincipalStore) List(ctx context.Context, opts store.ListPrincipalsOptions) ([]*store.PrincipalMetadata, error) {
 	var input *dynamodb.ScanInput
 
 	// Build filter expression
@@ -296,9 +297,9 @@ func (s *DynamoDBPrincipalStore) List(ctx context.Context, opts ListPrincipalsOp
 		return nil, wrapAWSError(err, "failed to list principals")
 	}
 
-	principals := make([]*PrincipalMetadata, 0, len(result.Items))
+	principals := make([]*store.PrincipalMetadata, 0, len(result.Items))
 	for _, item := range result.Items {
-		var principal PrincipalMetadata
+		var principal store.PrincipalMetadata
 		if err := attributevalue.UnmarshalMap(item, &principal); err != nil {
 			log.Error().Err(err).Msg("failed to unmarshal principal, skipping")
 			continue

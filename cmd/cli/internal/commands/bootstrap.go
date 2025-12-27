@@ -27,6 +27,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/wolfeidau/airunner/internal/pki"
 	"github.com/wolfeidau/airunner/internal/store"
+	awsstore "github.com/wolfeidau/airunner/internal/store/aws"
 )
 
 // BootstrapCmd handles mTLS bootstrap for development and production
@@ -649,8 +650,8 @@ func (cmd *BootstrapCmd) createStores(ctx context.Context) (store.PrincipalStore
 	principalsTable := fmt.Sprintf("airunner_%s_principals", cmd.Environment)
 	certificatesTable := fmt.Sprintf("airunner_%s_certificates", cmd.Environment)
 
-	principalStore := store.NewDynamoDBPrincipalStore(dynamoClient, principalsTable)
-	certStore := store.NewDynamoDBCertificateStore(dynamoClient, certificatesTable)
+	principalStore := awsstore.NewPrincipalStore(dynamoClient, principalsTable)
+	certStore := awsstore.NewCertificateStore(dynamoClient, certificatesTable)
 
 	return principalStore, certStore, nil
 }

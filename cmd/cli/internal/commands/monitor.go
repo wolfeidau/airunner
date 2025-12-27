@@ -16,15 +16,17 @@ import (
 )
 
 type MonitorCmd struct {
-	Server        string            `help:"Server URL" default:"https://localhost:8993"`
+	Server        string            `help:"Server URL" default:"https://localhost:443"`
 	JobID         string            `arg:"" help:"Job ID to monitor"`
 	FromSequence  int64             `help:"Start from sequence number" default:"0"`
 	FromTimestamp int64             `help:"Start from timestamp" default:"0"`
 	EventFilter   []jobv1.EventType `help:"Filter specific event types"`
 	Timeout       time.Duration     `help:"Timeout for the monitor" default:"5m"`
-	Token         string            `help:"JWT token for authentication" env:"AIRUNNER_TOKEN"`
 	Playback      bool              `help:"Replay events at original speed based on timestamps"`
 	Verbose       bool              `help:"Show verbose debug output including timestamps"`
+	CACert        string            `help:"Path to CA certificate" env:"AIRUNNER_CA_CERT"`
+	ClientCert    string            `help:"Path to client certificate" env:"AIRUNNER_CLIENT_CERT"`
+	ClientKey     string            `help:"Path to client private key" env:"AIRUNNER_CLIENT_KEY"`
 }
 
 func (m *MonitorCmd) Run(ctx context.Context, globals *Globals) error {
@@ -37,12 +39,17 @@ func (m *MonitorCmd) Run(ctx context.Context, globals *Globals) error {
 
 	// Create clients
 	config := client.Config{
-		ServerURL: m.Server,
-		Timeout:   m.Timeout,
-		Token:     m.Token,
-		Debug:     globals.Debug,
+		ServerURL:  m.Server,
+		Timeout:    m.Timeout,
+		Debug:      globals.Debug,
+		CACert:     m.CACert,
+		ClientCert: m.ClientCert,
+		ClientKey:  m.ClientKey,
 	}
-	clients := client.NewClients(config, connect.WithInterceptors(otelInterceptor))
+	clients, err := client.NewClients(config, connect.WithInterceptors(otelInterceptor))
+	if err != nil {
+		return fmt.Errorf("failed to create clients: %w", err)
+	}
 
 	// Set up context for graceful shutdown
 	ctx, cancel := context.WithCancel(ctx)

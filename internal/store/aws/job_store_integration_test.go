@@ -1,6 +1,6 @@
 //go:build integration
 
-package store
+package aws
 
 import (
 	"context"
@@ -145,7 +145,7 @@ func TestIntegration_EnqueueJob(t *testing.T) {
 	queueURL := getQueueURL(t, ctx, sqsClient, testDefaultQueueName)
 	purgeQueue(t, ctx, sqsClient, queueURL)
 
-	store := NewSQSJobStore(sqsClient, dynamoClient, SQSJobStoreConfig{
+	store := NewAWSJobStore(sqsClient, dynamoClient, AWSJobStoreConfig{
 		JobsTableName: tableName,
 		QueueURLs: map[string]string{
 			"default": queueURL,
@@ -202,7 +202,7 @@ func TestIntegration_EnqueueIdempotency(t *testing.T) {
 	queueURL := getQueueURL(t, ctx, sqsClient, testDefaultQueueName)
 	purgeQueue(t, ctx, sqsClient, queueURL)
 
-	store := NewSQSJobStore(sqsClient, dynamoClient, SQSJobStoreConfig{
+	store := NewAWSJobStore(sqsClient, dynamoClient, AWSJobStoreConfig{
 		JobsTableName:      tableName,
 		QueueURLs:          map[string]string{
 			"default": queueURL,
@@ -244,7 +244,7 @@ func TestIntegration_FullJobLifecycle(t *testing.T) {
 	queueURL := getQueueURL(t, ctx, sqsClient, testDefaultQueueName)
 	purgeQueue(t, ctx, sqsClient, queueURL)
 
-	store := NewSQSJobStore(sqsClient, dynamoClient, SQSJobStoreConfig{
+	store := NewAWSJobStore(sqsClient, dynamoClient, AWSJobStoreConfig{
 		JobsTableName: tableName,
 		QueueURLs: map[string]string{
 			"default": queueURL,
@@ -322,7 +322,7 @@ func TestIntegration_DequeueNoJobs(t *testing.T) {
 	queueURL := getQueueURL(t, ctx, sqsClient, testDefaultQueueName)
 	purgeQueue(t, ctx, sqsClient, queueURL)
 
-	store := NewSQSJobStore(sqsClient, dynamoClient, SQSJobStoreConfig{
+	store := NewAWSJobStore(sqsClient, dynamoClient, AWSJobStoreConfig{
 		JobsTableName:      tableName,
 		QueueURLs:          map[string]string{
 			"default": queueURL,
@@ -350,7 +350,7 @@ func TestIntegration_CompleteJobFailed(t *testing.T) {
 	queueURL := getQueueURL(t, ctx, sqsClient, testDefaultQueueName)
 	purgeQueue(t, ctx, sqsClient, queueURL)
 
-	store := NewSQSJobStore(sqsClient, dynamoClient, SQSJobStoreConfig{
+	store := NewAWSJobStore(sqsClient, dynamoClient, AWSJobStoreConfig{
 		JobsTableName:      tableName,
 		QueueURLs:          map[string]string{
 			"default": queueURL,
@@ -401,7 +401,7 @@ func TestIntegration_UpdateVisibility(t *testing.T) {
 	queueURL := getQueueURL(t, ctx, sqsClient, testDefaultQueueName)
 	purgeQueue(t, ctx, sqsClient, queueURL)
 
-	store := NewSQSJobStore(sqsClient, dynamoClient, SQSJobStoreConfig{
+	store := NewAWSJobStore(sqsClient, dynamoClient, AWSJobStoreConfig{
 		JobsTableName:      tableName,
 		QueueURLs:          map[string]string{
 			"default": queueURL,
@@ -439,7 +439,7 @@ func TestIntegration_QueueNotConfigured(t *testing.T) {
 
 	dynamoClient := getDynamoDBClientV2(t, ctx)
 
-	store := NewSQSJobStore(nil, dynamoClient, SQSJobStoreConfig{
+	store := NewAWSJobStore(nil, dynamoClient, AWSJobStoreConfig{
 		JobsTableName: "unused",
 		QueueURLs:     map[string]string{}, // No queues configured
 	})
@@ -506,7 +506,7 @@ func TestIntegration_EventPersistence(t *testing.T) {
 	queueURL := getQueueURL(t, ctx, sqsClient, testDefaultQueueName)
 	purgeQueue(t, ctx, sqsClient, queueURL)
 
-	store := NewSQSJobStore(sqsClient, dynamoClient, SQSJobStoreConfig{
+	store := NewAWSJobStore(sqsClient, dynamoClient, AWSJobStoreConfig{
 		JobsTableName:      jobsTableName,
 		JobEventsTableName: eventsTableName,
 		EventsTTLDays:      7,
@@ -605,7 +605,7 @@ func TestIntegration_EventFiltering(t *testing.T) {
 	queueURL := getQueueURL(t, ctx, sqsClient, testDefaultQueueName)
 	purgeQueue(t, ctx, sqsClient, queueURL)
 
-	store := NewSQSJobStore(sqsClient, dynamoClient, SQSJobStoreConfig{
+	store := NewAWSJobStore(sqsClient, dynamoClient, AWSJobStoreConfig{
 		JobsTableName:      jobsTableName,
 		JobEventsTableName: eventsTableName,
 		EventsTTLDays:      0, // No TTL for this test

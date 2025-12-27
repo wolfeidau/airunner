@@ -11,13 +11,13 @@ import (
 	"github.com/stretchr/testify/require"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 	"github.com/wolfeidau/airunner/api/gen/proto/go/job/v1/jobv1connect"
-	"github.com/wolfeidau/airunner/internal/store"
+	memorystore "github.com/wolfeidau/airunner/internal/store/memory"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestCompleteJobWorkflow(t *testing.T) {
 	// Create test server
-	memStore := store.NewMemoryJobStore()
+	memStore := memorystore.NewJobStore()
 	require.NoError(t, memStore.Start())
 	defer func() {
 		require.NoError(t, memStore.Stop())
@@ -140,7 +140,7 @@ func TestCompleteJobWorkflow(t *testing.T) {
 
 func TestIdempotentJobEnqueue(t *testing.T) {
 	// Create test server
-	memStore := store.NewMemoryJobStore()
+	memStore := memorystore.NewJobStore()
 	require.NoError(t, memStore.Start())
 	defer func() {
 		require.NoError(t, memStore.Stop())

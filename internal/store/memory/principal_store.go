@@ -1,32 +1,34 @@
-package store
+package memory
 
 import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/wolfeidau/airunner/internal/store"
 )
 
 // MemoryPrincipalStore is an in-memory implementation of PrincipalStore for development and testing
-type MemoryPrincipalStore struct {
+type PrincipalStore struct {
 	mu         sync.RWMutex
-	principals map[string]*PrincipalMetadata
+	principals map[string]*store.PrincipalMetadata
 }
 
 // NewMemoryPrincipalStore creates a new in-memory principal store
-func NewMemoryPrincipalStore() *MemoryPrincipalStore {
-	return &MemoryPrincipalStore{
-		principals: make(map[string]*PrincipalMetadata),
+func NewPrincipalStore() *PrincipalStore {
+	return &PrincipalStore{
+		principals: make(map[string]*store.PrincipalMetadata),
 	}
 }
 
 // Get retrieves principal metadata by ID
-func (s *MemoryPrincipalStore) Get(ctx context.Context, principalID string) (*PrincipalMetadata, error) {
+func (s *PrincipalStore) Get(ctx context.Context, principalID string) (*store.PrincipalMetadata, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	principal, exists := s.principals[principalID]
 	if !exists {
-		return nil, ErrPrincipalNotFound
+		return nil, store.ErrPrincipalNotFound
 	}
 
 	// Return a copy to avoid external modifications
@@ -46,12 +48,12 @@ func (s *MemoryPrincipalStore) Get(ctx context.Context, principalID string) (*Pr
 }
 
 // Create creates a new principal
-func (s *MemoryPrincipalStore) Create(ctx context.Context, principal *PrincipalMetadata) error {
+func (s *PrincipalStore) Create(ctx context.Context, principal *store.PrincipalMetadata) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if _, exists := s.principals[principal.PrincipalID]; exists {
-		return ErrPrincipalAlreadyExists
+		return store.ErrPrincipalAlreadyExists
 	}
 
 	// Store a copy to avoid external modifications
@@ -72,12 +74,12 @@ func (s *MemoryPrincipalStore) Create(ctx context.Context, principal *PrincipalM
 }
 
 // Update updates principal metadata
-func (s *MemoryPrincipalStore) Update(ctx context.Context, principal *PrincipalMetadata) error {
+func (s *PrincipalStore) Update(ctx context.Context, principal *store.PrincipalMetadata) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if _, exists := s.principals[principal.PrincipalID]; !exists {
-		return ErrPrincipalNotFound
+		return store.ErrPrincipalNotFound
 	}
 
 	// Store a copy to avoid external modifications
@@ -98,17 +100,17 @@ func (s *MemoryPrincipalStore) Update(ctx context.Context, principal *PrincipalM
 }
 
 // Suspend suspends a principal
-func (s *MemoryPrincipalStore) Suspend(ctx context.Context, principalID string, reason string) error {
+func (s *PrincipalStore) Suspend(ctx context.Context, principalID string, reason string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	principal, exists := s.principals[principalID]
 	if !exists {
-		return ErrPrincipalNotFound
+		return store.ErrPrincipalNotFound
 	}
 
 	now := time.Now()
-	principal.Status = PrincipalStatusSuspended
+	principal.Status = store.PrincipalStatusSuspended
 	principal.SuspendedAt = &now
 	principal.SuspendedReason = reason
 
@@ -116,16 +118,16 @@ func (s *MemoryPrincipalStore) Suspend(ctx context.Context, principalID string, 
 }
 
 // Activate activates a suspended principal
-func (s *MemoryPrincipalStore) Activate(ctx context.Context, principalID string) error {
+func (s *PrincipalStore) Activate(ctx context.Context, principalID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	principal, exists := s.principals[principalID]
 	if !exists {
-		return ErrPrincipalNotFound
+		return store.ErrPrincipalNotFound
 	}
 
-	principal.Status = PrincipalStatusActive
+	principal.Status = store.PrincipalStatusActive
 	principal.SuspendedAt = nil
 	principal.SuspendedReason = ""
 
@@ -133,26 +135,26 @@ func (s *MemoryPrincipalStore) Activate(ctx context.Context, principalID string)
 }
 
 // Delete soft-deletes a principal
-func (s *MemoryPrincipalStore) Delete(ctx context.Context, principalID string) error {
+func (s *PrincipalStore) Delete(ctx context.Context, principalID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	principal, exists := s.principals[principalID]
 	if !exists {
-		return ErrPrincipalNotFound
+		return store.ErrPrincipalNotFound
 	}
 
-	principal.Status = PrincipalStatusDeleted
+	principal.Status = store.PrincipalStatusDeleted
 
 	return nil
 }
 
 // List returns principals matching filters
-func (s *MemoryPrincipalStore) List(ctx context.Context, opts ListPrincipalsOptions) ([]*PrincipalMetadata, error) {
+func (s *PrincipalStore) List(ctx context.Context, opts store.ListPrincipalsOptions) ([]*store.PrincipalMetadata, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	var result []*PrincipalMetadata
+	var result []*store.PrincipalMetadata
 
 	for _, principal := range s.principals {
 		// Apply filters

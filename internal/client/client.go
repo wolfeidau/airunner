@@ -1,7 +1,11 @@
 package client
 
 import (
+	"crypto/tls"
+	"crypto/x509"
+	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	"connectrpc.com/connect"
@@ -11,10 +15,12 @@ import (
 
 // Config holds common client configuration
 type Config struct {
-	ServerURL string
-	Timeout   time.Duration
-	Debug     bool
-	Token     string
+	ServerURL  string
+	Timeout    time.Duration
+	Debug      bool
+	CACert     string // Path to CA certificate for server verification
+	ClientCert string // Path to client certificate for mTLS
+	ClientKey  string // Path to client private key for mTLS
 }
 
 // Clients holds the gRPC clients
@@ -24,17 +30,23 @@ type Clients struct {
 }
 
 // NewClients creates new gRPC clients with the given configuration
-func NewClients(config Config, opts ...connect.ClientOption) *Clients {
-	var transport = http.DefaultTransport
+func NewClients(config Config, opts ...connect.ClientOption) (*Clients, error) {
+	var transport http.RoundTripper = &http2.Transport{
+		ReadIdleTimeout: 10 * time.Second,
+		PingTimeout:     10 * time.Second,
+	}
 
-	// Add auth header if token is provided
-	if config.Token != "" {
-		transport = &authTransport{
-			token: config.Token,
-			transport: &http2.Transport{
-				ReadIdleTimeout: 10 * time.Second,
-				PingTimeout:     10 * time.Second,
-			},
+	// Configure mTLS if certificates are provided
+	if config.CACert != "" || config.ClientCert != "" {
+		tlsConfig, err := buildTLSConfig(config)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build TLS config: %w", err)
+		}
+
+		transport = &http2.Transport{
+			TLSClientConfig: tlsConfig,
+			ReadIdleTimeout: 10 * time.Second,
+			PingTimeout:     10 * time.Second,
 		}
 	}
 
@@ -46,18 +58,41 @@ func NewClients(config Config, opts ...connect.ClientOption) *Clients {
 	return &Clients{
 		Job:    jobv1connect.NewJobServiceClient(httpClient, config.ServerURL, opts...),
 		Events: jobv1connect.NewJobEventsServiceClient(httpClient, config.ServerURL, opts...),
+	}, nil
+}
+
+// buildTLSConfig creates a TLS configuration for mTLS
+func buildTLSConfig(config Config) (*tls.Config, error) {
+	tlsConfig := &tls.Config{
+		MinVersion: tls.VersionTLS12,
 	}
-}
 
-// authTransport adds Authorization header to requests
-type authTransport struct {
-	token     string
-	transport http.RoundTripper
-}
+	// Load CA certificate if provided
+	if config.CACert != "" {
+		caCert, err := os.ReadFile(config.CACert)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read CA certificate: %w", err)
+		}
 
-func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	req.Header.Set("Authorization", "Bearer "+t.token)
-	return t.transport.RoundTrip(req)
+		caCertPool := x509.NewCertPool()
+		if !caCertPool.AppendCertsFromPEM(caCert) {
+			return nil, fmt.Errorf("failed to parse CA certificate")
+		}
+
+		tlsConfig.RootCAs = caCertPool
+	}
+
+	// Load client certificate if provided
+	if config.ClientCert != "" && config.ClientKey != "" {
+		cert, err := tls.LoadX509KeyPair(config.ClientCert, config.ClientKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load client certificate: %w", err)
+		}
+
+		tlsConfig.Certificates = []tls.Certificate{cert}
+	}
+
+	return tlsConfig, nil
 }
 
 // DefaultConfig returns a default client configuration

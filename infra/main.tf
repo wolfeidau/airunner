@@ -1027,30 +1027,30 @@ resource "aws_ecs_task_definition" "airunner" {
         [
           {
             name  = "AIRUNNER_STORE_TYPE"
-            value = "sqs"
+            value = "aws"
           },
           {
-            name  = "AIRUNNER_SQS_QUEUE_DEFAULT"
+            name  = "AIRUNNER_AWS_QUEUE_DEFAULT"
             value = aws_sqs_queue.default.url
           },
           {
-            name  = "AIRUNNER_SQS_QUEUE_PRIORITY"
+            name  = "AIRUNNER_AWS_QUEUE_PRIORITY"
             value = aws_sqs_queue.priority.url
           },
           {
-            name  = "AIRUNNER_DYNAMODB_JOBS_TABLE"
+            name  = "AIRUNNER_AWS_JOBS_TABLE"
             value = aws_dynamodb_table.jobs.name
           },
           {
-            name  = "AIRUNNER_DYNAMODB_EVENTS_TABLE"
+            name  = "AIRUNNER_AWS_EVENTS_TABLE"
             value = aws_dynamodb_table.job_events.name
           },
           {
-            name  = "AIRUNNER_PRINCIPAL_TABLE"
+            name  = "AIRUNNER_AWS_PRINCIPALS_TABLE"
             value = aws_dynamodb_table.principals.name
           },
           {
-            name  = "AIRUNNER_CERT_TABLE"
+            name  = "AIRUNNER_AWS_CERTS_TABLE"
             value = aws_dynamodb_table.certificates.name
           },
           {
@@ -1085,7 +1085,7 @@ resource "aws_ecs_task_definition" "airunner" {
             valueFrom = aws_ssm_parameter.jwt_public_key.arn
           },
           {
-            name      = "AIRUNNER_TOKEN_SIGNING_SECRET"
+            name      = "AIRUNNER_AWS_TOKEN_SECRET"
             valueFrom = aws_ssm_parameter.token_signing_secret.arn
           },
           {

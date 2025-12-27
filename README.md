@@ -130,23 +130,32 @@ Protocol Buffers ([`api/job/v1/job.proto`](api/job/v1/job.proto))
 
 ### Authentication
 
-The server supports JWT-based authentication using ECDSA (ES256) signing:
+The server uses mutual TLS (mTLS) for authentication with per-principal X.509 certificates:
 
-- **Server**: Requires `JWT_PUBLIC_KEY` environment variable containing PEM-encoded public key
-- **CLI**: Pass token via `--token` flag or `AIRUNNER_TOKEN` environment variable
+- **Server**: Requires client certificates signed by the Airunner CA
+- **CLI**: Pass certificates via `--cacert`, `--client-cert`, `--client-key` flags or environment variables
 - **Development**: Use `--no-auth` flag to disable authentication
 
-Generate tokens using the CLI:
+Bootstrap and certificate management:
 
 ```bash
-# Set signing key (private key PEM)
-export JWT_SIGNING_KEY="$(cat private-key.pem)"
+# 1. Bootstrap (creates CA and admin credentials)
+./bin/airunner-cli bootstrap --environment=prod --domain=airunner.example.com
 
-# Generate a 1-hour token
-./bin/airunner-cli token --subject="user@example.com" --ttl=1h
+# 2. Create principals
+./bin/airunner-cli principal create worker-01 --type=worker --server=...
+
+# 3. Generate certificates
+./bin/airunner-cli certificate generate worker-01 --server=...
+
+# 4. Use certificates with CLI
+./bin/airunner-cli list --server=https://airunner.example.com \
+  --cacert=~/.airunner/ca-cert.pem \
+  --client-cert=~/.airunner/worker-01-cert.pem \
+  --client-key=~/.airunner/worker-01-key.pem
 ```
 
-Tokens require an expiration claim (`exp`) and are validated on every request except `/health`.
+See `specs/mtls/README.md` for complete documentation.
 
 ### Design Patterns
 
@@ -162,10 +171,10 @@ Tokens require an expiration claim (`exp`) and are validated on every request ex
 - Complete job queue with visibility timeouts
 - Worker execution with PTY/pipe mode
 - Real-time event streaming
-- TLS with local certificates
+- mTLS authentication with X.509 certificates
+- Role-based authorization (admin, worker, user, service)
 - Pagination and filtering
 - Idempotent job submission
-- JWT authentication (ECDSA ES256)
 
 **Not Implemented:**
 - `airunner-orchestrator` (cloud backend with SQS/DynamoDB/EventBridge)

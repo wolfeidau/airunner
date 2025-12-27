@@ -31,7 +31,7 @@ type JobConfig struct {
 }
 
 type SubmitCmd struct {
-	Server           string            `help:"Server URL" default:"https://localhost:8993"`
+	Server           string            `help:"Server URL" default:"https://localhost:443"`
 	Queue            string            `help:"Queue name" default:"default"`
 	Repository       string            `arg:"" help:"Repository URL to process"`
 	Commit           string            `help:"Commit hash or identifier" default:"main"`
@@ -47,7 +47,9 @@ type SubmitCmd struct {
 	WorkingDirectory string            `help:"Working directory for command execution"`
 	Config           string            `help:"YAML/JSON config file path"`
 	Timeout          time.Duration     `help:"Timeout for the monitor" default:"5m"`
-	Token            string            `help:"JWT token for authentication" env:"AIRUNNER_TOKEN"`
+	CACert           string            `help:"Path to CA certificate" env:"AIRUNNER_CA_CERT"`
+	ClientCert       string            `help:"Path to client certificate" env:"AIRUNNER_CLIENT_CERT"`
+	ClientKey        string            `help:"Path to client private key" env:"AIRUNNER_CLIENT_KEY"`
 }
 
 func (s *SubmitCmd) Run(ctx context.Context, globals *Globals) error {
@@ -72,12 +74,17 @@ func (s *SubmitCmd) Run(ctx context.Context, globals *Globals) error {
 
 	// Create clients
 	config := client.Config{
-		ServerURL: s.Server,
-		Timeout:   s.Timeout,
-		Debug:     globals.Debug,
-		Token:     s.Token,
+		ServerURL:  s.Server,
+		Timeout:    s.Timeout,
+		Debug:      globals.Debug,
+		CACert:     s.CACert,
+		ClientCert: s.ClientCert,
+		ClientKey:  s.ClientKey,
 	}
-	clients := client.NewClients(config, connect.WithInterceptors(otelInterceptor))
+	clients, err := client.NewClients(config, connect.WithInterceptors(otelInterceptor))
+	if err != nil {
+		return fmt.Errorf("failed to create clients: %w", err)
+	}
 
 	// Submit job
 	jobID, err := s.submitJob(ctx, clients)

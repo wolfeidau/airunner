@@ -7,9 +7,12 @@ help: ## Show this help message
 	@echo "Available targets:"
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ { printf "  %-20s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
-.PHONY: build
-build: ## Build all binaries
+.PHONY: release-snapshot
+release-snapshot: ## Release a snapshot version
 	goreleaser build --clean --snapshot --single-target
+
+.PHONY: build
+build: build-cli build-server ## Build all binaries
 
 .PHONY: build-cli
 build-cli: ## Build CLI binary (multi-purpose client)

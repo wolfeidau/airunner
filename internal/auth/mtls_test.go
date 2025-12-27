@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/wolfeidau/airunner/internal/pki"
 	"github.com/wolfeidau/airunner/internal/store"
+	memorystore "github.com/wolfeidau/airunner/internal/store/memory"
 )
 
 // createTestCert creates a test certificate with OID extensions
@@ -46,8 +47,8 @@ func createTestCert(principalType, principalID string) *x509.Certificate {
 }
 
 func TestNewMTLSAuthenticator(t *testing.T) {
-	ps := store.NewMemoryPrincipalStore()
-	cs := store.NewMemoryCertificateStore()
+	ps := memorystore.NewPrincipalStore()
+	cs := memorystore.NewCertificateStore()
 
 	auth := NewMTLSAuthenticator(ps, cs)
 
@@ -59,8 +60,8 @@ func TestNewMTLSAuthenticator(t *testing.T) {
 
 func TestMTLSAuthenticator_AuthFunc(t *testing.T) {
 	t.Run("no TLS connection returns error", func(t *testing.T) {
-		ps := store.NewMemoryPrincipalStore()
-		cs := store.NewMemoryCertificateStore()
+		ps := memorystore.NewPrincipalStore()
+		cs := memorystore.NewCertificateStore()
 		auth := NewMTLSAuthenticator(ps, cs)
 
 		req := &http.Request{TLS: nil}
@@ -71,8 +72,8 @@ func TestMTLSAuthenticator_AuthFunc(t *testing.T) {
 	})
 
 	t.Run("no verified chains returns error", func(t *testing.T) {
-		ps := store.NewMemoryPrincipalStore()
-		cs := store.NewMemoryCertificateStore()
+		ps := memorystore.NewPrincipalStore()
+		cs := memorystore.NewCertificateStore()
 		auth := NewMTLSAuthenticator(ps, cs)
 
 		req := &http.Request{
@@ -87,8 +88,8 @@ func TestMTLSAuthenticator_AuthFunc(t *testing.T) {
 	})
 
 	t.Run("empty verified chains returns error", func(t *testing.T) {
-		ps := store.NewMemoryPrincipalStore()
-		cs := store.NewMemoryCertificateStore()
+		ps := memorystore.NewPrincipalStore()
+		cs := memorystore.NewCertificateStore()
 		auth := NewMTLSAuthenticator(ps, cs)
 
 		req := &http.Request{
@@ -103,8 +104,8 @@ func TestMTLSAuthenticator_AuthFunc(t *testing.T) {
 	})
 
 	t.Run("successful authentication with valid principal", func(t *testing.T) {
-		ps := store.NewMemoryPrincipalStore()
-		cs := store.NewMemoryCertificateStore()
+		ps := memorystore.NewPrincipalStore()
+		cs := memorystore.NewCertificateStore()
 		auth := NewMTLSAuthenticator(ps, cs)
 
 		// Create principal in store
@@ -142,8 +143,8 @@ func TestMTLSAuthenticator_AuthFunc(t *testing.T) {
 	})
 
 	t.Run("principal not found returns error", func(t *testing.T) {
-		ps := store.NewMemoryPrincipalStore()
-		cs := store.NewMemoryCertificateStore()
+		ps := memorystore.NewPrincipalStore()
+		cs := memorystore.NewCertificateStore()
 		auth := NewMTLSAuthenticator(ps, cs)
 
 		cert := createTestCert("user", "nonexistent-user")
@@ -160,8 +161,8 @@ func TestMTLSAuthenticator_AuthFunc(t *testing.T) {
 	})
 
 	t.Run("suspended principal returns error", func(t *testing.T) {
-		ps := store.NewMemoryPrincipalStore()
-		cs := store.NewMemoryCertificateStore()
+		ps := memorystore.NewPrincipalStore()
+		cs := memorystore.NewCertificateStore()
 		auth := NewMTLSAuthenticator(ps, cs)
 
 		principal := &store.PrincipalMetadata{
@@ -188,8 +189,8 @@ func TestMTLSAuthenticator_AuthFunc(t *testing.T) {
 	})
 
 	t.Run("deleted principal returns error", func(t *testing.T) {
-		ps := store.NewMemoryPrincipalStore()
-		cs := store.NewMemoryCertificateStore()
+		ps := memorystore.NewPrincipalStore()
+		cs := memorystore.NewCertificateStore()
 		auth := NewMTLSAuthenticator(ps, cs)
 
 		principal := &store.PrincipalMetadata{
@@ -215,8 +216,8 @@ func TestMTLSAuthenticator_AuthFunc(t *testing.T) {
 	})
 
 	t.Run("principal type mismatch returns error", func(t *testing.T) {
-		ps := store.NewMemoryPrincipalStore()
-		cs := store.NewMemoryCertificateStore()
+		ps := memorystore.NewPrincipalStore()
+		cs := memorystore.NewCertificateStore()
 		auth := NewMTLSAuthenticator(ps, cs)
 
 		// Store principal as admin
@@ -244,8 +245,8 @@ func TestMTLSAuthenticator_AuthFunc(t *testing.T) {
 	})
 
 	t.Run("revoked certificate returns error", func(t *testing.T) {
-		ps := store.NewMemoryPrincipalStore()
-		cs := store.NewMemoryCertificateStore()
+		ps := memorystore.NewPrincipalStore()
+		cs := memorystore.NewCertificateStore()
 		auth := NewMTLSAuthenticator(ps, cs)
 
 		principal := &store.PrincipalMetadata{
@@ -281,8 +282,8 @@ func TestMTLSAuthenticator_AuthFunc(t *testing.T) {
 	})
 
 	t.Run("cache returns cached result on second call", func(t *testing.T) {
-		ps := store.NewMemoryPrincipalStore()
-		cs := store.NewMemoryCertificateStore()
+		ps := memorystore.NewPrincipalStore()
+		cs := memorystore.NewCertificateStore()
 		auth := NewMTLSAuthenticator(ps, cs)
 
 		principal := &store.PrincipalMetadata{
@@ -324,8 +325,8 @@ func TestMTLSAuthenticator_AuthFunc(t *testing.T) {
 	})
 
 	t.Run("invalid principal type returns error", func(t *testing.T) {
-		ps := store.NewMemoryPrincipalStore()
-		cs := store.NewMemoryCertificateStore()
+		ps := memorystore.NewPrincipalStore()
+		cs := memorystore.NewCertificateStore()
 		auth := NewMTLSAuthenticator(ps, cs)
 
 		// Create cert with invalid principal type

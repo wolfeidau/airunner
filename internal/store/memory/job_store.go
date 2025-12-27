@@ -1,4 +1,4 @@
-package store
+package memory
 
 import (
 	"context"
@@ -9,12 +9,13 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
+	"github.com/wolfeidau/airunner/internal/store"
 	"github.com/wolfeidau/airunner/internal/util"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // MemoryJobStore implements JobStore using in-memory storage
-type MemoryJobStore struct {
+type JobStore struct {
 	mu sync.RWMutex
 
 	// Core job storage
@@ -39,9 +40,9 @@ type MemoryJobStore struct {
 	stopCleanup   chan bool
 }
 
-// NewMemoryJobStore creates a new in-memory job store
-func NewMemoryJobStore() *MemoryJobStore {
-	return &MemoryJobStore{
+// NewJobStore creates a new in-memory job store
+func NewJobStore() *JobStore {
+	return &JobStore{
 		jobs:          make(map[string]*jobv1.Job),
 		jobQueues:     make(map[string]string),
 		queues:        make(map[string][]*jobv1.Job),
@@ -56,14 +57,14 @@ func NewMemoryJobStore() *MemoryJobStore {
 }
 
 // Start begins background cleanup operations
-func (s *MemoryJobStore) Start() error {
+func (s *JobStore) Start() error {
 	s.cleanupTicker = time.NewTicker(30 * time.Second)
 	go s.cleanupLoop()
 	return nil
 }
 
 // Stop terminates background operations
-func (s *MemoryJobStore) Stop() error {
+func (s *JobStore) Stop() error {
 	if s.cleanupTicker != nil {
 		s.cleanupTicker.Stop()
 	}
@@ -72,7 +73,7 @@ func (s *MemoryJobStore) Stop() error {
 }
 
 // cleanupLoop runs background cleanup of expired visibility timeouts
-func (s *MemoryJobStore) cleanupLoop() {
+func (s *JobStore) cleanupLoop() {
 	for {
 		select {
 		case <-s.cleanupTicker.C:
@@ -84,7 +85,7 @@ func (s *MemoryJobStore) cleanupLoop() {
 }
 
 // cleanupExpiredJobs returns expired jobs back to their queues
-func (s *MemoryJobStore) cleanupExpiredJobs() {
+func (s *JobStore) cleanupExpiredJobs() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -110,7 +111,7 @@ func (s *MemoryJobStore) cleanupExpiredJobs() {
 }
 
 // EnqueueJob adds a new job to the specified queue
-func (s *MemoryJobStore) EnqueueJob(ctx context.Context, req *jobv1.EnqueueJobRequest) (*jobv1.EnqueueJobResponse, error) {
+func (s *JobStore) EnqueueJob(ctx context.Context, req *jobv1.EnqueueJobRequest) (*jobv1.EnqueueJobResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -168,7 +169,7 @@ func (s *MemoryJobStore) EnqueueJob(ctx context.Context, req *jobv1.EnqueueJobRe
 }
 
 // DequeueJobs retrieves jobs from the specified queue
-func (s *MemoryJobStore) DequeueJobs(ctx context.Context, queue string, maxJobs int, timeoutSeconds int) ([]*JobWithToken, error) {
+func (s *JobStore) DequeueJobs(ctx context.Context, queue string, maxJobs int, timeoutSeconds int) ([]*store.JobWithToken, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -180,7 +181,7 @@ func (s *MemoryJobStore) DequeueJobs(ctx context.Context, queue string, maxJobs 
 	// Take jobs from front of queue (FIFO)
 	numJobs := min(maxJobs, len(queueJobs))
 
-	results := make([]*JobWithToken, 0, numJobs)
+	results := make([]*store.JobWithToken, 0, numJobs)
 	remainingJobs := make([]*jobv1.Job, 0, len(queueJobs)-numJobs)
 
 	for i, job := range queueJobs {
@@ -198,7 +199,7 @@ func (s *MemoryJobStore) DequeueJobs(ctx context.Context, queue string, maxJobs 
 			s.taskTokens[taskToken] = job.JobId
 			s.jobTokens[job.JobId] = taskToken
 
-			results = append(results, &JobWithToken{
+			results = append(results, &store.JobWithToken{
 				Job:       job,
 				TaskToken: taskToken,
 			})
@@ -214,18 +215,18 @@ func (s *MemoryJobStore) DequeueJobs(ctx context.Context, queue string, maxJobs 
 }
 
 // UpdateJobVisibility extends the visibility timeout for a job
-func (s *MemoryJobStore) UpdateJobVisibility(ctx context.Context, queue string, taskToken string, timeoutSeconds int) error {
+func (s *JobStore) UpdateJobVisibility(ctx context.Context, queue string, taskToken string, timeoutSeconds int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	jobId, exists := s.taskTokens[taskToken]
 	if !exists {
-		return ErrInvalidTaskToken
+		return store.ErrInvalidTaskToken
 	}
 
 	// Verify the job belongs to the correct queue
 	if s.jobQueues[jobId] != queue {
-		return fmt.Errorf("%w: expected queue %s", ErrQueueMismatch, queue)
+		return fmt.Errorf("%w: expected queue %s", store.ErrQueueMismatch, queue)
 	}
 
 	// Update visibility timeout
@@ -242,24 +243,24 @@ func (s *MemoryJobStore) UpdateJobVisibility(ctx context.Context, queue string, 
 }
 
 // CompleteJob marks a job as completed and removes it from processing
-func (s *MemoryJobStore) CompleteJob(ctx context.Context, taskToken string, result *jobv1.JobResult) error {
+func (s *JobStore) CompleteJob(ctx context.Context, taskToken string, result *jobv1.JobResult) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	jobId, exists := s.taskTokens[taskToken]
 	if !exists {
-		return ErrInvalidTaskToken
+		return store.ErrInvalidTaskToken
 	}
 
 	job := s.jobs[jobId]
 	if job == nil {
-		return fmt.Errorf("%w: %s", ErrJobNotFound, jobId)
+		return fmt.Errorf("%w: %s", store.ErrJobNotFound, jobId)
 	}
 
 	// Verify job ID matches
 	if result.JobId != jobId {
 		log.Warn().Str("token_job_id", jobId).Str("result_job_id", result.JobId).Msg("Job ID mismatch")
-		return fmt.Errorf("%w: expected %s, got %s", ErrJobIDMismatch, jobId, result.JobId)
+		return fmt.Errorf("%w: expected %s, got %s", store.ErrJobIDMismatch, jobId, result.JobId)
 	}
 
 	// Update job state
@@ -280,18 +281,18 @@ func (s *MemoryJobStore) CompleteJob(ctx context.Context, taskToken string, resu
 }
 
 // ReleaseJob returns a job back to the queue, resetting its state to SCHEDULED
-func (s *MemoryJobStore) ReleaseJob(ctx context.Context, taskToken string) error {
+func (s *JobStore) ReleaseJob(ctx context.Context, taskToken string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	jobId, exists := s.taskTokens[taskToken]
 	if !exists {
-		return ErrInvalidTaskToken
+		return store.ErrInvalidTaskToken
 	}
 
 	job := s.jobs[jobId]
 	if job == nil {
-		return fmt.Errorf("%w: %s", ErrJobNotFound, jobId)
+		return fmt.Errorf("%w: %s", store.ErrJobNotFound, jobId)
 	}
 
 	// Reset job state to SCHEDULED
@@ -312,7 +313,7 @@ func (s *MemoryJobStore) ReleaseJob(ctx context.Context, taskToken string) error
 }
 
 // ListJobs returns a filtered list of jobs
-func (s *MemoryJobStore) ListJobs(ctx context.Context, req *jobv1.ListJobsRequest) (*jobv1.ListJobsResponse, error) {
+func (s *JobStore) ListJobs(ctx context.Context, req *jobv1.ListJobsRequest) (*jobv1.ListJobsResponse, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -366,13 +367,13 @@ func (s *MemoryJobStore) ListJobs(ctx context.Context, req *jobv1.ListJobsReques
 }
 
 // PublishEvents publishes events for a job
-func (s *MemoryJobStore) PublishEvents(ctx context.Context, taskToken string, events []*jobv1.JobEvent) error {
+func (s *JobStore) PublishEvents(ctx context.Context, taskToken string, events []*jobv1.JobEvent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	jobId, exists := s.taskTokens[taskToken]
 	if !exists {
-		return ErrInvalidTaskToken
+		return store.ErrInvalidTaskToken
 	}
 
 	// Set timestamp if not already set
@@ -395,13 +396,13 @@ func (s *MemoryJobStore) PublishEvents(ctx context.Context, taskToken string, ev
 }
 
 // StreamEvents creates a stream of events for a job
-func (s *MemoryJobStore) StreamEvents(ctx context.Context, jobId string, fromSequence int64, fromTimestamp int64, eventFilter []jobv1.EventType) (<-chan *jobv1.JobEvent, error) {
+func (s *JobStore) StreamEvents(ctx context.Context, jobId string, fromSequence int64, fromTimestamp int64, eventFilter []jobv1.EventType) (<-chan *jobv1.JobEvent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	// Verify job exists
 	if _, exists := s.jobs[jobId]; !exists {
-		return nil, fmt.Errorf("%w: %s", ErrJobNotFound, jobId)
+		return nil, fmt.Errorf("%w: %s", store.ErrJobNotFound, jobId)
 	}
 
 	// Create event filter map for efficient lookup
@@ -468,7 +469,7 @@ func (s *MemoryJobStore) StreamEvents(ctx context.Context, jobId string, fromSeq
 }
 
 // fanoutEvent sends an event to all active streams for a job
-func (s *MemoryJobStore) fanoutEvent(jobId string, event *jobv1.JobEvent) {
+func (s *JobStore) fanoutEvent(jobId string, event *jobv1.JobEvent) {
 	streams := s.eventStreams[jobId]
 	for _, ch := range streams {
 		select {

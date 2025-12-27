@@ -21,36 +21,6 @@ provider "aws" {
   region = var.aws_region
 }
 
-# Generate ECDSA key pair for JWT signing (P256/ES256)
-resource "tls_private_key" "jwt" {
-  algorithm   = "ECDSA"
-  ecdsa_curve = "P256"
-}
-
-# Store private key in SSM (for token issuers/admin tools)
-resource "aws_ssm_parameter" "jwt_signing_key" {
-  name        = "/${var.application}/${var.environment}/jwt-signing-key"
-  description = "JWT signing key (ECDSA P256 private key) for ${var.application}"
-  type        = "SecureString"
-  value       = tls_private_key.jwt.private_key_pem
-
-  tags = {
-    Name = "${var.application}-${var.environment}-jwt-signing-key"
-  }
-}
-
-# Store public key in SSM (for RPC server verification)
-resource "aws_ssm_parameter" "jwt_public_key" {
-  name        = "/${var.application}/${var.environment}/jwt-public-key"
-  description = "JWT public key (ECDSA P256) for ${var.application}"
-  type        = "String"
-  value       = tls_private_key.jwt.public_key_pem
-
-  tags = {
-    Name = "${var.application}-${var.environment}-jwt-public-key"
-  }
-}
-
 locals {
   name_prefix = "airunner-${var.environment}"
   azs         = ["us-east-1b", "us-east-1c"]
@@ -448,7 +418,6 @@ resource "aws_iam_role_policy" "execution" {
         ]
         Resource = concat(
           [
-            aws_ssm_parameter.jwt_public_key.arn,
             aws_ssm_parameter.token_signing_secret.arn,
             aws_ssm_parameter.ca_cert.arn,
             aws_ssm_parameter.server_cert.arn,
@@ -959,6 +928,18 @@ resource "aws_ecs_task_definition" "airunner" {
           {
             name  = "AWS_USE_DUALSTACK_ENDPOINT"
             value = "true"
+          },
+          {
+            name  = "AIRUNNER_CA_CERT_SSM"
+            value = "/airunner/${var.environment}/ca-cert"
+          },
+          {
+            name  = "AIRUNNER_SERVER_CERT_SSM"
+            value = "/airunner/${var.environment}/server-cert"
+          },
+          {
+            name  = "AIRUNNER_SERVER_KEY_SSM"
+            value = "/airunner/${var.environment}/server-key"
           }
         ],
         # Conditionally add OTEL_SERVICE_NAME only when OTEL is configured
@@ -972,24 +953,8 @@ resource "aws_ecs_task_definition" "airunner" {
       secrets = concat(
         [
           {
-            name      = "JWT_PUBLIC_KEY"
-            valueFrom = aws_ssm_parameter.jwt_public_key.arn
-          },
-          {
             name      = "AIRUNNER_AWS_TOKEN_SECRET"
             valueFrom = aws_ssm_parameter.token_signing_secret.arn
-          },
-          {
-            name  = "AIRUNNER_CA_CERT_SSM"
-            value = "/airunner/${var.environment}/ca-cert"
-          },
-          {
-            name  = "AIRUNNER_SERVER_CERT_SSM"
-            value = "/airunner/${var.environment}/server-cert"
-          },
-          {
-            name  = "AIRUNNER_SERVER_KEY_SSM"
-            value = "/airunner/${var.environment}/server-key"
           }
         ],
         var.otel_exporter_endpoint != "" ? [

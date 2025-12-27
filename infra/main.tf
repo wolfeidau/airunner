@@ -166,60 +166,10 @@ resource "aws_route_table_association" "private" {
 }
 
 # Security Groups
-resource "aws_security_group" "alb" {
-  name        = "${local.name_prefix}-alb-sg"
-  description = "ALB security group"
-  vpc_id      = aws_vpc.main.id
-
-  ingress {
-    description = "HTTPS from internet (IPv4)"
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    description      = "HTTPS from internet (IPv6)"
-    from_port        = 443
-    to_port          = 443
-    protocol         = "tcp"
-    ipv6_cidr_blocks = ["::/0"]
-  }
-
-  egress {
-    description = "Allow all outbound (IPv4)"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  egress {
-    description      = "Allow all outbound (IPv6)"
-    from_port        = 0
-    to_port          = 0
-    protocol         = "-1"
-    ipv6_cidr_blocks = ["::/0"]
-  }
-
-  tags = {
-    Name = "${local.name_prefix}-alb-sg"
-  }
-}
-
 resource "aws_security_group" "airunner" {
   name        = "${local.name_prefix}-ecs-sg"
   description = "ECS task security group"
   vpc_id      = aws_vpc.main.id
-
-  ingress {
-    description     = "Container port from ALB"
-    from_port       = var.container_port
-    to_port         = var.container_port
-    protocol        = "tcp"
-    security_groups = [aws_security_group.alb.id]
-  }
 
   # Allow mTLS traffic from internet (NLB passes through)
   ingress {
@@ -811,65 +761,6 @@ resource "aws_ecs_cluster_capacity_providers" "main_override" {
   }
 }
 
-# ALB
-resource "aws_lb" "main" {
-  name               = "${local.name_prefix}-alb"
-  internal           = false
-  load_balancer_type = "application"
-  security_groups    = [aws_security_group.alb.id]
-  subnets            = aws_subnet.public[*].id
-  ip_address_type    = "dualstack"
-  idle_timeout       = 120
-
-  enable_deletion_protection = false
-
-  tags = {
-    Name = "${local.name_prefix}-alb"
-  }
-}
-
-resource "aws_lb_target_group" "airunner" {
-  name_prefix      = "tg-"
-  port             = var.container_port
-  protocol         = "HTTPS"
-  vpc_id           = aws_vpc.main.id
-  target_type      = "ip"
-  protocol_version = "HTTP2"
-
-  health_check {
-    healthy_threshold   = 2
-    unhealthy_threshold = 2
-    timeout             = 5
-    interval            = 30
-    path                = "/health"
-    matcher             = "200"
-    protocol            = "HTTPS"
-
-  }
-
-  lifecycle {
-    create_before_destroy = true
-  }
-
-  tags = {
-    Name = "${local.name_prefix}-tg"
-  }
-}
-
-resource "aws_lb_listener" "airunner" {
-  load_balancer_arn = aws_lb.main.arn
-  port              = "443"
-  protocol          = "HTTPS"
-  certificate_arn   = aws_acm_certificate_validation.main.certificate_arn
-
-  default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.airunner.arn
-  }
-
-  depends_on = [aws_acm_certificate_validation.main]
-}
-
 # ============================================================================
 # Network Load Balancer for mTLS
 # ============================================================================
@@ -1005,7 +896,7 @@ resource "aws_ecs_task_definition" "airunner" {
       command = [
         "rpc-server",
         "--mtls-listen", "0.0.0.0:443",
-        "--health-listen", "0.0.0.0:8080",
+        "--mtls-health-listen", "0.0.0.0:8080",
         "--hostname", "airunner-${var.environment}.${var.domain_name}"
       ]
       essential = true
@@ -1089,16 +980,16 @@ resource "aws_ecs_task_definition" "airunner" {
             valueFrom = aws_ssm_parameter.token_signing_secret.arn
           },
           {
-            name      = "AIRUNNER_CA_CERT"
-            valueFrom = aws_ssm_parameter.ca_cert.arn
+            name  = "AIRUNNER_CA_CERT_SSM"
+            value = "/airunner/${var.environment}/ca-cert"
           },
           {
-            name      = "AIRUNNER_SERVER_CERT"
-            valueFrom = aws_ssm_parameter.server_cert.arn
+            name  = "AIRUNNER_SERVER_CERT_SSM"
+            value = "/airunner/${var.environment}/server-cert"
           },
           {
-            name      = "AIRUNNER_SERVER_KEY"
-            valueFrom = aws_ssm_parameter.server_key.arn
+            name  = "AIRUNNER_SERVER_KEY_SSM"
+            value = "/airunner/${var.environment}/server-key"
           }
         ],
         var.otel_exporter_endpoint != "" ? [
@@ -1152,13 +1043,6 @@ resource "aws_ecs_service" "airunner" {
     security_groups = [aws_security_group.airunner.id]
   }
 
-  # ALB target group (existing)
-  load_balancer {
-    target_group_arn = aws_lb_target_group.airunner.arn
-    container_name   = local.name_prefix
-    container_port   = var.container_port
-  }
-
   # NLB mTLS target group
   load_balancer {
     target_group_arn = aws_lb_target_group.mtls.arn
@@ -1178,7 +1062,6 @@ resource "aws_ecs_service" "airunner" {
   }
 
   depends_on = [
-    aws_lb_listener.airunner,
     aws_lb_listener.mtls,
     aws_lb_listener.health,
     aws_iam_role_policy.execution,
@@ -1188,32 +1071,6 @@ resource "aws_ecs_service" "airunner" {
 
 # Data source for AWS region
 data "aws_region" "current" {}
-
-# Route53 record for ALB
-resource "aws_route53_record" "alb" {
-  zone_id = data.aws_route53_zone.main.zone_id
-  name    = "airunner-${var.environment}.${var.domain_name}"
-  type    = "A"
-
-  alias {
-    name                   = aws_lb.main.dns_name
-    zone_id                = aws_lb.main.zone_id
-    evaluate_target_health = true
-  }
-}
-
-# Route53 AAAA record for ALB (IPv6)
-resource "aws_route53_record" "alb_ipv6" {
-  zone_id = data.aws_route53_zone.main.zone_id
-  name    = "airunner-${var.environment}.${var.domain_name}"
-  type    = "AAAA"
-
-  alias {
-    name                   = aws_lb.main.dns_name
-    zone_id                = aws_lb.main.zone_id
-    evaluate_target_health = true
-  }
-}
 
 # Route53 record for NLB (mTLS API)
 resource "aws_route53_record" "nlb" {

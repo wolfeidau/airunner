@@ -35,9 +35,9 @@ variable "container_image" {
 }
 
 variable "container_port" {
-  description = "Port the container listens on"
+  description = "Port the container listens on for HTTPS/mTLS"
   type        = number
-  default     = 8993
+  default     = 443
 }
 
 variable "desired_count" {

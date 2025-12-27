@@ -90,13 +90,13 @@ func (h *LocalBootstrapHandler) createDynamoDBTables(ctx context.Context) error 
 	dynamoClient := dynamodb.NewFromConfig(awsConfig)
 
 	// Create principals table
-	principalsTable := fmt.Sprintf("airunner_%s_principals", h.cmd.Environment)
+	principalsTable := fmt.Sprintf("airunner-%s_principals", h.cmd.Environment)
 	if err := h.createPrincipalsTable(ctx, dynamoClient, principalsTable); err != nil {
 		return err
 	}
 
 	// Create certificates table
-	certificatesTable := fmt.Sprintf("airunner_%s_certificates", h.cmd.Environment)
+	certificatesTable := fmt.Sprintf("airunner-%s_certificates", h.cmd.Environment)
 	if err := h.createCertificatesTable(ctx, dynamoClient, certificatesTable); err != nil {
 		return err
 	}
@@ -342,11 +342,17 @@ func (h *AWSBootstrapHandler) Setup(ctx context.Context, paths certificatePaths)
 	return h.cmd.setupKMSSigner(ctx, paths)
 }
 
-// Finalize for AWS: upload certificates to SSM
+// Finalize for AWS: upload certificates to SSM and test loading
 func (h *AWSBootstrapHandler) Finalize(ctx context.Context, paths certificatePaths) error {
 	if err := h.cmd.uploadToAWS(ctx, h.awsConfig, paths); err != nil {
 		return fmt.Errorf("failed to upload to AWS: %w", err)
 	}
+
+	// Test loading certificates from SSM to ensure they work
+	if err := h.cmd.testSSMCertificateLoading(ctx); err != nil {
+		return fmt.Errorf("SSM certificate loading test failed: %w", err)
+	}
+
 	h.cmd.printAWSBootstrapSummary(paths)
 	return nil
 }

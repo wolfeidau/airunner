@@ -1,24 +1,3 @@
-# ALB Outputs
-output "service_url" {
-  description = "URL of the airunner service"
-  value       = "https://${aws_route53_record.alb.name}"
-}
-
-output "alb_dns_name" {
-  description = "DNS name of the load balancer"
-  value       = aws_lb.main.dns_name
-}
-
-output "alb_arn" {
-  description = "ARN of the load balancer"
-  value       = aws_lb.main.arn
-}
-
-output "alb_zone_id" {
-  description = "Zone ID of the load balancer"
-  value       = aws_lb.main.zone_id
-}
-
 # ECS Cluster & Service Outputs
 output "ecs_cluster_name" {
   description = "Name of the ECS cluster"
@@ -84,11 +63,6 @@ output "public_subnet_azs" {
 }
 
 # Security Groups Outputs
-output "alb_security_group_id" {
-  description = "ID of the ALB security group"
-  value       = aws_security_group.alb.id
-}
-
 output "ecs_security_group_id" {
   description = "ID of the ECS task security group"
   value       = aws_security_group.airunner.id
@@ -143,7 +117,8 @@ output "jwt_public_key_parameter_name" {
 output "service_access_instructions" {
   description = "Instructions for accessing the service"
   value = {
-    service_url          = "https://${aws_route53_record.alb.name}"
+    mtls_service_url     = "https://${aws_route53_record.nlb.name}:443"
+    health_check_url     = "http://${aws_route53_record.nlb.name}:8080/health"
     view_logs            = "aws logs tail ${aws_cloudwatch_log_group.airunner.name} --follow"
     list_instances       = "aws ec2 describe-instances --filters \"Name=tag:aws:autoscaling:groupName,Values=${aws_autoscaling_group.ecs.name}\" --query 'Reservations[].Instances[].InstanceId'"
     ssm_session          = "aws ssm start-session --target <instance-id>"

@@ -103,6 +103,39 @@ func (s *KMSSigner) GetCACertificate() (*x509.Certificate, error) {
 	return s.caCert, nil
 }
 
+// NewKMSCryptoSigner creates a crypto.Signer backed by AWS KMS.
+// This is used for signing self-signed CA certificates where you don't yet have a CA cert.
+// For signing other certificates, use NewKMSSigner instead.
+func NewKMSCryptoSigner(ctx context.Context, awsConfig aws.Config, kmsKeyID string) (crypto.Signer, error) {
+	kmsClient := kms.NewFromConfig(awsConfig)
+
+	// Get public key from KMS
+	pubKeyOutput, err := kmsClient.GetPublicKey(ctx, &kms.GetPublicKeyInput{
+		KeyId: aws.String(kmsKeyID),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get public key from KMS: %w", err)
+	}
+
+	// Parse the public key
+	kmsPublicKey, err := x509.ParsePKIXPublicKey(pubKeyOutput.PublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse KMS public key: %w", err)
+	}
+
+	ecdsaPubKey, ok := kmsPublicKey.(*ecdsa.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("KMS key is not ECDSA (got %T)", kmsPublicKey)
+	}
+
+	return &kmsCryptoSigner{
+		kmsClient: kmsClient,
+		kmsKeyID:  kmsKeyID,
+		publicKey: ecdsaPubKey,
+		ctx:       ctx,
+	}, nil
+}
+
 // kmsCryptoSigner implements crypto.Signer using AWS KMS
 type kmsCryptoSigner struct {
 	kmsClient *kms.Client

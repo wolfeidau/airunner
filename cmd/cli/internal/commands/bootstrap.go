@@ -26,6 +26,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/wolfeidau/airunner/internal/pki"
+	"github.com/wolfeidau/airunner/internal/ssmcerts"
 	"github.com/wolfeidau/airunner/internal/store"
 	awsstore "github.com/wolfeidau/airunner/internal/store/aws"
 )
@@ -310,26 +311,14 @@ func (cmd *BootstrapCmd) generateKMSCACertificate(ctx context.Context, awsConfig
 		PublicKey:             ecdsaPubKey,
 	}
 
-	// Create a temporary KMS signer just for signing the CA cert
-	// We need a placeholder CA cert to bootstrap the signer
-	placeholderCACertDER, err := x509.CreateCertificate(rand.Reader, template, template, ecdsaPubKey, ecdsaPubKey)
+	// Create KMS crypto.Signer for self-signed CA certificate
+	kmsCryptoSigner, err := pki.NewKMSCryptoSigner(ctx, awsConfig, kmsKeyID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create placeholder CA cert: %w", err)
+		return nil, fmt.Errorf("failed to create KMS crypto signer: %w", err)
 	}
 
-	placeholderCACertPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "CERTIFICATE",
-		Bytes: placeholderCACertDER,
-	})
-
-	// Now create the real signer and sign properly
-	kmsSigner, err := pki.NewKMSSigner(ctx, awsConfig, kmsKeyID, placeholderCACertPEM)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create KMS signer: %w", err)
-	}
-
-	// Sign the CA certificate (self-signed via KMS)
-	caCertDER, err := kmsSigner.SignCertificate(template)
+	// Sign the self-signed CA certificate using KMS
+	caCertDER, err := x509.CreateCertificate(rand.Reader, template, template, ecdsaPubKey, kmsCryptoSigner)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign CA certificate with KMS: %w", err)
 	}
@@ -647,8 +636,8 @@ func (cmd *BootstrapCmd) createStores(ctx context.Context) (store.PrincipalStore
 
 	dynamoClient := dynamodb.NewFromConfig(awsConfig)
 
-	principalsTable := fmt.Sprintf("airunner_%s_principals", cmd.Environment)
-	certificatesTable := fmt.Sprintf("airunner_%s_certificates", cmd.Environment)
+	principalsTable := fmt.Sprintf("airunner-%s_principals", cmd.Environment)
+	certificatesTable := fmt.Sprintf("airunner-%s_certificates", cmd.Environment)
 
 	principalStore := awsstore.NewPrincipalStore(dynamoClient, principalsTable)
 	certStore := awsstore.NewCertificateStore(dynamoClient, certificatesTable)
@@ -714,6 +703,36 @@ func (cmd *BootstrapCmd) uploadToAWS(ctx context.Context, awsConfig aws.Config, 
 	return nil
 }
 
+// testSSMCertificateLoading validates that certificates can be loaded from SSM
+func (cmd *BootstrapCmd) testSSMCertificateLoading(ctx context.Context) error {
+	log.Info().Msg("Testing certificate loading from SSM...")
+
+	cfg := ssmcerts.Config{
+		CACertSSM:     fmt.Sprintf("/airunner/%s/ca-cert", cmd.Environment),
+		ServerCertSSM: fmt.Sprintf("/airunner/%s/server-cert", cmd.Environment),
+		ServerKeySSM:  fmt.Sprintf("/airunner/%s/server-key", cmd.Environment),
+	}
+
+	certs, err := ssmcerts.Load(ctx, cfg)
+	if err != nil {
+		return fmt.Errorf("failed to load certificates from SSM: %w", err)
+	}
+
+	// Validate certificate data
+	if err := certs.Validate(); err != nil {
+		return fmt.Errorf("certificate validation failed: %w", err)
+	}
+
+	// Test creating TLS config
+	_, err = certs.TLSConfig()
+	if err != nil {
+		return fmt.Errorf("failed to create TLS config: %w", err)
+	}
+
+	log.Info().Msg("✓ Successfully loaded and validated certificates from SSM")
+	return nil
+}
+
 // putSSMParameter puts a parameter in SSM Parameter Store
 func (cmd *BootstrapCmd) putSSMParameter(ctx context.Context, client *ssm.Client, name, value string, paramType ssmtypes.ParameterType) error {
 	_, err := client.PutParameter(ctx, &ssm.PutParameterInput{
@@ -751,7 +770,7 @@ func (cmd *BootstrapCmd) printLocalBootstrapSummary(paths certificatePaths) {
 	fmt.Printf("Domain:     %s\n\n", cmd.Domain)
 
 	fmt.Println("Infrastructure created:")
-	fmt.Printf("  DynamoDB:       airunner_%s_principals, airunner_%s_certificates\n", cmd.Environment, cmd.Environment)
+	fmt.Printf("  DynamoDB:       airunner-%s_principals, airunner-%s_certificates\n", cmd.Environment, cmd.Environment)
 	fmt.Printf("  SQS Queues:     airunner_%s_default, airunner_%s_priority, airunner_%s_dlq\n", cmd.Environment, cmd.Environment, cmd.Environment)
 	fmt.Printf("  Certificates:   %s\n\n", cmd.OutputDir)
 
@@ -791,7 +810,7 @@ func (cmd *BootstrapCmd) printAWSBootstrapSummary(paths certificatePaths) {
 	fmt.Println("AWS resources configured:")
 	fmt.Printf("  KMS Key:              Retrieved from /airunner/%s/ca-kms-key-id\n", cmd.Environment)
 	fmt.Printf("  SSM Parameters:       /airunner/%s/{ca-cert,server-cert,server-key}\n", cmd.Environment)
-	fmt.Printf("  DynamoDB Tables:      airunner_%s_principals, airunner_%s_certificates\n", cmd.Environment, cmd.Environment)
+	fmt.Printf("  DynamoDB Tables:      airunner-%s_principals, airunner-%s_certificates\n", cmd.Environment, cmd.Environment)
 	fmt.Printf("  Local Certificates:  %s\n\n", cmd.OutputDir)
 
 	fmt.Println("Certificate paths (local copy):")

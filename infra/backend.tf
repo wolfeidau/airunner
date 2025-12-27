@@ -204,7 +204,7 @@ resource "aws_dynamodb_table" "principals" {
 
   attribute {
     name = "created_at"
-    type = "N"
+    type = "S"
   }
 
   # GSI1: Query principals by status
@@ -252,7 +252,7 @@ resource "aws_dynamodb_table" "certificates" {
 
   attribute {
     name = "issued_at"
-    type = "N"
+    type = "S"
   }
 
   attribute {

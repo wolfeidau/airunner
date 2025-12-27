@@ -2,12 +2,9 @@ package commands
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"time"
 
 	"connectrpc.com/authn"
@@ -21,6 +18,7 @@ import (
 	"github.com/wolfeidau/airunner/internal/auth"
 	"github.com/wolfeidau/airunner/internal/logger"
 	"github.com/wolfeidau/airunner/internal/server"
+	"github.com/wolfeidau/airunner/internal/ssmcerts"
 	"github.com/wolfeidau/airunner/internal/store"
 	awsstore "github.com/wolfeidau/airunner/internal/store/aws"
 	memorystore "github.com/wolfeidau/airunner/internal/store/memory"
@@ -94,9 +92,16 @@ type ExecutionFlags struct {
 type MTLSFlags struct {
 	Listen       string `help:"mTLS API listen address" default:"0.0.0.0:443" env:"AIRUNNER_MTLS_LISTEN"`
 	HealthListen string `help:"health check listen address" default:"0.0.0.0:8080" env:"AIRUNNER_HEALTH_LISTEN"`
-	CACert       string `help:"path to CA cert file for mTLS client verification" env:"AIRUNNER_CA_CERT"`
-	ServerCert   string `help:"path to server cert file for mTLS" env:"AIRUNNER_SERVER_CERT"`
-	ServerKey    string `help:"path to server key file for mTLS" env:"AIRUNNER_SERVER_KEY"`
+
+	// Certificate file paths (for local development)
+	CACert     string `help:"path to CA cert file for mTLS client verification" env:"AIRUNNER_CA_CERT"`
+	ServerCert string `help:"path to server cert file for mTLS" env:"AIRUNNER_SERVER_CERT"`
+	ServerKey  string `help:"path to server key file for mTLS" env:"AIRUNNER_SERVER_KEY"`
+
+	// SSM Parameter Store paths (for production)
+	CACertSSM     string `help:"SSM parameter path for CA cert" env:"AIRUNNER_CA_CERT_SSM"`
+	ServerCertSSM string `help:"SSM parameter path for server cert" env:"AIRUNNER_SERVER_CERT_SSM"`
+	ServerKeySSM  string `help:"SSM parameter path for server key" env:"AIRUNNER_SERVER_KEY_SSM"`
 }
 
 // Validate MTLSFlags
@@ -106,17 +111,17 @@ func (m *MTLSFlags) Validate() error {
 		return errors.New("mTLS listen address is required (--mtls-listen or AIRUNNER_MTLS_LISTEN)")
 	}
 	if m.HealthListen == "" {
-		return errors.New("health listen address is required (--health-listen or AIRUNNER_HEALTH_LISTEN)")
+		return errors.New("health listen address is required (--mtls-health-listen or AIRUNNER_HEALTH_LISTEN)")
 	}
-	if m.CACert == "" {
-		return errors.New("CA cert path is required (--ca-cert or AIRUNNER_CA_CERT)")
+
+	// Must provide either file paths OR SSM paths for certificates
+	hasFilePaths := m.CACert != "" && m.ServerCert != "" && m.ServerKey != ""
+	hasSSMPaths := m.CACertSSM != "" && m.ServerCertSSM != "" && m.ServerKeySSM != ""
+
+	if !hasFilePaths && !hasSSMPaths {
+		return errors.New("must provide either certificate file paths (--mtls-ca-cert, --mtls-server-cert, --mtls-server-key) or SSM paths (--mtls-ca-cert-ssm, --mtls-server-cert-ssm, --mtls-server-key-ssm)")
 	}
-	if m.ServerCert == "" {
-		return errors.New("server cert path is required (--server-cert or AIRUNNER_SERVER_CERT)")
-	}
-	if m.ServerKey == "" {
-		return errors.New("server key path is required (--server-key or AIRUNNER_SERVER_KEY)")
-	}
+
 	return nil
 }
 
@@ -299,29 +304,27 @@ func (s *RPCServerCmd) runWithMTLS(ctx context.Context, apiHandler http.Handler,
 		return fmt.Errorf("failed to validate MTLS configuration: %w", err)
 	}
 
-	// Load server certificate
-	serverCert, err := tls.LoadX509KeyPair(s.MTLS.ServerCert, s.MTLS.ServerKey)
+	// Load certificates using ssmcerts package
+	cfg := ssmcerts.Config{
+		// File paths (local dev)
+		CACertPath:     s.MTLS.CACert,
+		ServerCertPath: s.MTLS.ServerCert,
+		ServerKeyPath:  s.MTLS.ServerKey,
+		// SSM paths (production)
+		CACertSSM:     s.MTLS.CACertSSM,
+		ServerCertSSM: s.MTLS.ServerCertSSM,
+		ServerKeySSM:  s.MTLS.ServerKeySSM,
+	}
+
+	certs, err := ssmcerts.Load(ctx, cfg)
 	if err != nil {
-		return fmt.Errorf("failed to load server certificate: %w", err)
+		return fmt.Errorf("failed to load certificates: %w", err)
 	}
 
-	// Load CA certificate for client verification
-	caCertPEM, err := os.ReadFile(s.MTLS.CACert)
+	// Create TLS config from certificates
+	tlsConfig, err := certs.TLSConfig()
 	if err != nil {
-		return fmt.Errorf("failed to read CA certificate: %w", err)
-	}
-
-	caCertPool := x509.NewCertPool()
-	if !caCertPool.AppendCertsFromPEM(caCertPEM) {
-		return errors.New("failed to parse CA certificate")
-	}
-
-	// Configure TLS with client certificate verification
-	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{serverCert},
-		ClientAuth:   tls.RequireAndVerifyClientCert,
-		ClientCAs:    caCertPool,
-		MinVersion:   tls.VersionTLS12,
+		return fmt.Errorf("failed to create TLS config: %w", err)
 	}
 
 	// Create mTLS API server

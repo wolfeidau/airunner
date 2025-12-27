@@ -10,7 +10,7 @@ This is `airunner`, a Go-based job orchestration platform with production-ready 
 
 - **airunner-server** (`cmd/server/main.go`) - Job queue server
   - Provides gRPC API via Connect RPC for job management
-  - Supports in-memory store (development) or SQS/DynamoDB (production)
+  - Supports in-memory store (development) or AWS backend (production)
   - Handles job queuing, visibility timeouts, and event streaming
   - OpenTelemetry integration for metrics and tracing
 
@@ -19,10 +19,10 @@ This is `airunner`, a Go-based job orchestration platform with production-ready 
   - `submit` - Submit jobs to the queue
   - `monitor` - Real-time job event monitoring with TUI
   - `list` - List and filter jobs with watch mode
-  - `token` - Generate JWT authentication tokens
+  - `bootstrap` - Bootstrap mTLS certificates and principals
 
 - **airunner-orchestrator** (`cmd/orchestrator/main.go`) - Cloud backend entry point
-  - Uses SQS/DynamoDB backend for production deployments
+  - Uses AWS backend (SQS + DynamoDB) for production deployments
 
 The system uses Protocol Buffers with Connect RPC for service definitions, with the main job service defined in `api/job/v1/job.proto`.
 
@@ -120,7 +120,7 @@ make mkcert        # Generate local TLS certificates
 - **internal/store/** - Job storage backends
   - `JobStore` interface defines the contract for all storage implementations
   - `MemoryJobStore` - In-memory FIFO queues with visibility timeouts for development
-  - `SQSJobStore` - Production backend using AWS SQS for queuing and DynamoDB for persistence
+  - `AWSJobStore` - Production backend using AWS SQS for queuing and DynamoDB for persistence
 
 - **internal/worker/** - Job execution engine
   - `JobExecutor` - Runs jobs via console-stream library with output capture
@@ -134,20 +134,20 @@ make mkcert        # Generate local TLS certificates
   - OpenTelemetry initialization with OTLP exporters (Honeycomb-ready)
   - 20+ custom metrics for event publish/errors, job lifecycle, DynamoDB operations
 
-- **internal/auth/** - Authentication
-  - JWT verification middleware with ECDSA ES256
-  - Token generation utilities
+- **internal/auth/** - Authentication and Authorization
+  - mTLS authentication with X.509 client certificates
+  - Role-based authorization (admin, worker, user, service)
 
 ### Key Patterns
 
-- **Interface-Based Design**: `JobStore` interface allows swapping MemoryJobStore or SQSJobStore
+- **Interface-Based Design**: `JobStore` interface allows swapping MemoryJobStore or AWSJobStore
 - **Stateless Task Tokens**: HMAC-signed tokens containing job_id, queue, receipt_handle
 - **Event Streaming**: Bi-directional streaming with historical replay from DynamoDB
 - **Visibility Timeout**: SQS-like job invisibility for at-least-once delivery
 - **Idempotent Operations**: Request ID tracking via GSI2 for safe retries
 - **Size-Aware Batching**: Conservative limits (350KB) accounting for DynamoDB 400KB limit
 
-### AWS Backend (SQSJobStore)
+### AWS Backend (AWSJobStore)
 
 The production backend uses:
 - **SQS** - Job queue with visibility timeout management
@@ -371,17 +371,22 @@ This spec demonstrates:
 
 ## Authentication
 
-JWT-based authentication using ECDSA ES256:
+mTLS (mutual TLS) authentication using per-principal X.509 certificates:
 
-- **Server**: Pass public key via `JWT_PUBLIC_KEY` env var (PEM-encoded)
-- **CLI**: Pass token via `--token` flag or `AIRUNNER_TOKEN` env var
+- **Server**: Requires client certificates signed by the Airunner CA
+- **CLI**: Pass certificates via `--cacert`, `--client-cert`, `--client-key` flags or environment variables
+- **Bootstrap**: `./bin/airunner-cli bootstrap` to create CA and initial admin credentials
+- **Certificate Management**: Use PrincipalService RPCs to manage principals and certificates
 - **Development**: Use `--no-auth` flag to disable authentication
-- **Token generation**: `./bin/airunner-cli token --subject=<user> --ttl=1h`
 
 Key files:
-- `internal/auth/jwt.go` - JWT verification middleware
-- `internal/auth/token.go` - Token generation
-- `specs/api_auth.md` - Full authentication design spec
+- `internal/pki/oid.go` - Custom OID extraction for principal metadata
+- `internal/pki/signer.go` - CASigner interface (FileSigner for local, KMSSigner for AWS)
+- `internal/auth/mtls.go` - mTLS authentication middleware
+- `internal/auth/authz.go` - Role-based authorization
+- `internal/store/principal_store.go` - Principal management
+- `internal/store/certificate_store.go` - Certificate management
+- `specs/mtls/` - Complete mTLS implementation documentation
 
 ## Key Files
 
@@ -391,7 +396,7 @@ Key files:
 
 ### Store Implementations
 - `internal/store/store.go` - `JobStore` interface and `MemoryJobStore`
-- `internal/store/sqs_store.go` - `SQSJobStore` with SQS/DynamoDB backend
+- `internal/store/aws_store.go` - `AWSJobStore` with SQS/DynamoDB backend
 
 ### Worker & Event Processing
 - `internal/worker/worker.go` - `JobExecutor` for running jobs
@@ -406,12 +411,16 @@ Key files:
 - `internal/telemetry/telemetry.go` - OpenTelemetry initialization
 - `internal/telemetry/metrics.go` - Custom metrics definitions
 
-### Authentication
-- `internal/auth/jwt.go` - JWT verification middleware
-- `internal/auth/token.go` - Token generation
+### Authentication & Authorization
+- `internal/pki/oid.go` - Custom OID extraction
+- `internal/pki/signer.go` - CASigner interface and implementations
+- `internal/auth/mtls.go` - mTLS authentication middleware
+- `internal/auth/authz.go` - Role-based authorization
+- `internal/store/principal_store.go` - Principal management
+- `internal/store/certificate_store.go` - Certificate management
 
 ### CLI Commands
-- `cmd/cli/internal/commands/` - Worker, submit, monitor, list, token commands
+- `cmd/cli/internal/commands/` - Worker, submit, monitor, list, bootstrap commands
 
 ### Design Specs
 
@@ -423,7 +432,6 @@ Key files:
 **Legacy Specifications** (deprecated, archived):
 - `specs/sqs_dynamodb_backend.md` - AWS backend architecture (archived)
 - `specs/event_batching.md` - Event batching design (archived)
-- `specs/api_auth.md` - JWT authentication (deprecated, see specs/mtls/)
 
 ### Infrastructure
 - `infra/` - Terraform configuration for AWS resources

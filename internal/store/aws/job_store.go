@@ -1,4 +1,4 @@
-package store
+package aws
 
 import (
 	"context"
@@ -23,6 +23,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
+	"github.com/wolfeidau/airunner/internal/store"
 	"github.com/wolfeidau/airunner/internal/telemetry"
 	"github.com/wolfeidau/airunner/internal/util"
 	"go.opentelemetry.io/otel/attribute"
@@ -48,8 +49,8 @@ const (
 	maxEventPayloadBytes = 350 * 1024 // 350KB safety margin below 400KB backend limit
 )
 
-// SQSJobStoreConfig holds the configuration for SQSJobStore
-type SQSJobStoreConfig struct {
+// JobStoreConfig holds the configuration for AWSJobStore
+type JobStoreConfig struct {
 	QueueURLs                       map[string]string // queue name -> SQS URL
 	JobsTableName                   string
 	JobEventsTableName              string
@@ -104,7 +105,7 @@ func wrapAWSError(err error, msg string) error {
 	// Check for DynamoDB throttling errors
 	var provisionedErr *types.ProvisionedThroughputExceededException
 	if errors.As(err, &provisionedErr) {
-		return fmt.Errorf("%s: %w: %v", msg, ErrThrottled, err)
+		return fmt.Errorf("%s: %w: %v", msg, store.ErrThrottled, err)
 	}
 
 	// Check for common throttling error messages in error strings
@@ -114,7 +115,7 @@ func wrapAWSError(err error, msg string) error {
 		strings.Contains(errMsg, "RequestLimitExceeded") ||
 		strings.Contains(errMsg, "TooManyRequestsException") ||
 		strings.Contains(errMsg, "Throttling") {
-		return fmt.Errorf("%s: %w: %v", msg, ErrThrottled, err)
+		return fmt.Errorf("%s: %w: %v", msg, store.ErrThrottled, err)
 	}
 
 	// Check for storage backend item size validation errors
@@ -123,7 +124,7 @@ func wrapAWSError(err error, msg string) error {
 		strings.Contains(errMsg, "ValidationException") && strings.Contains(errMsg, "size") {
 		return fmt.Errorf("%s: %w: item exceeds storage backend size limit. "+
 			"This typically indicates an event payload is too large. "+
-			"Consider reducing batch sizes or output volume: %v", msg, ErrEventTooLarge, err)
+			"Consider reducing batch sizes or output volume: %v", msg, store.ErrEventTooLarge, err)
 	}
 
 	// Wrap other AWS errors
@@ -166,11 +167,11 @@ func isRetryableAWSError(err error) bool {
 	return false
 }
 
-// SQSJobStore implements JobStore using AWS SQS and DynamoDB
-type SQSJobStore struct {
+// JobStore implements JobStore using AWS SQS and DynamoDB
+type JobStore struct {
 	sqsClient    *sqs.Client
 	dynamoClient *dynamodb.Client
-	cfg          SQSJobStoreConfig
+	cfg          JobStoreConfig
 
 	// Local event streaming (same semantics as MemoryJobStore)
 	mu           sync.RWMutex
@@ -180,9 +181,9 @@ type SQSJobStore struct {
 	wg     sync.WaitGroup
 }
 
-// NewSQSJobStore creates a new SQS-based job store
-func NewSQSJobStore(sqsClient *sqs.Client, dynamoClient *dynamodb.Client, cfg SQSJobStoreConfig) *SQSJobStore {
-	return &SQSJobStore{
+// NewJobStore creates a new AWS-based job store (SQS + DynamoDB)
+func NewJobStore(sqsClient *sqs.Client, dynamoClient *dynamodb.Client, cfg JobStoreConfig) *JobStore {
+	return &JobStore{
 		sqsClient:    sqsClient,
 		dynamoClient: dynamoClient,
 		cfg:          cfg,
@@ -192,14 +193,14 @@ func NewSQSJobStore(sqsClient *sqs.Client, dynamoClient *dynamodb.Client, cfg SQ
 }
 
 // Start initializes background operations
-func (s *SQSJobStore) Start() error {
-	log.Info().Msg("Starting SQSJobStore")
+func (s *JobStore) Start() error {
+	log.Info().Msg("Starting AWSJobStore")
 	return nil
 }
 
 // Stop gracefully shuts down the store
-func (s *SQSJobStore) Stop() error {
-	log.Info().Msg("Stopping SQSJobStore")
+func (s *JobStore) Stop() error {
+	log.Info().Msg("Stopping AWSJobStore")
 	close(s.stopCh)
 	s.wg.Wait()
 	return nil
@@ -218,7 +219,7 @@ type taskToken struct {
 // encodeTaskToken creates a signed stateless task token
 // Format: base64url(v1|job_id|queue|receipt_handle|hmac_sha256_signature)
 // The HMAC signature prevents token tampering and provides defense in depth
-func (s *SQSJobStore) encodeTaskToken(jobID, queue, receiptHandle string) string {
+func (s *JobStore) encodeTaskToken(jobID, queue, receiptHandle string) string {
 	// Build the data payload with version prefix
 	data := fmt.Sprintf("%s|%s|%s|%s", taskTokenVersion, jobID, queue, receiptHandle)
 
@@ -235,33 +236,33 @@ func (s *SQSJobStore) encodeTaskToken(jobID, queue, receiptHandle string) string
 
 // decodeTaskToken extracts and verifies components from a signed task token
 // Validates HMAC signature to prevent tampering using constant-time comparison
-func (s *SQSJobStore) decodeTaskToken(token string) (*taskToken, error) {
+func (s *JobStore) decodeTaskToken(token string) (*taskToken, error) {
 	if token == "" {
-		return nil, fmt.Errorf("%w: token cannot be empty", ErrInvalidTaskToken)
+		return nil, fmt.Errorf("%w: token cannot be empty", store.ErrInvalidTaskToken)
 	}
 
 	// Base64 decode
 	data, err := base64.URLEncoding.DecodeString(token)
 	if err != nil {
-		return nil, fmt.Errorf("%w: invalid encoding: %v", ErrInvalidTaskToken, err)
+		return nil, fmt.Errorf("%w: invalid encoding: %v", store.ErrInvalidTaskToken, err)
 	}
 
 	// Split into components: version|job_id|queue|receipt_handle|signature
 	parts := strings.Split(string(data), "|")
 	if len(parts) != 5 {
-		return nil, fmt.Errorf("%w: expected 5 parts (version|job_id|queue|receipt|sig), got %d", ErrInvalidTaskToken, len(parts))
+		return nil, fmt.Errorf("%w: expected 5 parts (version|job_id|queue|receipt|sig), got %d", store.ErrInvalidTaskToken, len(parts))
 	}
 
 	version, jobID, queue, receiptHandle, providedSig := parts[0], parts[1], parts[2], parts[3], parts[4]
 
 	// Validate version
 	if version != taskTokenVersion {
-		return nil, fmt.Errorf("%w: unsupported version %s (expected %s)", ErrInvalidTaskToken, version, taskTokenVersion)
+		return nil, fmt.Errorf("%w: unsupported version %s (expected %s)", store.ErrInvalidTaskToken, version, taskTokenVersion)
 	}
 
 	// Validate non-empty components
 	if jobID == "" || queue == "" || receiptHandle == "" {
-		return nil, fmt.Errorf("%w: empty component in token", ErrInvalidTaskToken)
+		return nil, fmt.Errorf("%w: empty component in token", store.ErrInvalidTaskToken)
 	}
 
 	// Recompute HMAC signature
@@ -272,7 +273,7 @@ func (s *SQSJobStore) decodeTaskToken(token string) (*taskToken, error) {
 
 	// Constant-time comparison to prevent timing attacks
 	if !hmac.Equal([]byte(expectedSig), []byte(providedSig)) {
-		return nil, fmt.Errorf("%w: invalid signature", ErrInvalidTaskToken)
+		return nil, fmt.Errorf("%w: invalid signature", store.ErrInvalidTaskToken)
 	}
 
 	return &taskToken{
@@ -283,7 +284,7 @@ func (s *SQSJobStore) decodeTaskToken(token string) (*taskToken, error) {
 }
 
 // EnqueueJob adds a new job to the queue with idempotency support
-func (s *SQSJobStore) EnqueueJob(ctx context.Context, req *jobv1.EnqueueJobRequest) (*jobv1.EnqueueJobResponse, error) {
+func (s *JobStore) EnqueueJob(ctx context.Context, req *jobv1.EnqueueJobRequest) (*jobv1.EnqueueJobResponse, error) {
 	// 1. Validate queue is configured
 	if _, exists := s.cfg.QueueURLs[req.Queue]; !exists {
 		log.Error().Str("queue", req.Queue).Msg("Queue not configured")
@@ -380,7 +381,7 @@ func (s *SQSJobStore) EnqueueJob(ctx context.Context, req *jobv1.EnqueueJobReque
 }
 
 // DequeueJobs retrieves jobs from the specified queue
-func (s *SQSJobStore) DequeueJobs(ctx context.Context, queue string, maxJobs int, timeoutSeconds int) ([]*JobWithToken, error) {
+func (s *JobStore) DequeueJobs(ctx context.Context, queue string, maxJobs int, timeoutSeconds int) ([]*store.JobWithToken, error) {
 	queueURL, exists := s.cfg.QueueURLs[queue]
 	if !exists {
 		log.Error().Str("queue", queue).Msg("Queue not configured")
@@ -412,7 +413,7 @@ func (s *SQSJobStore) DequeueJobs(ctx context.Context, queue string, maxJobs int
 		return nil, nil
 	}
 
-	results := make([]*JobWithToken, 0, len(output.Messages))
+	results := make([]*store.JobWithToken, 0, len(output.Messages))
 	metrics := telemetry.GetMetrics()
 
 	// Process each message
@@ -485,7 +486,7 @@ func (s *SQSJobStore) DequeueJobs(ctx context.Context, queue string, maxJobs int
 		// Create task token with HMAC signature
 		taskToken := s.encodeTaskToken(jobID, queue, aws.ToString(message.ReceiptHandle))
 
-		results = append(results, &JobWithToken{
+		results = append(results, &store.JobWithToken{
 			Job:       job,
 			TaskToken: taskToken,
 		})
@@ -496,7 +497,7 @@ func (s *SQSJobStore) DequeueJobs(ctx context.Context, queue string, maxJobs int
 }
 
 // UpdateJobVisibility extends the visibility timeout for a job
-func (s *SQSJobStore) UpdateJobVisibility(ctx context.Context, queue string, taskToken string, timeoutSeconds int) error {
+func (s *JobStore) UpdateJobVisibility(ctx context.Context, queue string, taskToken string, timeoutSeconds int) error {
 	// Decode and verify task token
 	tt, err := s.decodeTaskToken(taskToken)
 	if err != nil {
@@ -507,7 +508,7 @@ func (s *SQSJobStore) UpdateJobVisibility(ctx context.Context, queue string, tas
 	// Verify queue matches
 	if tt.Queue != queue {
 		log.Warn().Str("expected_queue", queue).Str("token_queue", tt.Queue).Msg("Queue mismatch")
-		return fmt.Errorf("%w: expected %s, got %s", ErrQueueMismatch, queue, tt.Queue)
+		return fmt.Errorf("%w: expected %s, got %s", store.ErrQueueMismatch, queue, tt.Queue)
 	}
 
 	// Update visibility timeout in SQS
@@ -536,7 +537,7 @@ func (s *SQSJobStore) UpdateJobVisibility(ctx context.Context, queue string, tas
 }
 
 // CompleteJob marks a job as completed and removes it from the queue
-func (s *SQSJobStore) CompleteJob(ctx context.Context, taskToken string, result *jobv1.JobResult) error {
+func (s *JobStore) CompleteJob(ctx context.Context, taskToken string, result *jobv1.JobResult) error {
 	// Decode and verify task token
 	tt, err := s.decodeTaskToken(taskToken)
 	if err != nil {
@@ -547,7 +548,7 @@ func (s *SQSJobStore) CompleteJob(ctx context.Context, taskToken string, result 
 	// Verify job ID matches
 	if tt.JobID != result.JobId {
 		log.Warn().Str("token_job_id", tt.JobID).Str("result_job_id", result.JobId).Msg("Job ID mismatch")
-		return fmt.Errorf("%w: expected %s, got %s", ErrJobIDMismatch, tt.JobID, result.JobId)
+		return fmt.Errorf("%w: expected %s, got %s", store.ErrJobIDMismatch, tt.JobID, result.JobId)
 	}
 
 	// Get job from DynamoDB
@@ -558,7 +559,7 @@ func (s *SQSJobStore) CompleteJob(ctx context.Context, taskToken string, result 
 	}
 	if job == nil {
 		log.Warn().Str("job_id", tt.JobID).Msg("Job not found")
-		return fmt.Errorf("%w: %s", ErrJobNotFound, tt.JobID)
+		return fmt.Errorf("%w: %s", store.ErrJobNotFound, tt.JobID)
 	}
 
 	// Update job state
@@ -629,7 +630,7 @@ func (s *SQSJobStore) CompleteJob(ctx context.Context, taskToken string, result 
 
 // ReleaseJob returns a job back to the queue, resetting its state to SCHEDULED.
 // This immediately makes the message visible in SQS by setting visibility timeout to 0.
-func (s *SQSJobStore) ReleaseJob(ctx context.Context, taskToken string) error {
+func (s *JobStore) ReleaseJob(ctx context.Context, taskToken string) error {
 	// Decode and verify task token
 	tt, err := s.decodeTaskToken(taskToken)
 	if err != nil {
@@ -716,7 +717,7 @@ func (s *SQSJobStore) ReleaseJob(ctx context.Context, taskToken string) error {
 //
 // IMPORTANT: Always specify a queue filter when possible to use GSI1 Query instead
 // of full table Scan. Without a queue filter, this performs a full table scan.
-func (s *SQSJobStore) ListJobs(ctx context.Context, req *jobv1.ListJobsRequest) (*jobv1.ListJobsResponse, error) {
+func (s *JobStore) ListJobs(ctx context.Context, req *jobv1.ListJobsRequest) (*jobv1.ListJobsResponse, error) {
 	pageSize := int(req.PageSize)
 	if pageSize <= 0 {
 		pageSize = defaultListJobsPageSize
@@ -831,7 +832,7 @@ func (s *SQSJobStore) ListJobs(ctx context.Context, req *jobv1.ListJobsRequest) 
 }
 
 // PublishEvents publishes events for a job
-func (s *SQSJobStore) PublishEvents(ctx context.Context, taskToken string, events []*jobv1.JobEvent) error {
+func (s *JobStore) PublishEvents(ctx context.Context, taskToken string, events []*jobv1.JobEvent) error {
 	start := time.Now()
 	metrics := telemetry.GetMetrics()
 
@@ -846,7 +847,7 @@ func (s *SQSJobStore) PublishEvents(ctx context.Context, taskToken string, event
 		return fmt.Errorf("failed to get job: %w", err)
 	}
 	if job == nil {
-		return fmt.Errorf("%w: %s", ErrJobNotFound, tt.JobID)
+		return fmt.Errorf("%w: %s", store.ErrJobNotFound, tt.JobID)
 	}
 
 	// Set timestamps if not already set
@@ -905,14 +906,14 @@ func (s *SQSJobStore) PublishEvents(ctx context.Context, taskToken string, event
 }
 
 // StreamEvents creates a stream of events for a job
-func (s *SQSJobStore) StreamEvents(ctx context.Context, jobId string, fromSequence int64, fromTimestamp int64, eventFilter []jobv1.EventType) (<-chan *jobv1.JobEvent, error) {
+func (s *JobStore) StreamEvents(ctx context.Context, jobId string, fromSequence int64, fromTimestamp int64, eventFilter []jobv1.EventType) (<-chan *jobv1.JobEvent, error) {
 	// Verify job exists
 	job, err := s.getJobByID(ctx, jobId)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get job: %w", err)
 	}
 	if job == nil {
-		return nil, fmt.Errorf("%w: %s", ErrJobNotFound, jobId)
+		return nil, fmt.Errorf("%w: %s", store.ErrJobNotFound, jobId)
 	}
 
 	// Create event filter map for efficient lookup
@@ -968,7 +969,7 @@ func (s *SQSJobStore) StreamEvents(ctx context.Context, jobId string, fromSequen
 // fanoutEvent sends an event to all active streams for a job
 // Must be called with at least a read lock (RLock) held on s.mu to safely access eventStreams
 // Uses non-blocking sends to prevent slow consumers from blocking event publishing
-func (s *SQSJobStore) fanoutEvent(jobId string, event *jobv1.JobEvent) {
+func (s *JobStore) fanoutEvent(jobId string, event *jobv1.JobEvent) {
 	metrics := telemetry.GetMetrics()
 	streams := s.eventStreams[jobId]
 	for _, ch := range streams {
@@ -994,7 +995,7 @@ func (s *SQSJobStore) fanoutEvent(jobId string, event *jobv1.JobEvent) {
 
 // replayHistoricalEvents queries historical events from DynamoDB and sends them to the channel
 // Events are automatically sorted by sequence (sort key) in DynamoDB
-func (s *SQSJobStore) replayHistoricalEvents(ctx context.Context, jobID string, fromSequence int64, fromTimestamp int64, filterMap map[jobv1.EventType]bool, eventChan chan *jobv1.JobEvent) error {
+func (s *JobStore) replayHistoricalEvents(ctx context.Context, jobID string, fromSequence int64, fromTimestamp int64, filterMap map[jobv1.EventType]bool, eventChan chan *jobv1.JobEvent) error {
 	// Build query with job_id and optional sequence range
 	keyCond := expression.Key("job_id").Equal(expression.Value(jobID))
 
@@ -1065,7 +1066,7 @@ func (s *SQSJobStore) replayHistoricalEvents(ctx context.Context, jobID string, 
 }
 
 // unmarshalEventItem unmarshals a DynamoDB item to a JobEvent
-func (s *SQSJobStore) unmarshalEventItem(item map[string]types.AttributeValue) (*jobv1.JobEvent, error) {
+func (s *JobStore) unmarshalEventItem(item map[string]types.AttributeValue) (*jobv1.JobEvent, error) {
 	// Extract event_payload binary data
 	payloadAttr, ok := item["event_payload"].(*types.AttributeValueMemberB)
 	if !ok {
@@ -1086,7 +1087,7 @@ func (s *SQSJobStore) unmarshalEventItem(item map[string]types.AttributeValue) (
 //
 // IMPORTANT: Validates event size against storage backend size limits before writing.
 // Events exceeding maxEventPayloadBytes will be rejected with ErrEventTooLarge.
-func (s *SQSJobStore) batchWriteEvents(ctx context.Context, jobID string, events []*jobv1.JobEvent) error {
+func (s *JobStore) batchWriteEvents(ctx context.Context, jobID string, events []*jobv1.JobEvent) error {
 	const maxBatchSize = 25 // DynamoDB BatchWriteItem limit
 
 	// Calculate TTL if configured
@@ -1127,7 +1128,7 @@ func (s *SQSJobStore) batchWriteEvents(ctx context.Context, jobID string, events
 
 				return fmt.Errorf("%w: event seq=%d size=%d bytes exceeds storage limit of %d bytes. "+
 					"Consider reducing output batch size or splitting large outputs",
-					ErrEventTooLarge, event.Sequence, len(eventBytes), maxEventPayloadBytes)
+					store.ErrEventTooLarge, event.Sequence, len(eventBytes), maxEventPayloadBytes)
 			}
 
 			// Build DynamoDB item
@@ -1163,7 +1164,7 @@ func (s *SQSJobStore) batchWriteEvents(ctx context.Context, jobID string, events
 }
 
 // batchWriteWithRetry writes items to DynamoDB with exponential backoff retry for unprocessed items
-func (s *SQSJobStore) batchWriteWithRetry(ctx context.Context, writeRequests []types.WriteRequest) error {
+func (s *JobStore) batchWriteWithRetry(ctx context.Context, writeRequests []types.WriteRequest) error {
 	const maxRetries = 3
 	backoff := 100 * time.Millisecond
 
@@ -1215,7 +1216,7 @@ func (s *SQSJobStore) batchWriteWithRetry(ctx context.Context, writeRequests []t
 }
 
 // getJobByID retrieves a job from DynamoDB by job ID
-func (s *SQSJobStore) getJobByID(ctx context.Context, jobID string) (*jobv1.Job, error) {
+func (s *JobStore) getJobByID(ctx context.Context, jobID string) (*jobv1.Job, error) {
 	getInput := &dynamodb.GetItemInput{
 		TableName: aws.String(s.cfg.JobsTableName),
 		Key: map[string]types.AttributeValue{
@@ -1248,7 +1249,7 @@ func (s *SQSJobStore) getJobByID(ctx context.Context, jobID string) (*jobv1.Job,
 //   - Projection: KEYS_ONLY or ALL
 //
 // If the index does not exist, this method will return an error from DynamoDB
-func (s *SQSJobStore) getJobByRequestID(ctx context.Context, requestID string) (*jobv1.Job, error) {
+func (s *JobStore) getJobByRequestID(ctx context.Context, requestID string) (*jobv1.Job, error) {
 	keyCond := expression.Key("request_id").Equal(expression.Value(requestID))
 	expr, err := expression.NewBuilder().WithKeyCondition(keyCond).Build()
 	if err != nil {
@@ -1283,7 +1284,7 @@ func (s *SQSJobStore) getJobByRequestID(ctx context.Context, requestID string) (
 }
 
 // updateJobState updates a job's state in DynamoDB
-func (s *SQSJobStore) updateJobState(ctx context.Context, job *jobv1.Job) error {
+func (s *JobStore) updateJobState(ctx context.Context, job *jobv1.Job) error {
 	updateBuilder := expression.Set(
 		expression.Name("state"),
 		expression.Value(int32(job.State)),
@@ -1320,7 +1321,7 @@ type sqsJobMessage struct {
 
 // extractJobIDFromMessage parses the SQS message body to extract job_id
 // Returns empty string if the message is invalid or missing job_id
-func (s *SQSJobStore) extractJobIDFromMessage(body string) string {
+func (s *JobStore) extractJobIDFromMessage(body string) string {
 	var msg sqsJobMessage
 	if err := json.Unmarshal([]byte(body), &msg); err != nil {
 		log.Debug().Err(err).Str("body", body).Msg("Failed to unmarshal SQS message")
@@ -1333,7 +1334,7 @@ func (s *SQSJobStore) extractJobIDFromMessage(body string) string {
 }
 
 // deleteMessageFromQueue deletes a message from SQS
-func (s *SQSJobStore) deleteMessageFromQueue(ctx context.Context, queueURL string, message sqstypes.Message) error {
+func (s *JobStore) deleteMessageFromQueue(ctx context.Context, queueURL string, message sqstypes.Message) error {
 	deleteInput := &sqs.DeleteMessageInput{
 		QueueUrl:      aws.String(queueURL),
 		ReceiptHandle: message.ReceiptHandle,

@@ -1,4 +1,4 @@
-package store
+package aws
 
 import (
 	"context"
@@ -12,24 +12,25 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/rs/zerolog/log"
+	"github.com/wolfeidau/airunner/internal/store"
 )
 
-// DynamoDBCertificateStore is a DynamoDB implementation of CertificateStore
-type DynamoDBCertificateStore struct {
+// CertificateStore is a DynamoDB implementation of CertificateStore
+type CertificateStore struct {
 	client    *dynamodb.Client
 	tableName string
 }
 
-// NewDynamoDBCertificateStore creates a new DynamoDB certificate store
-func NewDynamoDBCertificateStore(client *dynamodb.Client, tableName string) *DynamoDBCertificateStore {
-	return &DynamoDBCertificateStore{
+// CertificateStore creates a new DynamoDB certificate store
+func NewCertificateStore(client *dynamodb.Client, tableName string) *CertificateStore {
+	return &CertificateStore{
 		client:    client,
 		tableName: tableName,
 	}
 }
 
 // Get retrieves certificate metadata by serial number
-func (s *DynamoDBCertificateStore) Get(ctx context.Context, serialNumber string) (*CertMetadata, error) {
+func (s *CertificateStore) Get(ctx context.Context, serialNumber string) (*store.CertMetadata, error) {
 	result, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(s.tableName),
 		Key: map[string]types.AttributeValue{
@@ -41,10 +42,10 @@ func (s *DynamoDBCertificateStore) Get(ctx context.Context, serialNumber string)
 	}
 
 	if result.Item == nil {
-		return nil, ErrCertNotFound
+		return nil, store.ErrCertNotFound
 	}
 
-	var cert CertMetadata
+	var cert store.CertMetadata
 	if err := attributevalue.UnmarshalMap(result.Item, &cert); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal certificate: %w", err)
 	}
@@ -53,7 +54,7 @@ func (s *DynamoDBCertificateStore) Get(ctx context.Context, serialNumber string)
 }
 
 // GetByPrincipal retrieves all certificates for a principal using GSI1
-func (s *DynamoDBCertificateStore) GetByPrincipal(ctx context.Context, principalID string) ([]*CertMetadata, error) {
+func (s *CertificateStore) GetByPrincipal(ctx context.Context, principalID string) ([]*store.CertMetadata, error) {
 	// Query GSI1 (principal_id as partition key)
 	keyEx := expression.Key("principal_id").Equal(expression.Value(principalID))
 	expr, err := expression.NewBuilder().WithKeyCondition(keyEx).Build()
@@ -72,9 +73,9 @@ func (s *DynamoDBCertificateStore) GetByPrincipal(ctx context.Context, principal
 		return nil, wrapAWSError(err, "failed to query certificates by principal")
 	}
 
-	certs := make([]*CertMetadata, 0, len(result.Items))
+	certs := make([]*store.CertMetadata, 0, len(result.Items))
 	for _, item := range result.Items {
-		var cert CertMetadata
+		var cert store.CertMetadata
 		if err := attributevalue.UnmarshalMap(item, &cert); err != nil {
 			log.Error().Err(err).Msg("failed to unmarshal certificate, skipping")
 			continue
@@ -86,7 +87,7 @@ func (s *DynamoDBCertificateStore) GetByPrincipal(ctx context.Context, principal
 }
 
 // GetByFingerprint retrieves certificate by SHA-256 fingerprint using GSI2
-func (s *DynamoDBCertificateStore) GetByFingerprint(ctx context.Context, fingerprint string) (*CertMetadata, error) {
+func (s *CertificateStore) GetByFingerprint(ctx context.Context, fingerprint string) (*store.CertMetadata, error) {
 	// Query GSI2 (fingerprint as partition key)
 	keyEx := expression.Key("fingerprint").Equal(expression.Value(fingerprint))
 	expr, err := expression.NewBuilder().WithKeyCondition(keyEx).Build()
@@ -107,10 +108,10 @@ func (s *DynamoDBCertificateStore) GetByFingerprint(ctx context.Context, fingerp
 	}
 
 	if len(result.Items) == 0 {
-		return nil, ErrCertNotFound
+		return nil, store.ErrCertNotFound
 	}
 
-	var cert CertMetadata
+	var cert store.CertMetadata
 	if err := attributevalue.UnmarshalMap(result.Items[0], &cert); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal certificate: %w", err)
 	}
@@ -119,7 +120,7 @@ func (s *DynamoDBCertificateStore) GetByFingerprint(ctx context.Context, fingerp
 }
 
 // Register stores certificate metadata
-func (s *DynamoDBCertificateStore) Register(ctx context.Context, cert *CertMetadata) error {
+func (s *CertificateStore) Register(ctx context.Context, cert *store.CertMetadata) error {
 	item, err := attributevalue.MarshalMap(cert)
 	if err != nil {
 		return fmt.Errorf("failed to marshal certificate: %w", err)
@@ -134,7 +135,7 @@ func (s *DynamoDBCertificateStore) Register(ctx context.Context, cert *CertMetad
 	if err != nil {
 		var condErr *types.ConditionalCheckFailedException
 		if errors.As(err, &condErr) {
-			return ErrCertAlreadyExists
+			return store.ErrCertAlreadyExists
 		}
 		return wrapAWSError(err, "failed to register certificate")
 	}
@@ -149,7 +150,7 @@ func (s *DynamoDBCertificateStore) Register(ctx context.Context, cert *CertMetad
 }
 
 // Revoke marks a certificate as revoked
-func (s *DynamoDBCertificateStore) Revoke(ctx context.Context, serialNumber string, reason string) error {
+func (s *CertificateStore) Revoke(ctx context.Context, serialNumber string, reason string) error {
 	now := time.Now()
 
 	update := expression.Set(
@@ -184,7 +185,7 @@ func (s *DynamoDBCertificateStore) Revoke(ctx context.Context, serialNumber stri
 	if err != nil {
 		var condErr *types.ConditionalCheckFailedException
 		if errors.As(err, &condErr) {
-			return ErrCertNotFound
+			return store.ErrCertNotFound
 		}
 		return wrapAWSError(err, "failed to revoke certificate")
 	}
@@ -198,7 +199,7 @@ func (s *DynamoDBCertificateStore) Revoke(ctx context.Context, serialNumber stri
 }
 
 // List returns all registered certificates
-func (s *DynamoDBCertificateStore) List(ctx context.Context, opts ListCertificatesOptions) ([]*CertMetadata, error) {
+func (s *CertificateStore) List(ctx context.Context, opts store.ListCertificatesOptions) ([]*store.CertMetadata, error) {
 	// If filtering by principal, use GSI1 for efficient query
 	if opts.PrincipalID != "" {
 		return s.GetByPrincipal(ctx, opts.PrincipalID)
@@ -240,9 +241,9 @@ func (s *DynamoDBCertificateStore) List(ctx context.Context, opts ListCertificat
 		return nil, wrapAWSError(err, "failed to list certificates")
 	}
 
-	certs := make([]*CertMetadata, 0, len(result.Items))
+	certs := make([]*store.CertMetadata, 0, len(result.Items))
 	for _, item := range result.Items {
-		var cert CertMetadata
+		var cert store.CertMetadata
 		if err := attributevalue.UnmarshalMap(item, &cert); err != nil {
 			log.Error().Err(err).Msg("failed to unmarshal certificate, skipping")
 			continue

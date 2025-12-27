@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 	"github.com/wolfeidau/airunner/internal/store"
+	memorystore "github.com/wolfeidau/airunner/internal/store/memory"
 	"github.com/wolfeidau/airunner/internal/util"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -19,7 +20,7 @@ import (
 // 4. Client retrieves events
 func TestEventBatcherIntegrationWithStore(t *testing.T) {
 	ctx := context.Background()
-	jobStore := store.NewMemoryJobStore()
+	jobStore := memorystore.NewJobStore()
 	require.NoError(t, jobStore.Start())
 	defer func() { require.NoError(t, jobStore.Stop()) }()
 
@@ -88,7 +89,7 @@ func TestEventBatcherIntegrationWithStore(t *testing.T) {
 // TestEventBatcherWithNonOutputEvents tests that non-output events flush the buffer first
 func TestEventBatcherIntegrationWithNonOutputEvents(t *testing.T) {
 	ctx := context.Background()
-	jobStore := store.NewMemoryJobStore()
+	jobStore := memorystore.NewJobStore()
 	require.NoError(t, jobStore.Start())
 	defer func() { require.NoError(t, jobStore.Stop()) }()
 
@@ -158,7 +159,7 @@ func TestEventBatcherIntegrationWithNonOutputEvents(t *testing.T) {
 // TestEventBatcherTimestampEncoding tests timestamp delta encoding across a batch
 func TestEventBatcherIntegrationTimestampEncoding(t *testing.T) {
 	ctx := context.Background()
-	jobStore := store.NewMemoryJobStore()
+	jobStore := memorystore.NewJobStore()
 	require.NoError(t, jobStore.Start())
 	defer func() { require.NoError(t, jobStore.Stop()) }()
 
@@ -253,7 +254,7 @@ func TestEventBatcherIntegrationBackwardsCompatibility(t *testing.T) {
 // TestEventBatcherSequenceAcrossMultipleBatches verifies monotonic sequence numbering
 func TestEventBatcherIntegrationSequenceMonotonicity(t *testing.T) {
 	ctx := context.Background()
-	jobStore := store.NewMemoryJobStore()
+	jobStore := memorystore.NewJobStore()
 	require.NoError(t, jobStore.Start())
 	defer func() { require.NoError(t, jobStore.Stop()) }()
 
@@ -320,7 +321,7 @@ func TestEventBatcherIntegrationSequenceMonotonicity(t *testing.T) {
 // TestEventBatcherProcessLifecycle tests a realistic job lifecycle with multiple event types
 func TestEventBatcherIntegrationProcessLifecycle(t *testing.T) {
 	ctx := context.Background()
-	jobStore := store.NewMemoryJobStore()
+	jobStore := memorystore.NewJobStore()
 	require.NoError(t, jobStore.Start())
 	defer func() { require.NoError(t, jobStore.Stop()) }()
 

@@ -19,11 +19,13 @@ import (
 )
 
 type WorkerCmd struct {
-	Server            string        `help:"Server URL" default:"https://localhost:8993"`
+	Server            string        `help:"Server URL" default:"https://localhost:443"`
 	Queue             string        `help:"Queue name to process" default:"default"`
 	ClientTimeout     time.Duration `help:"Client timeout in seconds" default:"5m"`
 	VisibilityTimeout int32         `help:"Visibility timeout in seconds" default:"300"`
-	Token             string        `help:"JWT token for authentication" env:"AIRUNNER_TOKEN"`
+	CACert            string        `help:"Path to CA certificate" env:"AIRUNNER_CA_CERT"`
+	ClientCert        string        `help:"Path to client certificate" env:"AIRUNNER_CLIENT_CERT"`
+	ClientKey         string        `help:"Path to client private key" env:"AIRUNNER_CLIENT_KEY"`
 }
 
 func (w *WorkerCmd) Run(ctx context.Context, globals *Globals) error {
@@ -40,12 +42,17 @@ func (w *WorkerCmd) Run(ctx context.Context, globals *Globals) error {
 	}
 
 	config := client.Config{
-		ServerURL: w.Server,
-		Timeout:   w.ClientTimeout,
-		Debug:     globals.Debug,
-		Token:     w.Token,
+		ServerURL:  w.Server,
+		Timeout:    w.ClientTimeout,
+		Debug:      globals.Debug,
+		CACert:     w.CACert,
+		ClientCert: w.ClientCert,
+		ClientKey:  w.ClientKey,
 	}
-	clients := client.NewClients(config, connect.WithInterceptors(otelInterceptor))
+	clients, err := client.NewClients(config, connect.WithInterceptors(otelInterceptor))
+	if err != nil {
+		return fmt.Errorf("failed to create clients: %w", err)
+	}
 
 	bkoffStrategy := backoff.NewExponentialBackOff()
 	bkoffStrategy.InitialInterval = 1 * time.Second

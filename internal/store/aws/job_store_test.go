@@ -1,4 +1,4 @@
-package store
+package aws
 
 import (
 	"context"
@@ -6,12 +6,13 @@ import (
 
 	"github.com/stretchr/testify/require"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
+	"github.com/wolfeidau/airunner/internal/store"
 )
 
 func TestTaskTokenEncodeDecode(t *testing.T) {
 	// Create store with test signing secret
-	store := &SQSJobStore{
-		cfg: SQSJobStoreConfig{
+	st := &JobStore{
+		cfg: JobStoreConfig{
 			TokenSigningSecret: []byte("test-secret-key-for-hmac-signing"),
 		},
 	}
@@ -44,10 +45,10 @@ func TestTaskTokenEncodeDecode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoded := store.encodeTaskToken(tt.jobID, tt.queue, tt.receiptHandle)
+			encoded := st.encodeTaskToken(tt.jobID, tt.queue, tt.receiptHandle)
 			require.NotEmpty(t, encoded)
 
-			decoded, err := store.decodeTaskToken(encoded)
+			decoded, err := st.decodeTaskToken(encoded)
 			require.NoError(t, err)
 			require.NotNil(t, decoded)
 
@@ -59,8 +60,8 @@ func TestTaskTokenEncodeDecode(t *testing.T) {
 }
 
 func TestTaskTokenInvalid(t *testing.T) {
-	store := &SQSJobStore{
-		cfg: SQSJobStoreConfig{
+	st := &JobStore{
+		cfg: JobStoreConfig{
 			TokenSigningSecret: []byte("test-secret-key"),
 		},
 	}
@@ -89,7 +90,7 @@ func TestTaskTokenInvalid(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := store.decodeTaskToken(tt.token)
+			_, err := st.decodeTaskToken(tt.token)
 			require.Error(t, err)
 			if tt.errMsg != "" {
 				require.Contains(t, err.Error(), tt.errMsg)
@@ -99,38 +100,38 @@ func TestTaskTokenInvalid(t *testing.T) {
 }
 
 func TestTaskTokenSignatureValidation(t *testing.T) {
-	store1 := &SQSJobStore{
-		cfg: SQSJobStoreConfig{
+	st1 := &JobStore{
+		cfg: JobStoreConfig{
 			TokenSigningSecret: []byte("secret-key-1"),
 		},
 	}
-	store2 := &SQSJobStore{
-		cfg: SQSJobStoreConfig{
+	st2 := &JobStore{
+		cfg: JobStoreConfig{
 			TokenSigningSecret: []byte("secret-key-2"), // Different secret
 		},
 	}
 
 	t.Run("tampering detection", func(t *testing.T) {
 		// Create a valid token
-		token := store1.encodeTaskToken("job-123", "default", "receipt-abc")
+		token := st1.encodeTaskToken("job-123", "default", "receipt-abc")
 
 		// Try to decode with wrong secret - should fail
-		_, err := store2.decodeTaskToken(token)
+		_, err := st2.decodeTaskToken(token)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "invalid signature")
 	})
 
 	t.Run("valid signature", func(t *testing.T) {
 		// Create and decode with same secret - should succeed
-		token := store1.encodeTaskToken("job-456", "priority", "receipt-xyz")
-		decoded, err := store1.decodeTaskToken(token)
+		token := st1.encodeTaskToken("job-456", "priority", "receipt-xyz")
+		decoded, err := st1.decodeTaskToken(token)
 		require.NoError(t, err)
 		require.Equal(t, "job-456", decoded.JobID)
 	})
 }
 
 func TestExtractJobIDFromMessage(t *testing.T) {
-	store := &SQSJobStore{}
+	st := &JobStore{}
 
 	tests := []struct {
 		name     string
@@ -166,7 +167,7 @@ func TestExtractJobIDFromMessage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			jobID := store.extractJobIDFromMessage(tt.body)
+			jobID := st.extractJobIDFromMessage(tt.body)
 			if tt.expectOK {
 				require.Equal(t, tt.expectID, jobID)
 			} else {
@@ -176,8 +177,8 @@ func TestExtractJobIDFromMessage(t *testing.T) {
 	}
 }
 
-func TestSQSJobStoreStartStop(t *testing.T) {
-	store := NewSQSJobStore(nil, nil, SQSJobStoreConfig{})
+func TestAWSJobStoreStartStop(t *testing.T) {
+	store := NewJobStore(nil, nil, JobStoreConfig{})
 
 	err := store.Start()
 	require.NoError(t, err)
@@ -186,17 +187,17 @@ func TestSQSJobStoreStartStop(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestSQSJobStoreNoAuth(t *testing.T) {
-	// Verify that SQSJobStore implements JobStore interface
-	var _ JobStore = (*SQSJobStore)(nil)
+func TestAWSJobStoreNoAuth(t *testing.T) {
+	// Verify that AWSJobStore implements JobStore interface
+	var _ store.JobStore = (*JobStore)(nil)
 }
 
 // Integration test helpers (Phase 1 - basic structure)
 // Note: Full integration tests with LocalStack will be in Phase 3
 
-func TestSQSJobStoreConfigValidation(t *testing.T) {
+func TestAWSJobStoreConfigValidation(t *testing.T) {
 	t.Run("valid config", func(t *testing.T) {
-		cfg := SQSJobStoreConfig{
+		cfg := JobStoreConfig{
 			QueueURLs: map[string]string{
 				"default": "https://sqs.us-west-2.amazonaws.com/123456789/airunner-prod-default",
 			},
@@ -205,7 +206,7 @@ func TestSQSJobStoreConfigValidation(t *testing.T) {
 			DefaultVisibilityTimeoutSeconds: 300,
 		}
 
-		store := NewSQSJobStore(nil, nil, cfg)
+		store := NewJobStore(nil, nil, cfg)
 		require.NotNil(t, store)
 		require.Equal(t, cfg.JobsTableName, store.cfg.JobsTableName)
 		require.Equal(t, cfg.JobEventsTableName, store.cfg.JobEventsTableName)
@@ -213,8 +214,8 @@ func TestSQSJobStoreConfigValidation(t *testing.T) {
 }
 
 func TestTaskTokenRoundTrip(t *testing.T) {
-	store := &SQSJobStore{
-		cfg: SQSJobStoreConfig{
+	st := &JobStore{
+		cfg: JobStoreConfig{
 			TokenSigningSecret: []byte("test-round-trip-secret"),
 		},
 	}
@@ -226,8 +227,8 @@ func TestTaskTokenRoundTrip(t *testing.T) {
 		queue := "queue-" + string(rune(i%5))
 		handle := "handle-" + string(rune(i%10))
 
-		encoded := store.encodeTaskToken(jobID, queue, handle)
-		decoded, err := store.decodeTaskToken(encoded)
+		encoded := st.encodeTaskToken(jobID, queue, handle)
+		decoded, err := st.decodeTaskToken(encoded)
 		require.NoError(t, err)
 		require.Equal(t, jobID, decoded.JobID)
 		require.Equal(t, queue, decoded.Queue)
@@ -236,8 +237,8 @@ func TestTaskTokenRoundTrip(t *testing.T) {
 }
 
 func TestDecodeTaskTokenErrorCases(t *testing.T) {
-	store := &SQSJobStore{
-		cfg: SQSJobStoreConfig{
+	st := &JobStore{
+		cfg: JobStoreConfig{
 			TokenSigningSecret: []byte("test-error-cases-secret"),
 		},
 	}
@@ -262,69 +263,71 @@ func TestDecodeTaskTokenErrorCases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := store.decodeTaskToken(tt.token)
+			_, err := st.decodeTaskToken(tt.token)
 			require.Error(t, err)
 		})
 	}
 }
 
-func TestSQSJobStoreEventStreamingSetup(t *testing.T) {
-	s := NewSQSJobStore(nil, nil, SQSJobStoreConfig{})
+func TestJobStoreEventStreamingSetup(t *testing.T) {
+	st := NewJobStore(nil, nil, JobStoreConfig{})
 
 	// Verify eventStreams map is initialized
-	require.NotNil(t, s.eventStreams)
-	require.Empty(t, s.eventStreams)
+	require.NotNil(t, st.eventStreams)
+	require.Empty(t, st.eventStreams)
 
 	// Test that we can register and unregister streams
 	jobID := "test-job-123"
 	ch := make(chan *jobv1.JobEvent, 10)
 
-	s.mu.Lock()
-	s.eventStreams[jobID] = append(s.eventStreams[jobID], ch)
-	s.mu.Unlock()
+	st.mu.Lock()
+	st.eventStreams[jobID] = append(st.eventStreams[jobID], ch)
+	st.mu.Unlock()
 
-	s.mu.RLock()
-	streams := s.eventStreams[jobID]
-	s.mu.RUnlock()
+	st.mu.RLock()
+	streams := st.eventStreams[jobID]
+	st.mu.RUnlock()
 
 	require.Len(t, streams, 1)
 	require.Equal(t, ch, streams[0])
 }
 
 func TestQueueURLConfiguration(t *testing.T) {
-	cfg := SQSJobStoreConfig{
+	cfg := JobStoreConfig{
 		QueueURLs: map[string]string{
 			"default":  "https://sqs.us-west-2.amazonaws.com/123456789/airunner-prod-default",
 			"priority": "https://sqs.us-west-2.amazonaws.com/123456789/airunner-prod-priority",
 		},
 	}
 
-	store := NewSQSJobStore(nil, nil, cfg)
+	st := NewJobStore(nil, nil, cfg)
 
 	// Verify queue URLs are accessible
-	require.Equal(t, "https://sqs.us-west-2.amazonaws.com/123456789/airunner-prod-default", store.cfg.QueueURLs["default"])
-	require.Equal(t, "https://sqs.us-west-2.amazonaws.com/123456789/airunner-prod-priority", store.cfg.QueueURLs["priority"])
-	require.Empty(t, store.cfg.QueueURLs["nonexistent"])
+	require.Equal(t, "https://sqs.us-west-2.amazonaws.com/123456789/airunner-prod-default", st.cfg.QueueURLs["default"])
+	require.Equal(t, "https://sqs.us-west-2.amazonaws.com/123456789/airunner-prod-priority", st.cfg.QueueURLs["priority"])
+	require.Empty(t, st.cfg.QueueURLs["nonexistent"])
 }
 
 func TestContextCancellation(t *testing.T) {
-	s := NewSQSJobStore(nil, nil, SQSJobStoreConfig{
-		QueueURLs: map[string]string{"default": "https://example.com/queue"},
-	})
+	st := &JobStore{
+		cfg: JobStoreConfig{
+			QueueURLs: map[string]string{"default": "https://example.com/queue"},
+		},
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	// DequeueJobs should handle cancelled context gracefully (actual test requires AWS clients)
 	// This is a placeholder for the behavioral test
-	require.NotNil(t, s)
+	require.NotNil(t, st)
 	require.Error(t, ctx.Err())
 }
 
-func TestSQSJobStoreReleaseJob(t *testing.T) {
+func TestAWSJobStoreReleaseJob(t *testing.T) {
 	t.Run("release with invalid token fails", func(t *testing.T) {
-		store := &SQSJobStore{
-			cfg: SQSJobStoreConfig{
+		store := &JobStore{
+			cfg: JobStoreConfig{
 				TokenSigningSecret: []byte("test-secret"),
 				QueueURLs:          map[string]string{"default": "https://example.com/queue"},
 			},
@@ -336,8 +339,8 @@ func TestSQSJobStoreReleaseJob(t *testing.T) {
 	})
 
 	t.Run("release with empty token fails", func(t *testing.T) {
-		store := &SQSJobStore{
-			cfg: SQSJobStoreConfig{
+		store := &JobStore{
+			cfg: JobStoreConfig{
 				TokenSigningSecret: []byte("test-secret"),
 			},
 		}
@@ -348,8 +351,8 @@ func TestSQSJobStoreReleaseJob(t *testing.T) {
 	})
 
 	t.Run("release with unconfigured queue fails", func(t *testing.T) {
-		store := &SQSJobStore{
-			cfg: SQSJobStoreConfig{
+		store := &JobStore{
+			cfg: JobStoreConfig{
 				TokenSigningSecret: []byte("test-secret"),
 				QueueURLs:          map[string]string{"other": "https://example.com/other"},
 			},
@@ -368,7 +371,7 @@ func TestSQSJobStoreReleaseJob(t *testing.T) {
 }
 
 func TestEventSizeValidation(t *testing.T) {
-	s := NewSQSJobStore(nil, nil, SQSJobStoreConfig{
+	st := NewJobStore(nil, nil, JobStoreConfig{
 		JobEventsTableName: "test_job_events",
 	})
 
@@ -394,10 +397,10 @@ func TestEventSizeValidation(t *testing.T) {
 		}
 
 		// This should fail BEFORE reaching the AWS client due to size validation
-		err := s.batchWriteEvents(ctx, jobID, []*jobv1.JobEvent{largeEvent})
+		err := st.batchWriteEvents(ctx, jobID, []*jobv1.JobEvent{largeEvent})
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "exceeds maximum size")
-		require.ErrorIs(t, err, ErrEventTooLarge)
+		require.ErrorIs(t, err, store.ErrEventTooLarge)
 		require.Contains(t, err.Error(), "storage limit")                       // Check that error mentions the limit
 		require.Contains(t, err.Error(), "Consider reducing output batch size") // Check for helpful message
 	})
@@ -426,10 +429,10 @@ func TestEventSizeValidation(t *testing.T) {
 		}
 
 		// Should fail on the large event (sequence 2)
-		err := s.batchWriteEvents(ctx, jobID, []*jobv1.JobEvent{smallEvent, largeEvent})
+		err := st.batchWriteEvents(ctx, jobID, []*jobv1.JobEvent{smallEvent, largeEvent})
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "exceeds maximum size")
 		require.Contains(t, err.Error(), "seq=2") // Verify it identifies the correct event
-		require.ErrorIs(t, err, ErrEventTooLarge)
+		require.ErrorIs(t, err, store.ErrEventTooLarge)
 	})
 }

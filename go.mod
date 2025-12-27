@@ -23,7 +23,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sqs v1.42.20
 	github.com/aws/aws-sdk-go-v2/service/ssm v1.67.7
 	github.com/cenkalti/backoff/v5 v5.0.3
-	github.com/golang-jwt/jwt/v5 v5.2.3
 	github.com/google/uuid v1.6.0
 	github.com/rs/cors v1.11.1
 	github.com/rs/zerolog v1.34.0

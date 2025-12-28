@@ -95,7 +95,7 @@ func TestDynamoDB_JobStoreGetPut(t *testing.T) {
 	createTestTable(t, ctx, client, testJobsTable)
 	defer deleteTestTable(t, ctx, client, testJobsTable)
 
-	store := NewAWSJobStore(nil, client, AWSJobStoreConfig{
+	store := NewJobStore(nil, client, JobStoreConfig{
 		JobsTableName:      testJobsTable,
 		TokenSigningSecret: []byte("dynamodb-test-secret"),
 	})
@@ -134,7 +134,7 @@ func TestDynamoDB_UpdateJobState(t *testing.T) {
 	createTestTable(t, ctx, client, testJobsTable)
 	defer deleteTestTable(t, ctx, client, testJobsTable)
 
-	store := NewAWSJobStore(nil, client, AWSJobStoreConfig{
+	store := NewJobStore(nil, client, JobStoreConfig{
 		JobsTableName:      testJobsTable,
 		TokenSigningSecret: []byte("dynamodb-test-secret"),
 	})
@@ -180,7 +180,7 @@ func TestDynamoDB_NotFound(t *testing.T) {
 	createTestTable(t, ctx, client, testJobsTable)
 	defer deleteTestTable(t, ctx, client, testJobsTable)
 
-	store := NewAWSJobStore(nil, client, AWSJobStoreConfig{
+	store := NewJobStore(nil, client, JobStoreConfig{
 		JobsTableName:      testJobsTable,
 		TokenSigningSecret: []byte("dynamodb-test-secret"),
 	})
@@ -198,7 +198,7 @@ func TestDynamoDB_JobParamsMarshaling(t *testing.T) {
 	createTestTable(t, ctx, client, testJobsTable)
 	defer deleteTestTable(t, ctx, client, testJobsTable)
 
-	store := NewAWSJobStore(nil, client, AWSJobStoreConfig{
+	store := NewJobStore(nil, client, JobStoreConfig{
 		JobsTableName:      testJobsTable,
 		TokenSigningSecret: []byte("dynamodb-test-secret"),
 	})

@@ -13,15 +13,13 @@ import (
 )
 
 type ListCmd struct {
-	Server     string `help:"Server URL" default:"https://localhost:443"`
-	Queue      string `help:"Queue name to filter by" default:""`
-	State      string `help:"Job state to filter by (scheduled, running, completed, failed, cancelled)" default:""`
-	Page       int32  `help:"Page number" default:"1"`
-	PageSize   int32  `help:"Number of jobs per page" default:"20"`
-	Watch      bool   `help:"Watch for changes (refresh every 5 seconds)" default:"false"`
-	CACert     string `help:"Path to CA certificate" env:"AIRUNNER_CA_CERT"`
-	ClientCert string `help:"Path to client certificate" env:"AIRUNNER_CLIENT_CERT"`
-	ClientKey  string `help:"Path to client private key" env:"AIRUNNER_CLIENT_KEY"`
+	Server   string `help:"Server URL" default:"https://localhost:443"`
+	Queue    string `help:"Queue name to filter by" default:""`
+	State    string `help:"Job state to filter by (scheduled, running, completed, failed, cancelled)" default:""`
+	Page     int32  `help:"Page number" default:"1"`
+	PageSize int32  `help:"Number of jobs per page" default:"20"`
+	Watch    bool   `help:"Watch for changes (refresh every 5 seconds)" default:"false"`
+	CACert   string `help:"Path to CA certificate" env:"AIRUNNER_CA_CERT"`
 }
 
 func (l *ListCmd) Run(ctx context.Context, globals *Globals) error {
@@ -32,12 +30,9 @@ func (l *ListCmd) Run(ctx context.Context, globals *Globals) error {
 
 	// Create clients
 	config := client.Config{
-		ServerURL:  l.Server,
-		Timeout:    30 * time.Second,
-		Debug:      globals.Debug,
-		CACert:     l.CACert,
-		ClientCert: l.ClientCert,
-		ClientKey:  l.ClientKey,
+		ServerURL: l.Server,
+		Timeout:   30 * time.Second,
+		Debug:     globals.Debug,
 	}
 	clients, err := client.NewClients(config, connect.WithInterceptors(otelInterceptor))
 	if err != nil {

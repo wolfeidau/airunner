@@ -24,9 +24,6 @@ type MonitorCmd struct {
 	Timeout       time.Duration     `help:"Timeout for the monitor" default:"5m"`
 	Playback      bool              `help:"Replay events at original speed based on timestamps"`
 	Verbose       bool              `help:"Show verbose debug output including timestamps"`
-	CACert        string            `help:"Path to CA certificate" env:"AIRUNNER_CA_CERT"`
-	ClientCert    string            `help:"Path to client certificate" env:"AIRUNNER_CLIENT_CERT"`
-	ClientKey     string            `help:"Path to client private key" env:"AIRUNNER_CLIENT_KEY"`
 }
 
 func (m *MonitorCmd) Run(ctx context.Context, globals *Globals) error {
@@ -39,12 +36,9 @@ func (m *MonitorCmd) Run(ctx context.Context, globals *Globals) error {
 
 	// Create clients
 	config := client.Config{
-		ServerURL:  m.Server,
-		Timeout:    m.Timeout,
-		Debug:      globals.Debug,
-		CACert:     m.CACert,
-		ClientCert: m.ClientCert,
-		ClientKey:  m.ClientKey,
+		ServerURL: m.Server,
+		Timeout:   m.Timeout,
+		Debug:     globals.Debug,
 	}
 	clients, err := client.NewClients(config, connect.WithInterceptors(otelInterceptor))
 	if err != nil {

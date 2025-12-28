@@ -42,12 +42,9 @@ func (w *WorkerCmd) Run(ctx context.Context, globals *Globals) error {
 	}
 
 	config := client.Config{
-		ServerURL:  w.Server,
-		Timeout:    w.ClientTimeout,
-		Debug:      globals.Debug,
-		CACert:     w.CACert,
-		ClientCert: w.ClientCert,
-		ClientKey:  w.ClientKey,
+		ServerURL: w.Server,
+		Timeout:   w.ClientTimeout,
+		Debug:     globals.Debug,
 	}
 	clients, err := client.NewClients(config, connect.WithInterceptors(otelInterceptor))
 	if err != nil {

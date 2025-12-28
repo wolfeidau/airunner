@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"time"
 
-	"connectrpc.com/authn"
 	connectcors "connectrpc.com/cors"
 	"connectrpc.com/otelconnect"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -15,23 +14,21 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/rs/cors"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
-	"github.com/wolfeidau/airunner/internal/auth"
 	"github.com/wolfeidau/airunner/internal/logger"
 	"github.com/wolfeidau/airunner/internal/server"
-	"github.com/wolfeidau/airunner/internal/ssmcerts"
 	"github.com/wolfeidau/airunner/internal/store"
 	awsstore "github.com/wolfeidau/airunner/internal/store/aws"
 	memorystore "github.com/wolfeidau/airunner/internal/store/memory"
 	"github.com/wolfeidau/airunner/internal/telemetry"
-	"golang.org/x/sync/errgroup"
 )
 
 type RPCServerCmd struct {
-	Hostname  string         `help:"hostname for TLS cert" default:"localhost"`
+	Hostname  string         `help:"hostname for CORS" default:"localhost"`
+	Listen    string         `help:"HTTP server listen address" default:"0.0.0.0:8080" env:"AIRUNNER_LISTEN"`
+	NoAuth    bool           `help:"disable authentication (development only)" default:"false" env:"AIRUNNER_NO_AUTH"`
 	StoreType string         `help:"job store type (memory or aws)" default:"memory" env:"AIRUNNER_STORE_TYPE" enum:"memory,aws"`
 	AWSStore  AWSStoreFlags  `embed:"" prefix:"aws-"`
 	Execution ExecutionFlags `embed:"" prefix:"execution-"`
-	MTLS      MTLSFlags      `embed:"" prefix:"mtls-"`
 }
 
 type AWSStoreFlags struct {
@@ -40,10 +37,8 @@ type AWSStoreFlags struct {
 	QueuePriority string `help:"SQS queue URL for priority jobs" env:"AIRUNNER_AWS_QUEUE_PRIORITY"`
 
 	// DynamoDB Configuration
-	DynamoDBJobsTable         string `help:"DynamoDB table name for jobs" env:"AIRUNNER_AWS_JOBS_TABLE"`
-	DynamoDBEventsTable       string `help:"DynamoDB table name for events" env:"AIRUNNER_AWS_EVENTS_TABLE"`
-	DynamoDBPrincipalsTable   string `help:"DynamoDB table name for principals" env:"AIRUNNER_AWS_PRINCIPALS_TABLE"`
-	DynamoDBCertificatesTable string `help:"DynamoDB table name for certificates" env:"AIRUNNER_AWS_CERTS_TABLE"`
+	DynamoDBJobsTable   string `help:"DynamoDB table name for jobs" env:"AIRUNNER_AWS_JOBS_TABLE"`
+	DynamoDBEventsTable string `help:"DynamoDB table name for events" env:"AIRUNNER_AWS_EVENTS_TABLE"`
 
 	// Store Configuration
 	DefaultVisibilityTimeout int32  `help:"default visibility timeout in seconds" default:"300"`
@@ -86,43 +81,6 @@ type ExecutionFlags struct {
 	BatchMaxBytes      int64 `help:"max batch size in bytes" default:"1048576" env:"AIRUNNER_EXEC_BATCH_MAX_BYTES"`
 	PlaybackInterval   int32 `help:"playback interval in milliseconds for client replay" default:"50" env:"AIRUNNER_EXEC_PLAYBACK_INTERVAL"`
 	HeartbeatInterval  int32 `help:"heartbeat interval in seconds" default:"30" env:"AIRUNNER_EXEC_HEARTBEAT_INTERVAL"`
-}
-
-// MTLSFlags configuration for mTLS server
-type MTLSFlags struct {
-	Listen       string `help:"mTLS API listen address" default:"0.0.0.0:443" env:"AIRUNNER_MTLS_LISTEN"`
-	HealthListen string `help:"health check listen address" default:"0.0.0.0:8080" env:"AIRUNNER_HEALTH_LISTEN"`
-
-	// Certificate file paths (for local development)
-	CACert     string `help:"path to CA cert file for mTLS client verification" env:"AIRUNNER_CA_CERT"`
-	ServerCert string `help:"path to server cert file for mTLS" env:"AIRUNNER_SERVER_CERT"`
-	ServerKey  string `help:"path to server key file for mTLS" env:"AIRUNNER_SERVER_KEY"`
-
-	// SSM Parameter Store paths (for production)
-	CACertSSM     string `help:"SSM parameter path for CA cert" env:"AIRUNNER_CA_CERT_SSM"`
-	ServerCertSSM string `help:"SSM parameter path for server cert" env:"AIRUNNER_SERVER_CERT_SSM"`
-	ServerKeySSM  string `help:"SSM parameter path for server key" env:"AIRUNNER_SERVER_KEY_SSM"`
-}
-
-// Validate MTLSFlags
-func (m *MTLSFlags) Validate() error {
-	// Validate required configuration
-	if m.Listen == "" {
-		return errors.New("mTLS listen address is required (--mtls-listen or AIRUNNER_MTLS_LISTEN)")
-	}
-	if m.HealthListen == "" {
-		return errors.New("health listen address is required (--mtls-health-listen or AIRUNNER_HEALTH_LISTEN)")
-	}
-
-	// Must provide either file paths OR SSM paths for certificates
-	hasFilePaths := m.CACert != "" && m.ServerCert != "" && m.ServerKey != ""
-	hasSSMPaths := m.CACertSSM != "" && m.ServerCertSSM != "" && m.ServerKeySSM != ""
-
-	if !hasFilePaths && !hasSSMPaths {
-		return errors.New("must provide either certificate file paths (--mtls-ca-cert, --mtls-server-cert, --mtls-server-key) or SSM paths (--mtls-ca-cert-ssm, --mtls-server-cert-ssm, --mtls-server-key-ssm)")
-	}
-
-	return nil
 }
 
 func (s *RPCServerCmd) Run(ctx context.Context, globals *Globals) error {
@@ -184,30 +142,33 @@ func (s *RPCServerCmd) Run(ctx context.Context, globals *Globals) error {
 		}()
 	}
 
-	// Create principal and certificate stores for mTLS
-	principalStore, certStore, err := s.createPrincipalStores(ctx)
-	if err != nil {
-		return err
-	}
-	log.Info().Msg("Principal and certificate stores initialized")
-
 	// Create server with store
 	jobServer := server.NewServer(jobStore)
 
-	// Build handler chain: CORS -> Auth -> Connect handlers
+	// Build handler chain: CORS -> Connect handlers
 	handler := jobServer.Handler(logger.NewConnectRequests(log), otelInterceptor)
 
-	// Add mTLS authentication middleware
-	mtlsAuth := auth.NewMTLSAuthenticator(principalStore, certStore)
-	middleware := authn.NewMiddleware(mtlsAuth.AuthFunc())
-	handler = middleware.Wrap(handler)
-	log.Info().Msg("mTLS authentication enabled")
+	if !s.NoAuth {
+		log.Warn().Msg("Authentication is disabled (--no-auth). This should only be used in development!")
+	}
 
 	// Add CORS
 	handler = withCORS(s.Hostname, handler)
 
-	// Run dual listeners: mTLS API on 443, health check on 8080
-	return s.runWithMTLS(ctx, handler, principalStore)
+	// Create HTTP server
+	httpServer := &http.Server{
+		Addr:              s.Listen,
+		Handler:           handler,
+		ReadHeaderTimeout: time.Second,
+		ReadTimeout:       5 * time.Minute,
+		WriteTimeout:      5 * time.Minute,
+		IdleTimeout:       5 * time.Minute,
+		MaxHeaderBytes:    8 * 1024, // 8KiB
+	}
+
+	// Start server
+	log.Info().Str("addr", s.Listen).Bool("auth", !s.NoAuth).Msg("Starting HTTP server")
+	return httpServer.ListenAndServe()
 }
 
 // createAWSJobStore creates and configures an AWS-backed job store (SQS + DynamoDB)
@@ -261,157 +222,4 @@ func withCORS(hostname string, h http.Handler) http.Handler {
 		ExposedHeaders: connectcors.ExposedHeaders(),
 	})
 	return middleware.Handler(h)
-}
-
-// createPrincipalStores creates principal and certificate stores based on store type
-func (s *RPCServerCmd) createPrincipalStores(ctx context.Context) (store.PrincipalStore, store.CertificateStore, error) {
-	switch s.StoreType {
-	case "aws":
-		// Use DynamoDB stores for production
-		if s.AWSStore.DynamoDBPrincipalsTable == "" {
-			return nil, nil, errors.New("DynamoDB principals table name is required (--aws-principals-table or AIRUNNER_AWS_PRINCIPALS_TABLE)")
-		}
-		if s.AWSStore.DynamoDBCertificatesTable == "" {
-			return nil, nil, errors.New("DynamoDB certificates table name is required (--aws-certs-table or AIRUNNER_AWS_CERTS_TABLE)")
-		}
-
-		awsConfig, err := config.LoadDefaultConfig(ctx)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to load AWS config: %w", err)
-		}
-
-		dynamoClient := dynamodb.NewFromConfig(awsConfig)
-
-		principalStore := awsstore.NewPrincipalStore(dynamoClient, s.AWSStore.DynamoDBPrincipalsTable)
-		certStore := awsstore.NewCertificateStore(dynamoClient, s.AWSStore.DynamoDBCertificatesTable)
-
-		return principalStore, certStore, nil
-
-	default:
-		// Use in-memory stores for development
-		principalStore := memorystore.NewPrincipalStore()
-		certStore := memorystore.NewCertificateStore()
-
-		return principalStore, certStore, nil
-	}
-}
-
-// runWithMTLS starts dual listeners: mTLS API and health check
-func (s *RPCServerCmd) runWithMTLS(ctx context.Context, apiHandler http.Handler, principalStore store.PrincipalStore) error {
-	log := logger.Setup(false)
-
-	if err := s.MTLS.Validate(); err != nil {
-		return fmt.Errorf("failed to validate MTLS configuration: %w", err)
-	}
-
-	// Load certificates using ssmcerts package
-	cfg := ssmcerts.Config{
-		// File paths (local dev)
-		CACertPath:     s.MTLS.CACert,
-		ServerCertPath: s.MTLS.ServerCert,
-		ServerKeyPath:  s.MTLS.ServerKey,
-		// SSM paths (production)
-		CACertSSM:     s.MTLS.CACertSSM,
-		ServerCertSSM: s.MTLS.ServerCertSSM,
-		ServerKeySSM:  s.MTLS.ServerKeySSM,
-	}
-
-	certs, err := ssmcerts.Load(ctx, cfg)
-	if err != nil {
-		return fmt.Errorf("failed to load certificates: %w", err)
-	}
-
-	// Create TLS config from certificates
-	tlsConfig, err := certs.TLSConfig()
-	if err != nil {
-		return fmt.Errorf("failed to create TLS config: %w", err)
-	}
-
-	// Create mTLS API server
-	mtlsServer := &http.Server{
-		Addr:              s.MTLS.Listen,
-		Handler:           apiHandler,
-		TLSConfig:         tlsConfig,
-		ReadHeaderTimeout: time.Second,
-		ReadTimeout:       5 * time.Minute,
-		WriteTimeout:      5 * time.Minute,
-		IdleTimeout:       5 * time.Minute,
-		MaxHeaderBytes:    8 * 1024, // 8KiB
-	}
-
-	// Create health check server (HTTP only, no TLS)
-	healthServer := &http.Server{
-		Addr:              s.MTLS.HealthListen,
-		Handler:           s.healthHandler(principalStore),
-		ReadHeaderTimeout: time.Second,
-		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      10 * time.Second,
-		IdleTimeout:       30 * time.Second,
-		MaxHeaderBytes:    4 * 1024, // 4KiB
-	}
-
-	// Run both servers concurrently
-	g, gctx := errgroup.WithContext(ctx)
-
-	g.Go(func() error {
-		log.Info().Str("addr", s.MTLS.Listen).Msg("Starting mTLS API server")
-		if err := mtlsServer.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			return fmt.Errorf("mTLS server error: %w", err)
-		}
-		return nil
-	})
-
-	g.Go(func() error {
-		log.Info().Str("addr", s.MTLS.HealthListen).Msg("Starting health check server")
-		if err := healthServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			return fmt.Errorf("health server error: %w", err)
-		}
-		return nil
-	})
-
-	// Graceful shutdown on context cancellation
-	g.Go(func() error {
-		<-gctx.Done()
-
-		log.Info().Msg("Shutting down servers...")
-
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		if err := mtlsServer.Shutdown(shutdownCtx); err != nil {
-			log.Error().Err(err).Msg("Failed to shutdown mTLS server")
-		}
-
-		if err := healthServer.Shutdown(shutdownCtx); err != nil {
-			log.Error().Err(err).Msg("Failed to shutdown health server")
-		}
-
-		return nil
-	})
-
-	return g.Wait()
-}
-
-// healthHandler returns a simple health check handler
-func (s *RPCServerCmd) healthHandler(principalStore store.PrincipalStore) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Only allow GET requests
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
-		// Check principal store connectivity
-		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-		defer cancel()
-
-		_, err := principalStore.List(ctx, store.ListPrincipalsOptions{Limit: 1})
-		if err != nil {
-			http.Error(w, "unhealthy", http.StatusServiceUnavailable)
-			return
-		}
-
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintln(w, "ok")
-	})
 }

@@ -14,7 +14,6 @@ var (
 		Submit     commands.SubmitCmd     `cmd:"" help:"Submit a job"`
 		Monitor    commands.MonitorCmd    `cmd:"" help:"Monitor job events"`
 		List       commands.ListCmd       `cmd:"" help:"List jobs"`
-		Bootstrap  commands.BootstrapCmd  `cmd:"" help:"Bootstrap mTLS certificates and principals"`
 		TestOutput commands.TestOutputCmd `cmd:"" help:"Generate test output with known timing patterns"`
 		Debug      bool                   `help:"Enable debug mode."`
 		Version    kong.VersionFlag

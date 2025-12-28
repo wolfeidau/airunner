@@ -141,24 +141,7 @@ resource "aws_security_group" "airunner" {
   description = "ECS task security group"
   vpc_id      = aws_vpc.main.id
 
-  # Allow mTLS traffic from internet (NLB passes through)
-  ingress {
-    description = "mTLS API from internet (IPv4)"
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    description      = "mTLS API from internet (IPv6)"
-    from_port        = 443
-    to_port          = 443
-    protocol         = "tcp"
-    ipv6_cidr_blocks = ["::/0"]
-  }
-
-  # Allow health check traffic from internet (NLB passes through)
+  # Allow health check traffic from internet
   ingress {
     description = "Health check from internet (IPv4)"
     from_port   = 8080
@@ -418,10 +401,7 @@ resource "aws_iam_role_policy" "execution" {
         ]
         Resource = concat(
           [
-            aws_ssm_parameter.token_signing_secret.arn,
-            aws_ssm_parameter.ca_cert.arn,
-            aws_ssm_parameter.server_cert.arn,
-            aws_ssm_parameter.server_key.arn
+            aws_ssm_parameter.token_signing_secret.arn
           ],
           var.otel_exporter_endpoint != "" ? [aws_ssm_parameter.otel_exporter_endpoint[0].arn] : [],
           var.otel_exporter_headers != "" ? [aws_ssm_parameter.otel_exporter_headers[0].arn] : []
@@ -507,41 +487,7 @@ resource "aws_iam_role_policy" "task_sqs_dynamodb" {
         Resource = [
           aws_dynamodb_table.jobs.arn,
           "${aws_dynamodb_table.jobs.arn}/index/*",
-          aws_dynamodb_table.job_events.arn,
-          aws_dynamodb_table.principals.arn,
-          "${aws_dynamodb_table.principals.arn}/index/*",
-          aws_dynamodb_table.certificates.arn,
-          "${aws_dynamodb_table.certificates.arn}/index/*"
-        ]
-      },
-      {
-        Sid    = "AllowKMSSigning"
-        Effect = "Allow"
-        Action = [
-          "kms:Sign",
-          "kms:GetPublicKey",
-          "kms:DescribeKey"
-        ]
-        Resource = aws_kms_key.ca_signing_key.arn
-      },
-      {
-        Sid    = "AllowReadKMSKeyID"
-        Effect = "Allow"
-        Action = [
-          "ssm:GetParameter"
-        ]
-        Resource = aws_ssm_parameter.ca_kms_key_id.arn
-      },
-      {
-        Sid    = "AllowReadCertificates"
-        Effect = "Allow"
-        Action = [
-          "ssm:GetParameter"
-        ]
-        Resource = [
-          aws_ssm_parameter.ca_cert.arn,
-          aws_ssm_parameter.server_cert.arn,
-          aws_ssm_parameter.server_key.arn
+          aws_dynamodb_table.job_events.arn
         ]
       }
     ]
@@ -742,124 +688,6 @@ resource "aws_ecs_cluster_capacity_providers" "main_override" {
   }
 }
 
-# ============================================================================
-# Network Load Balancer for mTLS
-# ============================================================================
-
-# NLB for TCP passthrough (preserves end-to-end TLS)
-resource "aws_lb" "mtls" {
-  name               = "${local.name_prefix}-nlb"
-  internal           = false
-  load_balancer_type = "network"
-  subnets            = aws_subnet.public[*].id
-  ip_address_type    = "dualstack"
-
-  enable_deletion_protection = false
-
-  tags = merge(
-    local.common_tags,
-    {
-      Name = "${local.name_prefix}-nlb"
-    }
-  )
-}
-
-# mTLS API target group (TCP passthrough on port 443)
-resource "aws_lb_target_group" "mtls" {
-  name_prefix = "mtls-"
-  port        = 443
-  protocol    = "TCP"
-  vpc_id      = aws_vpc.main.id
-  target_type = "ip"
-
-  health_check {
-    protocol            = "HTTP"
-    port                = "8080"
-    path                = "/health"
-    healthy_threshold   = 2
-    unhealthy_threshold = 2
-    interval            = 30
-  }
-
-  lifecycle {
-    create_before_destroy = true
-  }
-
-  tags = merge(
-    local.common_tags,
-    {
-      Name = "${local.name_prefix}-mtls-tg"
-    }
-  )
-}
-
-# Health check target group (HTTP on port 8080)
-resource "aws_lb_target_group" "health" {
-  name_prefix = "hlth-"
-  port        = 8080
-  protocol    = "TCP"
-  vpc_id      = aws_vpc.main.id
-  target_type = "ip"
-
-  health_check {
-    protocol            = "HTTP"
-    port                = "8080"
-    path                = "/health"
-    healthy_threshold   = 2
-    unhealthy_threshold = 2
-    interval            = 30
-  }
-
-  lifecycle {
-    create_before_destroy = true
-  }
-
-  tags = merge(
-    local.common_tags,
-    {
-      Name = "${local.name_prefix}-health-tg"
-    }
-  )
-}
-
-# mTLS listener (TCP passthrough on port 443)
-resource "aws_lb_listener" "mtls" {
-  load_balancer_arn = aws_lb.mtls.arn
-  port              = "443"
-  protocol          = "TCP"
-
-  default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.mtls.arn
-  }
-
-  tags = merge(
-    local.common_tags,
-    {
-      Name = "${local.name_prefix}-mtls-listener"
-    }
-  )
-}
-
-# Health check listener (HTTP on port 8080)
-resource "aws_lb_listener" "health" {
-  load_balancer_arn = aws_lb.mtls.arn
-  port              = "8080"
-  protocol          = "TCP"
-
-  default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.health.arn
-  }
-
-  tags = merge(
-    local.common_tags,
-    {
-      Name = "${local.name_prefix}-health-listener"
-    }
-  )
-}
-
 # ECS Task Definition
 resource "aws_ecs_task_definition" "airunner" {
   family                   = local.name_prefix
@@ -876,23 +704,16 @@ resource "aws_ecs_task_definition" "airunner" {
       image = var.container_image
       command = [
         "rpc-server",
-        "--mtls-listen", "0.0.0.0:443",
-        "--mtls-health-listen", "0.0.0.0:8080",
-        "--hostname", "airunner-${var.environment}.${var.domain_name}"
+        "--listen", "0.0.0.0:8080",
+        "--no-auth"
       ]
       essential = true
       portMappings = [
         {
-          containerPort = 443
-          hostPort      = 443
-          protocol      = "tcp"
-          name          = "mtls-api"
-        },
-        {
           containerPort = 8080
           hostPort      = 8080
           protocol      = "tcp"
-          name          = "health"
+          name          = "http"
         }
       ]
       environment = concat(
@@ -918,26 +739,6 @@ resource "aws_ecs_task_definition" "airunner" {
             value = aws_dynamodb_table.job_events.name
           },
           {
-            name  = "AIRUNNER_AWS_PRINCIPALS_TABLE"
-            value = aws_dynamodb_table.principals.name
-          },
-          {
-            name  = "AIRUNNER_AWS_CERTS_TABLE"
-            value = aws_dynamodb_table.certificates.name
-          },
-          {
-            name  = "AIRUNNER_CA_CERT_SSM"
-            value = "/airunner/${var.environment}/ca-cert"
-          },
-          {
-            name  = "AIRUNNER_SERVER_CERT_SSM"
-            value = "/airunner/${var.environment}/server-cert"
-          },
-          {
-            name  = "AIRUNNER_SERVER_KEY_SSM"
-            value = "/airunner/${var.environment}/server-key"
-          },
-          {
             name  = "AIRUNNER_DEFAULT_VISIBILITY_TIMEOUT"
             value = "300"
           },
@@ -952,18 +753,6 @@ resource "aws_ecs_task_definition" "airunner" {
           {
             name  = "AWS_USE_DUALSTACK_ENDPOINT"
             value = "true"
-          },
-          {
-            name  = "AIRUNNER_CA_CERT_SSM"
-            value = "/airunner/${var.environment}/ca-cert"
-          },
-          {
-            name  = "AIRUNNER_SERVER_CERT_SSM"
-            value = "/airunner/${var.environment}/server-cert"
-          },
-          {
-            name  = "AIRUNNER_SERVER_KEY_SSM"
-            value = "/airunner/${var.environment}/server-key"
           }
         ],
         # Conditionally add OTEL_SERVICE_NAME only when OTEL is configured
@@ -1032,27 +821,11 @@ resource "aws_ecs_service" "airunner" {
     security_groups = [aws_security_group.airunner.id]
   }
 
-  # NLB mTLS target group
-  load_balancer {
-    target_group_arn = aws_lb_target_group.mtls.arn
-    container_name   = local.name_prefix
-    container_port   = 443
-  }
-
-  # NLB health check target group
-  load_balancer {
-    target_group_arn = aws_lb_target_group.health.arn
-    container_name   = local.name_prefix
-    container_port   = 8080
-  }
-
   tags = {
     Name = "${local.name_prefix}-service"
   }
 
   depends_on = [
-    aws_lb_listener.mtls,
-    aws_lb_listener.health,
     aws_iam_role_policy.execution,
     aws_ecs_capacity_provider.main
   ]
@@ -1060,29 +833,3 @@ resource "aws_ecs_service" "airunner" {
 
 # Data source for AWS region
 data "aws_region" "current" {}
-
-# Route53 record for NLB (mTLS API)
-resource "aws_route53_record" "nlb" {
-  zone_id = data.aws_route53_zone.main.zone_id
-  name    = "airunner-mtls-${var.environment}.${var.domain_name}"
-  type    = "A"
-
-  alias {
-    name                   = aws_lb.mtls.dns_name
-    zone_id                = aws_lb.mtls.zone_id
-    evaluate_target_health = true
-  }
-}
-
-# Route53 AAAA record for NLB (IPv6)
-resource "aws_route53_record" "nlb_ipv6" {
-  zone_id = data.aws_route53_zone.main.zone_id
-  name    = "airunner-mtls-${var.environment}.${var.domain_name}"
-  type    = "AAAA"
-
-  alias {
-    name                   = aws_lb.mtls.dns_name
-    zone_id                = aws_lb.mtls.zone_id
-    evaluate_target_health = true
-  }
-}

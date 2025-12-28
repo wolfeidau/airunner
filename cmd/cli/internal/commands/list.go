@@ -13,7 +13,7 @@ import (
 )
 
 type ListCmd struct {
-	Server   string `help:"Server URL" default:"http://localhost:8080"`
+	Server   string `help:"Server URL" default:"https://localhost:8993"`
 	Queue    string `help:"Queue name to filter by" default:""`
 	State    string `help:"Job state to filter by (scheduled, running, completed, failed, cancelled)" default:""`
 	Page     int32  `help:"Page number" default:"1"`

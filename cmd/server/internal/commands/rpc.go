@@ -24,7 +24,9 @@ import (
 
 type RPCServerCmd struct {
 	Hostname  string         `help:"hostname for CORS" default:"localhost"`
-	Listen    string         `help:"HTTP server listen address" default:"0.0.0.0:8080" env:"AIRUNNER_LISTEN"`
+	Listen    string         `help:"HTTP server listen address" default:"0.0.0.0:8993" env:"AIRUNNER_LISTEN"`
+	Cert      string         `help:"path to TLS cert file" default:"" env:"AIRUNNER_TLS_CERT"`
+	Key       string         `help:"path to TLS key file" default:"" env:"AIRUNNER_TLS_KEY"`
 	NoAuth    bool           `help:"disable authentication (development only)" default:"false" env:"AIRUNNER_NO_AUTH"`
 	StoreType string         `help:"job store type (memory or aws)" default:"memory" env:"AIRUNNER_STORE_TYPE" enum:"memory,aws"`
 	AWSStore  AWSStoreFlags  `embed:"" prefix:"aws-"`
@@ -164,6 +166,11 @@ func (s *RPCServerCmd) Run(ctx context.Context, globals *Globals) error {
 		WriteTimeout:      5 * time.Minute,
 		IdleTimeout:       5 * time.Minute,
 		MaxHeaderBytes:    8 * 1024, // 8KiB
+	}
+
+	if s.Cert != "" && s.Key != "" {
+		log.Info().Str("addr", s.Listen).Bool("auth", !s.NoAuth).Msg("Starting HTTPS server")
+		return httpServer.ListenAndServeTLS(s.Cert, s.Key)
 	}
 
 	// Start server

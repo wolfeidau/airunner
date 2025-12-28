@@ -43,7 +43,7 @@ func NewClients(config Config, opts ...connect.ClientOption) (*Clients, error) {
 // DefaultConfig returns a default client configuration
 func DefaultConfig() Config {
 	return Config{
-		ServerURL: "http://localhost:8080",
+		ServerURL: "https://localhost:8993",
 		Timeout:   5 * time.Minute,
 		Debug:     false,
 	}

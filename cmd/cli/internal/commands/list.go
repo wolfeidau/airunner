@@ -13,13 +13,12 @@ import (
 )
 
 type ListCmd struct {
-	Server   string `help:"Server URL" default:"https://localhost:443"`
+	Server   string `help:"Server URL" default:"http://localhost:8080"`
 	Queue    string `help:"Queue name to filter by" default:""`
 	State    string `help:"Job state to filter by (scheduled, running, completed, failed, cancelled)" default:""`
 	Page     int32  `help:"Page number" default:"1"`
 	PageSize int32  `help:"Number of jobs per page" default:"20"`
 	Watch    bool   `help:"Watch for changes (refresh every 5 seconds)" default:"false"`
-	CACert   string `help:"Path to CA certificate" env:"AIRUNNER_CA_CERT"`
 }
 
 func (l *ListCmd) Run(ctx context.Context, globals *Globals) error {

@@ -19,13 +19,10 @@ import (
 )
 
 type WorkerCmd struct {
-	Server            string        `help:"Server URL" default:"https://localhost:443"`
+	Server            string        `help:"Server URL" default:"http://localhost:8080"`
 	Queue             string        `help:"Queue name to process" default:"default"`
 	ClientTimeout     time.Duration `help:"Client timeout in seconds" default:"5m"`
 	VisibilityTimeout int32         `help:"Visibility timeout in seconds" default:"300"`
-	CACert            string        `help:"Path to CA certificate" env:"AIRUNNER_CA_CERT"`
-	ClientCert        string        `help:"Path to client certificate" env:"AIRUNNER_CLIENT_CERT"`
-	ClientKey         string        `help:"Path to client private key" env:"AIRUNNER_CLIENT_KEY"`
 }
 
 func (w *WorkerCmd) Run(ctx context.Context, globals *Globals) error {

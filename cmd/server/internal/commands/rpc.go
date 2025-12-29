@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	connectcors "connectrpc.com/cors"
@@ -23,7 +24,7 @@ import (
 )
 
 type RPCServerCmd struct {
-	Hostname  string         `help:"hostname for CORS" default:"localhost"`
+	Hostname  string         `help:"hostname for CORS" default:"localhost:8993"`
 	Listen    string         `help:"HTTP server listen address" default:"0.0.0.0:8993" env:"AIRUNNER_LISTEN"`
 	Cert      string         `help:"path to TLS cert file" default:"" env:"AIRUNNER_TLS_CERT"`
 	Key       string         `help:"path to TLS key file" default:"" env:"AIRUNNER_TLS_KEY"`
@@ -158,17 +159,16 @@ func (s *RPCServerCmd) Run(ctx context.Context, globals *Globals) error {
 	handler = withCORS(s.Hostname, handler)
 
 	// Create HTTP server
-	httpServer := &http.Server{
-		Addr:              s.Listen,
-		Handler:           handler,
-		ReadHeaderTimeout: time.Second,
-		ReadTimeout:       5 * time.Minute,
-		WriteTimeout:      5 * time.Minute,
-		IdleTimeout:       5 * time.Minute,
-		MaxHeaderBytes:    8 * 1024, // 8KiB
-	}
+	httpServer := configureHTTPServer(s.Listen, handler)
 
 	if s.Cert != "" && s.Key != "" {
+		if _, err := os.Stat(s.Cert); err != nil {
+			return fmt.Errorf("TLS certificate not found at %s. Run 'make certs' to generate certificates: %w", s.Cert, err)
+		}
+		if _, err := os.Stat(s.Key); err != nil {
+			return fmt.Errorf("TLS key not found at %s. Run 'make certs' to generate certificates: %w", s.Key, err)
+		}
+
 		log.Info().Str("addr", s.Listen).Bool("auth", !s.NoAuth).Msg("Starting HTTPS server")
 		return httpServer.ListenAndServeTLS(s.Cert, s.Key)
 	}
@@ -223,7 +223,7 @@ func createAWSJobStore(ctx context.Context, cmd *RPCServerCmd) (store.JobStore, 
 // withCORS adds CORS support to a Connect HTTP handler.
 func withCORS(hostname string, h http.Handler) http.Handler {
 	middleware := cors.New(cors.Options{
-		AllowedOrigins: []string{hostname},
+		AllowedOrigins: []string{"*"},
 		AllowedMethods: connectcors.AllowedMethods(),
 		AllowedHeaders: append(connectcors.AllowedHeaders(), "Authorization"),
 		ExposedHeaders: connectcors.ExposedHeaders(),

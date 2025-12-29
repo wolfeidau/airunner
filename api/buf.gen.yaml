@@ -16,3 +16,9 @@ plugins:
   - local: protoc-gen-connect-go
     out: gen/proto/go
     opt: paths=source_relative
+  - local: protoc-gen-es
+    opt: target=ts
+    out: gen/proto/es
+  - local: protoc-gen-connect-query
+    out: gen/proto/es
+    opt: target=ts

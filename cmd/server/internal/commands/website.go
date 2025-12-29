@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"time"
 
 	"filippo.io/csrf"
 	"github.com/wolfeidau/airunner/internal/assets"
@@ -12,14 +13,15 @@ import (
 )
 
 type WebsiteCmd struct {
-	Hostname      string `help:"hostname for CORS" default:"localhost"`
-	Listen        string `help:"HTTP server listen address" default:"0.0.0.0:443" env:"AIRUNNER_LISTEN"`
-	Cert          string `help:"path to TLS cert file" default:"" env:"AIRUNNER_TLS_CERT"`
-	Key           string `help:"path to TLS key file" default:"" env:"AIRUNNER_TLS_KEY"`
-	ClientID      string `help:"GitHub client ID" default:"" env:"AIRUNNER_GITHUB_CLIENT_ID"`
-	ClientSecret  string `help:"GitHub client secret" default:"" env:"AIRUNNER_GITHUB_CLIENT_SECRET"`
-	CallbackURL   string `help:"GitHub callback URL" default:"" env:"AIRUNNER_GITHUB_CALLBACK_URL"`
-	SessionSecret string `help:"session secret" default:"" env:"AIRUNNER_SESSION_SECRET"`
+	Hostname      string        `help:"hostname for CORS" default:"localhost"`
+	Listen        string        `help:"HTTP server listen address" default:"0.0.0.0:443" env:"AIRUNNER_LISTEN"`
+	Cert          string        `help:"path to TLS cert file" default:"" env:"AIRUNNER_TLS_CERT"`
+	Key           string        `help:"path to TLS key file" default:"" env:"AIRUNNER_TLS_KEY"`
+	ClientID      string        `help:"GitHub client ID" default:"" env:"AIRUNNER_GITHUB_CLIENT_ID"`
+	ClientSecret  string        `help:"GitHub client secret" default:"" env:"AIRUNNER_GITHUB_CLIENT_SECRET"`
+	CallbackURL   string        `help:"GitHub callback URL" default:"" env:"AIRUNNER_GITHUB_CALLBACK_URL"`
+	SessionSecret string        `help:"session secret" default:"" env:"AIRUNNER_SESSION_SECRET"`
+	SessionTTL    time.Duration `help:"session TTL" default:"168h" env:"AIRUNNER_SESSION_TTL"`
 }
 
 func (c *WebsiteCmd) Run(globals *Globals) error {
@@ -48,7 +50,10 @@ func (c *WebsiteCmd) Run(globals *Globals) error {
 
 	// Initialize GitHub OAuth with session secret
 	sessionSecret := []byte(c.SessionSecret)
-	gh := login.NewGithub(c.ClientID, c.ClientSecret, c.CallbackURL, sessionSecret)
+	gh, err := login.NewGithub(c.ClientID, c.ClientSecret, c.CallbackURL, sessionSecret, c.SessionTTL)
+	if err != nil {
+		return fmt.Errorf("failed to initialize GitHub OAuth: %w", err)
+	}
 
 	// Register routes
 	mux.HandleFunc("/login", gh.LoginHandler)              // Public

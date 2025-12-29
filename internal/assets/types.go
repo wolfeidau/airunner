@@ -8,6 +8,8 @@ import (
 	"html/template"
 	"maps"
 	"sync"
+
+	"github.com/rs/zerolog/log"
 )
 
 //go:embed pages/*.html
@@ -57,9 +59,7 @@ func newWithEmbedTemplate(config Config, customFuncs template.FuncMap) (*Pipelin
 
 	funcs := template.FuncMap{
 		"marshal": marshal,
-		"safe": func(s string) template.HTML {
-			return template.HTML(s) //nolint:gosec
-		},
+		"safe":    safe,
 	}
 
 	// Merge custom functions
@@ -79,8 +79,14 @@ func marshal(value any) string {
 	buf := new(bytes.Buffer)
 
 	if err := json.NewEncoder(buf).Encode(value); err != nil {
-		panic(errors.New("context can only be json serializable"))
+		// Only log in development, and only log the error type, not the data
+		log.Debug().Err(err).Msg("Template marshal failed")
+		return "{}"
 	}
 
 	return buf.String()
+}
+
+func safe(s string) template.HTML {
+	return template.HTML(s) //nolint:gosec
 }

@@ -10,10 +10,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var testSessionSecret = []byte("test-secret-key-min-32-bytes-long!!")
+var testSessionSecret = []byte("test-secret-key-min-32bytes-long")
 
 func TestGithub_saveState(t *testing.T) {
-	gh := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret)
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
+	require.NoError(t, err)
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -38,7 +39,8 @@ func TestGithub_saveState(t *testing.T) {
 }
 
 func TestGithub_saveState_randomness(t *testing.T) {
-	gh := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret)
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
+	require.NoError(t, err)
 
 	// Generate multiple states and verify they're different
 	states := make(map[string]bool)
@@ -54,7 +56,8 @@ func TestGithub_saveState_randomness(t *testing.T) {
 }
 
 func TestGithub_LoginHandler(t *testing.T) {
-	gh := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret)
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
+	require.NoError(t, err)
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/login", nil)
@@ -76,7 +79,8 @@ func TestGithub_LoginHandler(t *testing.T) {
 }
 
 func TestGithub_CallbackHandler_invalidRequest(t *testing.T) {
-	gh := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret)
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
+	require.NoError(t, err)
 
 	tests := []struct {
 		name  string
@@ -102,7 +106,8 @@ func TestGithub_CallbackHandler_invalidRequest(t *testing.T) {
 }
 
 func TestGithub_CallbackHandler_missingStateCookie(t *testing.T) {
-	gh := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret)
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
+	require.NoError(t, err)
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/callback?state=some-state&code=some-code", nil)
@@ -114,7 +119,8 @@ func TestGithub_CallbackHandler_missingStateCookie(t *testing.T) {
 }
 
 func TestGithub_CallbackHandler_stateMismatch(t *testing.T) {
-	gh := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret)
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
+	require.NoError(t, err)
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/callback?state=wrong-state&code=some-code", nil)
@@ -134,7 +140,9 @@ func TestNewGithub(t *testing.T) {
 	clientSecret := "test-secret"
 	callbackURL := "http://localhost/callback"
 
-	gh := NewGithub(clientID, clientSecret, callbackURL, testSessionSecret)
+	sessionTTL := 24 * time.Hour
+	gh, err := NewGithub(clientID, clientSecret, callbackURL, testSessionSecret, sessionTTL)
+	require.NoError(t, err)
 
 	require.NotNil(t, gh)
 	require.NotNil(t, gh.config)
@@ -143,10 +151,12 @@ func TestNewGithub(t *testing.T) {
 	require.Equal(t, callbackURL, gh.config.RedirectURL)
 	require.Equal(t, []string{"user:email"}, gh.config.Scopes)
 	require.Equal(t, testSessionSecret, gh.sessionSecret)
+	require.Equal(t, sessionTTL, gh.sessionTTL)
 }
 
 func TestGithub_createSessionToken(t *testing.T) {
-	gh := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret)
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
+	require.NoError(t, err)
 
 	email := "test@example.com"
 	name := "Test User"
@@ -163,7 +173,8 @@ func TestGithub_createSessionToken(t *testing.T) {
 }
 
 func TestGithub_validateSessionToken(t *testing.T) {
-	gh := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret)
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
+	require.NoError(t, err)
 
 	email := "test@example.com"
 	name := "Test User"
@@ -184,7 +195,8 @@ func TestGithub_validateSessionToken(t *testing.T) {
 }
 
 func TestGithub_validateSessionToken_tampered(t *testing.T) {
-	gh := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret)
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
+	require.NoError(t, err)
 
 	email := "test@example.com"
 	name := "Test User"
@@ -204,8 +216,10 @@ func TestGithub_validateSessionToken_tampered(t *testing.T) {
 }
 
 func TestGithub_validateSessionToken_wrongSecret(t *testing.T) {
-	gh1 := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret)
-	gh2 := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", []byte("different-secret-key-min-32-bytes!"))
+	gh1, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
+	require.NoError(t, err)
+	gh2, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", []byte("different-secret-key-min-32bytes"), 24*time.Hour)
+	require.NoError(t, err)
 
 	email := "test@example.com"
 	name := "Test User"
@@ -223,7 +237,8 @@ func TestGithub_validateSessionToken_wrongSecret(t *testing.T) {
 }
 
 func TestGithub_validateSessionToken_expired(t *testing.T) {
-	gh := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret)
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
+	require.NoError(t, err)
 
 	email := "test@example.com"
 	name := "Test User"
@@ -240,7 +255,8 @@ func TestGithub_validateSessionToken_expired(t *testing.T) {
 }
 
 func TestGithub_GetSession(t *testing.T) {
-	gh := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret)
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
+	require.NoError(t, err)
 
 	email := "test@example.com"
 	name := "Test User"
@@ -265,7 +281,8 @@ func TestGithub_GetSession(t *testing.T) {
 }
 
 func TestGithub_GetSession_noCookie(t *testing.T) {
-	gh := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret)
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
+	require.NoError(t, err)
 
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 
@@ -277,7 +294,8 @@ func TestGithub_GetSession_noCookie(t *testing.T) {
 }
 
 func TestGithub_RequireAuth_validSession(t *testing.T) {
-	gh := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret)
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
+	require.NoError(t, err)
 
 	email := "test@example.com"
 	name := "Test User"
@@ -330,7 +348,8 @@ func TestGithub_RequireAuth_validSession(t *testing.T) {
 }
 
 func TestGithub_RequireAuth_invalidSession(t *testing.T) {
-	gh := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret)
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
+	require.NoError(t, err)
 
 	handlerCalled := false
 	protectedHandler := func(w http.ResponseWriter, r *http.Request) {
@@ -358,7 +377,8 @@ func TestGithub_RequireAuth_invalidSession(t *testing.T) {
 }
 
 func TestGithub_RequireAuth_noSession(t *testing.T) {
-	gh := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret)
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
+	require.NoError(t, err)
 
 	handlerCalled := false
 	protectedHandler := func(w http.ResponseWriter, r *http.Request) {
@@ -382,7 +402,8 @@ func TestGithub_RequireAuth_noSession(t *testing.T) {
 }
 
 func TestGithub_RequireAuth_expiredSession(t *testing.T) {
-	gh := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret)
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
+	require.NoError(t, err)
 
 	email := "test@example.com"
 	name := "Test User"

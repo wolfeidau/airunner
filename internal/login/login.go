@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rs/zerolog/log"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/github"
 )
@@ -29,9 +30,22 @@ const sessionContextKey contextKey = "session"
 type Github struct {
 	config        *oauth2.Config
 	sessionSecret []byte
+	sessionTTL    time.Duration
 }
 
-func NewGithub(clientID, clientSecret, callbackURL string, sessionSecret []byte) *Github {
+func NewGithub(clientID, clientSecret, callbackURL string, sessionSecret []byte, sessionTTL time.Duration) (*Github, error) {
+	if len(sessionSecret) < 32 {
+		return nil, fmt.Errorf("session secret must be 32 bytes")
+	}
+
+	if clientID == "" || clientSecret == "" || callbackURL == "" {
+		return nil, fmt.Errorf("client ID, client secret, and callback URL are required")
+	}
+
+	if sessionTTL <= 0 {
+		return nil, fmt.Errorf("session TTL must be greater than 0")
+	}
+
 	return &Github{
 		config: &oauth2.Config{
 			ClientID:     clientID,
@@ -41,7 +55,8 @@ func NewGithub(clientID, clientSecret, callbackURL string, sessionSecret []byte)
 			Endpoint:     github.Endpoint,
 		},
 		sessionSecret: sessionSecret,
-	}
+		sessionTTL:    sessionTTL,
+	}, nil
 }
 
 // SessionData holds the authenticated user's session information
@@ -84,12 +99,14 @@ func (g *Github) validateSessionToken(token string) (*SessionData, error) {
 	// Split token into data and signature
 	parts := strings.Split(token, ".")
 	if len(parts) != 2 {
+		log.Debug().Msg("Invalid session token format")
 		return nil, ErrInvalidSession
 	}
 
 	encoded := parts[0]
 	receivedSig, err := base64.URLEncoding.DecodeString(parts[1])
 	if err != nil {
+		log.Debug().Msg("Invalid session token signature encoding")
 		return nil, ErrInvalidSession
 	}
 
@@ -99,23 +116,27 @@ func (g *Github) validateSessionToken(token string) (*SessionData, error) {
 	expectedSig := mac.Sum(nil)
 
 	if !hmac.Equal(receivedSig, expectedSig) {
+		log.Debug().Msg("Session token HMAC signature validation failed")
 		return nil, ErrInvalidSession
 	}
 
 	// Decode the data
 	data, err := base64.URLEncoding.DecodeString(encoded)
 	if err != nil {
+		log.Debug().Msg("Invalid session token data encoding")
 		return nil, ErrInvalidSession
 	}
 
 	// Unmarshal session data
 	var session SessionData
 	if err := json.Unmarshal(data, &session); err != nil {
+		log.Debug().Msg("Failed to unmarshal session data")
 		return nil, ErrInvalidSession
 	}
 
 	// Check expiration
 	if time.Now().After(session.ExpiresAt) {
+		log.Debug().Str("user", session.Email).Msg("Session expired")
 		return nil, ErrExpiredSession
 	}
 
@@ -144,12 +165,17 @@ func (g *Github) RequireAuth(redirectURL string) func(http.HandlerFunc) http.Han
 				errorCode := "invalid"
 				if errors.Is(err, ErrExpiredSession) {
 					errorCode = "expired"
+					log.Debug().Str("path", r.URL.Path).Msg("Session expired, redirecting to login")
+				} else {
+					log.Debug().Str("path", r.URL.Path).Msg("Invalid session, redirecting to login")
 				}
 
 				// Redirect to the specified URL with error code
 				http.Redirect(w, r, redirectURL+"?error_code="+errorCode, http.StatusFound)
 				return
 			}
+
+			log.Debug().Str("user", session.Email).Str("path", r.URL.Path).Msg("Session validated, allowing access")
 
 			// Add session to request context
 			ctx := context.WithValue(r.Context(), sessionContextKey, session)
@@ -176,6 +202,7 @@ func (g *Github) saveState(w http.ResponseWriter, r *http.Request) string {
 		HttpOnly: true,
 		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
+		MaxAge:   300, // 5 minutes - enough time for OAuth flow
 	}
 	http.SetCookie(w, cookie)
 
@@ -183,6 +210,8 @@ func (g *Github) saveState(w http.ResponseWriter, r *http.Request) string {
 }
 
 func (g *Github) LoginHandler(w http.ResponseWriter, r *http.Request) {
+	log.Debug().Msg("Initiating GitHub OAuth flow")
+
 	state := g.saveState(w, r)
 
 	// redirect to github
@@ -190,24 +219,31 @@ func (g *Github) LoginHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Github) CallbackHandler(w http.ResponseWriter, r *http.Request) {
+	log.Debug().Msg("OAuth callback received")
+
 	state := r.FormValue("state")
 	code := r.FormValue("code")
 
 	if state == "" || code == "" {
+		log.Warn().Msg("OAuth callback missing state or code")
 		http.Error(w, "Authentication failed", http.StatusBadRequest)
 		return
 	}
 
 	cookie, err := r.Cookie("state")
 	if err != nil {
+		log.Warn().Err(err).Msg("OAuth callback missing state cookie")
 		http.Error(w, "Authentication failed", http.StatusBadRequest)
 		return
 	}
 
 	if state != cookie.Value {
+		log.Warn().Msg("OAuth callback state mismatch")
 		http.Error(w, "Authentication failed", http.StatusBadRequest)
 		return
 	}
+
+	log.Debug().Msg("OAuth state validated successfully")
 
 	// Clear the state cookie after validation
 	http.SetCookie(w, &http.Cookie{
@@ -223,27 +259,34 @@ func (g *Github) CallbackHandler(w http.ResponseWriter, r *http.Request) {
 	// exchange code for token
 	token, err := g.ExchangeCode(r.Context(), code)
 	if err != nil {
+		log.Warn().Err(err).Msg("Failed to exchange OAuth code for token")
 		http.Error(w, "Authentication failed", http.StatusBadRequest)
 		return
 	}
 
+	log.Debug().Msg("OAuth token exchange successful")
+
 	// get user info
 	userInfo, err := g.getUserInfo(r.Context(), token)
 	if err != nil {
+		log.Warn().Err(err).Msg("Failed to fetch user info from GitHub")
 		http.Error(w, "Authentication failed", http.StatusBadRequest)
 		return
 	}
 
 	// Verify we got an email
 	if userInfo.Email == "" {
+		log.Warn().Msg("GitHub user info missing email address")
 		http.Error(w, "Email address required", http.StatusBadRequest)
 		return
 	}
 
+	log.Info().Str("user", userInfo.Email).Msg("User authenticated successfully")
+
 	// Create HMAC-signed session token
-	sessionTTL := 7 * 24 * time.Hour // 7 days
-	sessionToken, err := g.createSessionToken(userInfo.Email, userInfo.Name, sessionTTL)
+	sessionToken, err := g.createSessionToken(userInfo.Email, userInfo.Name, g.sessionTTL)
 	if err != nil {
+		log.Error().Err(err).Msg("Failed to create session token")
 		http.Error(w, "Failed to create session", http.StatusInternalServerError)
 		return
 	}
@@ -256,7 +299,7 @@ func (g *Github) CallbackHandler(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
-		MaxAge:   int(sessionTTL.Seconds()),
+		MaxAge:   int(g.sessionTTL.Seconds()),
 	}
 	http.SetCookie(w, session)
 
@@ -268,16 +311,25 @@ func (g *Github) ExchangeCode(ctx context.Context, code string) (*oauth2.Token, 
 }
 
 func (g *Github) getUserInfo(ctx context.Context, token *oauth2.Token) (*UserInfo, error) {
+	// Add timeout to prevent hanging on slow GitHub API
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
 	client := g.config.Client(ctx, token)
 	resp, err := client.Get("https://api.github.com/user")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to fetch user info: %w", err)
 	}
 	defer resp.Body.Close()
 
+	// Validate HTTP status code
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GitHub API returned HTTP %d", resp.StatusCode)
+	}
+
 	var userInfo UserInfo
 	if err := json.NewDecoder(resp.Body).Decode(&userInfo); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to decode user info: %w", err)
 	}
 
 	// If email is not available from /user endpoint, fetch from /user/emails
@@ -305,16 +357,25 @@ type githubEmail struct {
 }
 
 func (g *Github) getUserEmails(ctx context.Context, token *oauth2.Token) ([]githubEmail, error) {
+	// Add timeout to prevent hanging on slow GitHub API
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
 	client := g.config.Client(ctx, token)
 	resp, err := client.Get("https://api.github.com/user/emails")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to fetch user emails: %w", err)
 	}
 	defer resp.Body.Close()
 
+	// Validate HTTP status code
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GitHub API returned HTTP %d for emails endpoint", resp.StatusCode)
+	}
+
 	var emails []githubEmail
 	if err := json.NewDecoder(resp.Body).Decode(&emails); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to decode user emails: %w", err)
 	}
 
 	return emails, nil

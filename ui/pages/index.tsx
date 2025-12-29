@@ -3,6 +3,7 @@ import { createConnectTransport } from "@connectrpc/connect-web";
 import { TransportProvider, useQuery } from "@connectrpc/connect-query";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { listJobs } from "../../api/gen/proto/es/job/v1/job-JobService_connectquery";
+import "./app.css";
 
 function Index() {
   const { data } = useQuery(listJobs, {});

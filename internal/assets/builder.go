@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/evanw/esbuild/pkg/api"
 	"github.com/rs/zerolog/log"
@@ -70,55 +71,74 @@ func (p *Pipeline) Build() error {
 	return nil
 }
 
-// LoadScripts returns the ordered list of script paths needed for the given entrypoint
-// and the main entrypoint file path
-func (p *Pipeline) LoadScripts(entryPointPath string) ([]string, string, error) {
+// LoadScripts returns the ordered list of script and stylesheet paths needed for the given entrypoint
+func (p *Pipeline) LoadScripts(entryPointPath string) ([]string, []string, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
 	if p.metadata == nil {
-		return nil, "", errors.New("assets not built yet, call Build() first")
+		return nil, nil, errors.New("assets not built yet, call Build() first")
 	}
 
 	scripts := []string{}
+	styles := []string{}
 	visited := make(map[string]bool)
-	var entrypoint string
+	var jsOutputPath string
 
 	// Find the output file for this entrypoint
 	for outputPath, info := range p.metadata.Outputs {
 		if info.EntryPoint == entryPointPath {
-			entrypoint = "/" + outputPath
-			scripts = append(scripts, entrypoint)
+			jsOutputPath = outputPath
+			// Separate JS and CSS
+			if strings.HasSuffix(outputPath, ".css") {
+				styles = append(styles, "/"+outputPath)
+			} else {
+				scripts = append(scripts, "/"+outputPath)
+			}
 			visited[outputPath] = true
-			p.addDependencies(info, &scripts, visited)
-			return scripts, entrypoint, nil
+			p.addDependencies(info, &scripts, &styles, visited)
+			break
 		}
 	}
 
-	return nil, "", errors.New("entrypoint not found in metadata")
+	if jsOutputPath == "" {
+		return nil, nil, errors.New("entrypoint not found in metadata")
+	}
+
+	// Look for CSS bundle linked to this JS output
+	for _, info := range p.metadata.Outputs {
+		if info.EntryPoint == entryPointPath && info.CSSBundle != "" && !visited[info.CSSBundle] {
+			styles = append(styles, "/"+info.CSSBundle)
+			break
+		}
+	}
+
+	return scripts, styles, nil
 }
 
-func (p *Pipeline) addDependencies(output OutputInfo, scripts *[]string, visited map[string]bool) {
+func (p *Pipeline) addDependencies(output OutputInfo, scripts, styles *[]string, visited map[string]bool) {
 	for _, imp := range output.Imports {
 		if !visited[imp.Path] {
 			visited[imp.Path] = true
-			*scripts = append(*scripts, "/"+imp.Path)
+			if strings.HasSuffix(imp.Path, ".css") {
+				*styles = append(*styles, "/"+imp.Path)
+			} else {
+				*scripts = append(*scripts, "/"+imp.Path)
+			}
 
 			if chunkInfo, exists := p.metadata.Outputs[imp.Path]; exists {
-				p.addDependencies(chunkInfo, scripts, visited)
+				p.addDependencies(chunkInfo, scripts, styles, visited)
 			}
 		}
 	}
 }
 
-// Handler returns an http.HandlerFunc that renders the given template and entrypoint with its scripts
-func (p *Pipeline) Handler(templateName, title, entryPointPath string, contextFn func(ctx context.Context) any) (http.HandlerFunc, error) {
-	if p.tmpl == nil {
-		return nil, errors.New("template not loaded, use NewWithTemplate or NewWithTemplateDir")
-	}
+const templateName = "index.html"
 
+// Handler returns an http.HandlerFunc that renders the embedded template with the given entrypoint, scripts, and styles
+func (p *Pipeline) Handler(title, entryPointPath string, contextFn func(ctx context.Context) any) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		scripts, _, err := p.LoadScripts(entryPointPath)
+		scripts, styles, err := p.LoadScripts(entryPointPath)
 		if err != nil {
 			log.Error().Err(err).Msg("Failed to load scripts")
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
@@ -134,13 +154,14 @@ func (p *Pipeline) Handler(templateName, title, entryPointPath string, contextFn
 		data := map[string]any{
 			"Title":   title,
 			"Scripts": scripts,
+			"Styles":  styles,
 			"Context": contextFn(r.Context()),
 		}
 
 		if err := p.tmpl.ExecuteTemplate(w, templateName, data); err != nil {
 			log.Error().Err(err).Msg("Failed to render template")
 		}
-	}, nil
+	}
 }
 
 func cond[T any](condition bool, trueVal, falseVal T) T {

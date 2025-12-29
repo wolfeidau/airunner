@@ -6,10 +6,10 @@ import { listJobs } from "../../api/gen/proto/es/job/v1/job-JobService_connectqu
 import { usePageContext } from "../lib/context";
 import "./app.css";
 
-function Index() {
+function Dashboard() {
   const { data } = useQuery(listJobs, {});
   const user = usePageContext();
-  return <div>Index: Hello, {user?.name}! {data?.jobs?.map(job => job.jobId).join(", ")}</div>;
+  return <div>Dashboard: Hello, {user?.name}! {data?.jobs?.map(job => job.jobId).join(", ")}</div>;
 }
 
 const queryClient = new QueryClient();
@@ -22,7 +22,7 @@ const root = createRoot(document.getElementById("app")!);
 root.render(
 	<TransportProvider transport={finalTransport}>
       <QueryClientProvider client={queryClient}>
-        <Index />
+        <Dashboard />
       </QueryClientProvider>
     </TransportProvider>
 );

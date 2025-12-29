@@ -28,9 +28,9 @@ func (c *WebsiteCmd) Run(globals *Globals) error {
 	log.Info().Str("version", globals.Version).Msg("Starting website server")
 
 	// Build assets
-	pipeline, err := assets.NewWithTemplateDir(assets.DefaultConfig(), "views/pages")
+	pipeline, err := assets.New(assets.DefaultConfig())
 	if err != nil {
-		return fmt.Errorf("failed to load templates: %w", err)
+		return fmt.Errorf("failed to load assets pipeline: %w", err)
 	}
 
 	if err = pipeline.Build(); err != nil {
@@ -43,11 +43,8 @@ func (c *WebsiteCmd) Run(globals *Globals) error {
 	mux.Handle("/public/", http.StripPrefix("/public/", http.FileServer(http.Dir("public"))))
 
 	// Register home page
-	homeHandler, err := pipeline.Handler("index.html", "Index: home", "ui/pages/index.tsx", nil)
-	if err != nil {
-		return fmt.Errorf("failed to create home handler: %w", err)
-	}
-	mux.HandleFunc("/", homeHandler) // Public
+	mux.HandleFunc("/",
+		pipeline.Handler("Index: home", "ui/pages/index.tsx", nil))
 
 	// Initialize GitHub OAuth with session secret
 	sessionSecret := []byte(c.SessionSecret)
@@ -61,17 +58,8 @@ func (c *WebsiteCmd) Run(globals *Globals) error {
 	authMiddleware := gh.RequireAuth("/") // Redirect to / on auth failure
 
 	// Register dashboard page
-	dashboardHandler, err := pipeline.Handler(
-		"dashboard.html", "Dashboard", "ui/pages/dashboard.tsx",
-		func(ctx context.Context) any {
-			session, _ := login.SessionFromContext(ctx)
-			return session
-		},
-	)
-	if err != nil {
-		return fmt.Errorf("failed to create dashboard handler: %w", err)
-	}
-	mux.HandleFunc("/dashboard", authMiddleware(dashboardHandler))
+	mux.HandleFunc("/dashboard",
+		authMiddleware(pipeline.Handler("Dashboard", "ui/pages/dashboard.tsx", contextFn)))
 
 	protection := csrf.New()
 	handler := protection.Handler(mux)
@@ -79,4 +67,9 @@ func (c *WebsiteCmd) Run(globals *Globals) error {
 	log.Info().Str("addr", c.Listen).Msg("Starting HTTPS server")
 
 	return configureHTTPServer(c.Listen, handler).ListenAndServeTLS(c.Cert, c.Key)
+}
+
+func contextFn(ctx context.Context) any {
+	session, _ := login.SessionFromContext(ctx)
+	return session
 }

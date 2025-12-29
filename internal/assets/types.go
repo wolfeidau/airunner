@@ -2,6 +2,7 @@ package assets
 
 import (
 	"bytes"
+	"embed"
 	"encoding/json"
 	"errors"
 	"html/template"
@@ -9,12 +10,16 @@ import (
 	"sync"
 )
 
+//go:embed pages/*.html
+var pages embed.FS
+
 type BuildMetadata struct {
 	Outputs map[string]OutputInfo `json:"outputs"`
 }
 
 type OutputInfo struct {
 	EntryPoint string       `json:"entryPoint"`
+	CSSBundle  string       `json:"cssBundle"`
 	Imports    []ImportInfo `json:"imports"`
 }
 
@@ -31,19 +36,21 @@ type Pipeline struct {
 }
 
 // New creates a new asset pipeline with the given configuration
-func New(config Config) *Pipeline {
-	return &Pipeline{
-		config: config,
-	}
+// It loads the embedded templates from the assets package
+func New(config Config) (*Pipeline, error) {
+	return NewWithCustomFuncs(config, nil)
 }
 
-// NewWithTemplate creates a new asset pipeline and loads a single template
-func NewWithTemplate(config Config, templatePath string) (*Pipeline, error) {
-	return NewWithTemplateAndFuncs(config, templatePath, nil)
+// NewWithCustomFuncs creates a new asset pipeline with custom template functions
+// It loads the embedded template from the assets package
+func NewWithCustomFuncs(config Config, customFuncs template.FuncMap) (*Pipeline, error) {
+	return newWithEmbedTemplate(config, customFuncs)
 }
 
-// NewWithTemplateAndFuncs creates a new asset pipeline and loads a single template with custom functions
-func NewWithTemplateAndFuncs(config Config, templatePath string, customFuncs template.FuncMap) (*Pipeline, error) {
+// newWithEmbedTemplate loads the embedded index.html template
+func newWithEmbedTemplate(config Config, customFuncs template.FuncMap) (*Pipeline, error) {
+	const templateFile = "pages/index.html"
+
 	p := &Pipeline{
 		config: config,
 	}
@@ -56,40 +63,13 @@ func NewWithTemplateAndFuncs(config Config, templatePath string, customFuncs tem
 	}
 
 	// Merge custom functions
-	maps.Copy(funcs, customFuncs)
+	if customFuncs != nil {
+		maps.Copy(funcs, customFuncs)
+	}
 
-	tmpl, err := template.New(templatePath).Funcs(funcs).ParseFiles(templatePath)
+	tmpl, err := template.New("index.html").Funcs(funcs).ParseFS(pages, templateFile)
 	if err != nil {
-		return nil, err
-	}
-	p.tmpl = tmpl
-	return p, nil
-}
-
-// NewWithTemplateDir creates a new asset pipeline and loads all templates from a directory
-func NewWithTemplateDir(config Config, templateDir string) (*Pipeline, error) {
-	return NewWithTemplateDirAndFuncs(config, templateDir, nil)
-}
-
-// NewWithTemplateDirAndFuncs creates a new asset pipeline and loads all templates from a directory with custom functions
-func NewWithTemplateDirAndFuncs(config Config, templateDir string, customFuncs template.FuncMap) (*Pipeline, error) {
-	p := &Pipeline{
-		config: config,
-	}
-
-	funcs := template.FuncMap{
-		"marshal": marshal,
-		"safe": func(s string) template.HTML {
-			return template.HTML(s) //nolint:gosec
-		},
-	}
-
-	// Merge custom functions
-	maps.Copy(funcs, customFuncs)
-
-	tmpl, err := template.New(templateDir).Funcs(funcs).ParseGlob(templateDir + "/*.html")
-	if err != nil {
-		return nil, err
+		return nil, errors.New("failed to load embedded template: " + err.Error())
 	}
 	p.tmpl = tmpl
 	return p, nil

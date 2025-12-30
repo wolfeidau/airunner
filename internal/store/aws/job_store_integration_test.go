@@ -11,11 +11,11 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
-	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/stretchr/testify/require"
 
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
+	"github.com/wolfeidau/airunner/internal/bootstrap"
 )
 
 const (
@@ -52,62 +52,10 @@ func getDynamoDBClientV2(t *testing.T, ctx context.Context) *dynamodb.Client {
 	})
 }
 
-// createTestTableWithGSIs creates a DynamoDB table with GSI1 and GSI2 for full testing
+// createTestTableWithGSIs creates a DynamoDB jobs table with GSI1 and GSI2 using the bootstrap package
 func createTestTableWithGSIs(t *testing.T, ctx context.Context, client *dynamodb.Client, tableName string) {
-	// Try to delete the table first
-	_, _ = client.DeleteTable(ctx, &dynamodb.DeleteTableInput{TableName: aws.String(tableName)})
-
-	deleteWaiter := dynamodb.NewTableNotExistsWaiter(client)
-	_ = deleteWaiter.Wait(ctx, &dynamodb.DescribeTableInput{TableName: aws.String(tableName)}, 10*time.Second)
-
-	input := &dynamodb.CreateTableInput{
-		TableName: aws.String(tableName),
-		KeySchema: []types.KeySchemaElement{
-			{AttributeName: aws.String("job_id"), KeyType: types.KeyTypeHash},
-		},
-		AttributeDefinitions: []types.AttributeDefinition{
-			{AttributeName: aws.String("job_id"), AttributeType: types.ScalarAttributeTypeS},
-			{AttributeName: aws.String("queue"), AttributeType: types.ScalarAttributeTypeS},
-			{AttributeName: aws.String("created_at"), AttributeType: types.ScalarAttributeTypeN},
-			{AttributeName: aws.String("request_id"), AttributeType: types.ScalarAttributeTypeS},
-		},
-		GlobalSecondaryIndexes: []types.GlobalSecondaryIndex{
-			{
-				IndexName: aws.String("GSI1"),
-				KeySchema: []types.KeySchemaElement{
-					{AttributeName: aws.String("queue"), KeyType: types.KeyTypeHash},
-					{AttributeName: aws.String("created_at"), KeyType: types.KeyTypeRange},
-				},
-				Projection: &types.Projection{ProjectionType: types.ProjectionTypeAll},
-				ProvisionedThroughput: &types.ProvisionedThroughput{
-					ReadCapacityUnits:  aws.Int64(5),
-					WriteCapacityUnits: aws.Int64(5),
-				},
-			},
-			{
-				IndexName: aws.String("GSI2"),
-				KeySchema: []types.KeySchemaElement{
-					{AttributeName: aws.String("request_id"), KeyType: types.KeyTypeHash},
-				},
-				Projection: &types.Projection{ProjectionType: types.ProjectionTypeKeysOnly},
-				ProvisionedThroughput: &types.ProvisionedThroughput{
-					ReadCapacityUnits:  aws.Int64(5),
-					WriteCapacityUnits: aws.Int64(5),
-				},
-			},
-		},
-		BillingMode: types.BillingModeProvisioned,
-		ProvisionedThroughput: &types.ProvisionedThroughput{
-			ReadCapacityUnits:  aws.Int64(5),
-			WriteCapacityUnits: aws.Int64(5),
-		},
-	}
-
-	_, err := client.CreateTable(ctx, input)
-	require.NoError(t, err)
-
-	createWaiter := dynamodb.NewTableExistsWaiter(client)
-	err = createWaiter.Wait(ctx, &dynamodb.DescribeTableInput{TableName: aws.String(tableName)}, 30*time.Second)
+	// Use bootstrap package's exported table creation function
+	err := bootstrap.CreateSingleJobsTable(ctx, client, tableName)
 	require.NoError(t, err)
 }
 
@@ -454,34 +402,8 @@ func TestIntegration_QueueNotConfigured(t *testing.T) {
 
 // createTestEventsTable creates the JobEvents table for testing
 func createTestEventsTable(t *testing.T, ctx context.Context, client *dynamodb.Client, tableName string) {
-	// Try to delete the table first
-	_, _ = client.DeleteTable(ctx, &dynamodb.DeleteTableInput{TableName: aws.String(tableName)})
-
-	deleteWaiter := dynamodb.NewTableNotExistsWaiter(client)
-	_ = deleteWaiter.Wait(ctx, &dynamodb.DescribeTableInput{TableName: aws.String(tableName)}, 10*time.Second)
-
-	input := &dynamodb.CreateTableInput{
-		TableName: aws.String(tableName),
-		KeySchema: []types.KeySchemaElement{
-			{AttributeName: aws.String("job_id"), KeyType: types.KeyTypeHash},
-			{AttributeName: aws.String("sequence"), KeyType: types.KeyTypeRange},
-		},
-		AttributeDefinitions: []types.AttributeDefinition{
-			{AttributeName: aws.String("job_id"), AttributeType: types.ScalarAttributeTypeS},
-			{AttributeName: aws.String("sequence"), AttributeType: types.ScalarAttributeTypeN},
-		},
-		BillingMode: types.BillingModeProvisioned,
-		ProvisionedThroughput: &types.ProvisionedThroughput{
-			ReadCapacityUnits:  aws.Int64(5),
-			WriteCapacityUnits: aws.Int64(5),
-		},
-	}
-
-	_, err := client.CreateTable(ctx, input)
-	require.NoError(t, err)
-
-	createWaiter := dynamodb.NewTableExistsWaiter(client)
-	err = createWaiter.Wait(ctx, &dynamodb.DescribeTableInput{TableName: aws.String(tableName)}, 30*time.Second)
+	// Use bootstrap package's exported table creation function
+	err := bootstrap.CreateSingleEventsTable(ctx, client, tableName)
 	require.NoError(t, err)
 }
 

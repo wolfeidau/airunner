@@ -110,9 +110,8 @@ function Dashboard() {
                   <tr>
                     <th>Job ID</th>
                     <th>Repository</th>
-                    <th>Status</th>
                     <th>Created</th>
-                    <th>Updated</th>
+                    <th className="cell-status">Status</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -124,13 +123,12 @@ function Dashboard() {
                       <td className="cell-repo">
                         {job.jobParams?.repository || "-"}
                       </td>
+                      <td className="cell-date">{formatDate(job.createdAt)}</td>
                       <td className="cell-status">
                         <span className={`status-badge ${getStateColor(job.state)}`}>
                           {getStateLabel(job.state)}
                         </span>
                       </td>
-                      <td className="cell-date">{formatDate(job.createdAt)}</td>
-                      <td className="cell-date">{formatDate(job.updatedAt)}</td>
                     </tr>
                   ))}
                 </tbody>

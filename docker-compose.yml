@@ -1,20 +1,41 @@
 version: "3.8"
 
 services:
-  # LocalStack for AWS services (DynamoDB, SQS, Secrets Manager, SSM)
+  # DynamoDB Local for table storage
+  dynamodb:
+    command: "-jar DynamoDBLocal.jar -port 4101 -disableTelemetry -dbPath ./data -sharedDb"
+    image: "amazon/dynamodb-local:2.5.2"
+    environment:
+      JAVA_OPTS: "-Xmx128m"
+    ports:
+      - "4101:4101"
+    volumes:
+      - "dynamodb-data:/home/dynamodblocal/data"
+    user: root
+    working_dir: /home/dynamodblocal
+    healthcheck:
+      test: ["CMD-SHELL", '[ "$(curl -s -o /dev/null -I -w ''%{http_code}'' http://localhost:4101)" == "400" ]']
+      interval: 1s
+      timeout: 5s
+      retries: 30
+
+  # LocalStack for SQS queues
   localstack:
-    image: localstack/localstack:latest
+    image: localstack/localstack:3.8
     ports:
       - "4566:4566"
     environment:
-      - SERVICES=dynamodb,sqs,ssm
+      - SERVICES=sqs
       - DEFAULT_REGION=us-east-1
       - DEBUG=0
       - PERSISTENCE=0
     volumes:
-      - "/var/run/docker.sock:/var/run/docker.sock"
+      - "./init-aws.sh:/etc/localstack/init/ready.d/init-aws.sh"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
-      interval: 5s
+      interval: 2s
       timeout: 5s
-      retries: 10
+      retries: 30
+
+volumes:
+  dynamodb-data:

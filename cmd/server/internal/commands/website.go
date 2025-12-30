@@ -58,6 +58,7 @@ func (c *WebsiteCmd) Run(globals *Globals) error {
 	// Register routes
 	mux.HandleFunc("/login", gh.LoginHandler)              // Public
 	mux.HandleFunc("/github/callback", gh.CallbackHandler) // Public
+	mux.HandleFunc("/logout", gh.LogoutHandler)            // Public
 
 	// Wrap with authentication middleware
 	authMiddleware := gh.RequireAuth("/") // Redirect to / on auth failure

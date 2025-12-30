@@ -306,6 +306,31 @@ func (g *Github) CallbackHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/dashboard", http.StatusFound)
 }
 
+// LogoutHandler handles user logout by clearing the session cookie
+func (g *Github) LogoutHandler(w http.ResponseWriter, r *http.Request) {
+	// Get session for logging purposes (optional - won't fail if missing)
+	session, _ := g.GetSession(r)
+	if session != nil {
+		log.Info().Str("user", session.Email).Msg("User logged out")
+	} else {
+		log.Debug().Msg("Logout requested without active session")
+	}
+
+	// Clear the session cookie
+	http.SetCookie(w, &http.Cookie{
+		Name:     "_session",
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1, // Delete the cookie
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	// Redirect to home page
+	http.Redirect(w, r, "/", http.StatusFound)
+}
+
 func (g *Github) ExchangeCode(ctx context.Context, code string) (*oauth2.Token, error) {
 	return g.config.Exchange(ctx, code)
 }

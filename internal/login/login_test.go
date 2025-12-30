@@ -444,3 +444,58 @@ func TestSessionFromContext_notPresent(t *testing.T) {
 	require.False(t, ok, "session should not be present")
 	require.Nil(t, session)
 }
+
+func TestGithub_LogoutHandler(t *testing.T) {
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
+	require.NoError(t, err)
+
+	// Create a valid session token
+	email := "test@example.com"
+	name := "Test User"
+	token, err := gh.createSessionToken(email, name, 1*time.Hour)
+	require.NoError(t, err)
+
+	// Create request with session cookie
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/logout", nil)
+	r.AddCookie(&http.Cookie{
+		Name:  "_session",
+		Value: token,
+	})
+
+	// Call logout handler
+	gh.LogoutHandler(w, r)
+
+	// Should redirect to home page
+	require.Equal(t, http.StatusFound, w.Code)
+	require.Equal(t, "/", w.Header().Get("Location"))
+
+	// Should clear the session cookie
+	cookies := w.Result().Cookies()
+	require.Len(t, cookies, 1)
+	require.Equal(t, "_session", cookies[0].Name)
+	require.Empty(t, cookies[0].Value)
+	require.Equal(t, -1, cookies[0].MaxAge)
+}
+
+func TestGithub_LogoutHandler_noSession(t *testing.T) {
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
+	require.NoError(t, err)
+
+	// Create request without session cookie
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/logout", nil)
+
+	// Call logout handler
+	gh.LogoutHandler(w, r)
+
+	// Should still redirect to home page
+	require.Equal(t, http.StatusFound, w.Code)
+	require.Equal(t, "/", w.Header().Get("Location"))
+
+	// Should still set the delete cookie (defensive)
+	cookies := w.Result().Cookies()
+	require.Len(t, cookies, 1)
+	require.Equal(t, "_session", cookies[0].Name)
+	require.Equal(t, -1, cookies[0].MaxAge)
+}

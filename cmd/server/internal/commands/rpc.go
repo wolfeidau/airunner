@@ -11,11 +11,14 @@ import (
 	"connectrpc.com/connect"
 	connectcors "connectrpc.com/cors"
 	"connectrpc.com/otelconnect"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/rs/cors"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
+	"github.com/wolfeidau/airunner/internal/bootstrap"
 	"github.com/wolfeidau/airunner/internal/logger"
 	"github.com/wolfeidau/airunner/internal/server"
 	"github.com/wolfeidau/airunner/internal/store"
@@ -25,15 +28,17 @@ import (
 )
 
 type RPCServerCmd struct {
-	CORSOrigins []string       `help:"allowed CORS origins for frontend requests" default:"https://localhost" env:"AIRUNNER_CORS_ORIGINS"`
-	Listen      string         `help:"HTTP server listen address" default:"0.0.0.0:8993" env:"AIRUNNER_LISTEN"`
-	Cert        string         `help:"path to TLS cert file" default:"" env:"AIRUNNER_TLS_CERT"`
-	Key         string         `help:"path to TLS key file" default:"" env:"AIRUNNER_TLS_KEY"`
-	NoAuth      bool           `help:"disable authentication (development only)" default:"false" env:"AIRUNNER_NO_AUTH"`
-	Tracing     bool           `help:"enable tracing" default:"false" env:"AIRUNNER_TRACING"`
-	StoreType   string         `help:"job store type (memory or aws)" default:"memory" env:"AIRUNNER_STORE_TYPE" enum:"memory,aws"`
-	AWSStore    AWSStoreFlags  `embed:"" prefix:"aws-"`
-	Execution   ExecutionFlags `embed:"" prefix:"execution-"`
+	CORSOrigins      []string       `help:"allowed CORS origins for frontend requests" default:"https://localhost" env:"AIRUNNER_CORS_ORIGINS"`
+	Listen           string         `help:"HTTP server listen address" default:"0.0.0.0:8993" env:"AIRUNNER_LISTEN"`
+	Cert             string         `help:"path to TLS cert file" default:"" env:"AIRUNNER_TLS_CERT"`
+	Key              string         `help:"path to TLS key file" default:"" env:"AIRUNNER_TLS_KEY"`
+	NoAuth           bool           `help:"disable authentication (development only)" default:"false" env:"AIRUNNER_NO_AUTH"`
+	Development      bool           `help:"development mode - auto-setup LocalStack infrastructure" default:"false" env:"AIRUNNER_DEVELOPMENT"`
+	DevelopmentClean bool           `help:"clean resources on startup in development mode (deletes all data)" default:"false" env:"AIRUNNER_DEVELOPMENT_CLEAN"`
+	Tracing          bool           `help:"enable tracing" default:"false" env:"AIRUNNER_TRACING"`
+	StoreType        string         `help:"job store type (memory or aws)" default:"memory" env:"AIRUNNER_STORE_TYPE" enum:"memory,aws"`
+	AWSStore         AWSStoreFlags  `embed:"" prefix:"aws-"`
+	Execution        ExecutionFlags `embed:"" prefix:"execution-"`
 }
 
 type AWSStoreFlags struct {
@@ -49,6 +54,10 @@ type AWSStoreFlags struct {
 	DefaultVisibilityTimeout int32  `help:"default visibility timeout in seconds" default:"300"`
 	EventsTTLDays            int32  `help:"TTL in days for job events" default:"30"`
 	TokenSigningSecret       string `help:"secret key for HMAC signing of task tokens" env:"AIRUNNER_AWS_TOKEN_SECRET"`
+
+	// Endpoint overrides for local development
+	SQSEndpointURL      string `help:"SQS endpoint URL override (for LocalStack)" default:"" env:"AIRUNNER_AWS_SQS_ENDPOINT_URL"`
+	DynamoDBEndpointURL string `help:"DynamoDB endpoint URL override (for DynamoDB Local)" default:"" env:"AIRUNNER_AWS_DYNAMODB_ENDPOINT_URL"`
 }
 
 func (s *AWSStoreFlags) Validate() error {
@@ -116,6 +125,62 @@ func (s *RPCServerCmd) Run(ctx context.Context, globals *Globals) error {
 			return fmt.Errorf("failed to create OTEL interceptor: %w", err)
 		}
 		interceptors = append(interceptors, otelInterceptor)
+	}
+
+	// If development mode, auto-setup LocalStack infrastructure
+	if s.Development {
+		log.Info().Msg("Development mode enabled - setting up LocalStack infrastructure")
+
+		// Auto-configure for LocalStack
+		if s.StoreType == "" || s.StoreType == "memory" {
+			s.StoreType = "aws"
+		}
+
+		// Create AWS config for local development
+		localConfig, err := config.LoadDefaultConfig(ctx,
+			config.WithRegion("us-east-1"),
+			config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("test", "test", "test")),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create local AWS config: %w", err)
+		}
+
+		// Create SQS client pointing to LocalStack
+		sqsClient := sqs.NewFromConfig(localConfig, func(o *sqs.Options) {
+			o.BaseEndpoint = aws.String("http://localhost:4566")
+		})
+
+		// Create DynamoDB client pointing to DynamoDB Local
+		dynamoClient := dynamodb.NewFromConfig(localConfig, func(o *dynamodb.Options) {
+			o.BaseEndpoint = aws.String("http://localhost:4101")
+		})
+
+		// Bootstrap infrastructure
+		resources, err := bootstrap.Bootstrap(ctx, bootstrap.Config{
+			SQSClient:      sqsClient,
+			DynamoClient:   dynamoClient,
+			Environment:    "dev",
+			CleanResources: s.DevelopmentClean,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to bootstrap development infrastructure: %w", err)
+		}
+
+		// Auto-populate configuration from bootstrapped resources
+		s.AWSStore.QueueDefault = resources.QueueURLs["default"]
+		s.AWSStore.QueuePriority = resources.QueueURLs["priority"]
+		s.AWSStore.DynamoDBJobsTable = resources.TableNames.Jobs
+		s.AWSStore.DynamoDBEventsTable = resources.TableNames.Events
+		s.AWSStore.SQSEndpointURL = "http://localhost:4566"
+		s.AWSStore.DynamoDBEndpointURL = "http://localhost:4101"
+		s.AWSStore.TokenSigningSecret = "dev-mode-secret-key-minimum-32-characters-long"
+
+		log.Info().
+			Str("jobs_table", resources.TableNames.Jobs).
+			Str("events_table", resources.TableNames.Events).
+			Str("default_queue", resources.QueueURLs["default"]).
+			Str("priority_queue", resources.QueueURLs["priority"]).
+			Msg("Development infrastructure ready")
 	}
 
 	// Determine store type and create appropriate store
@@ -195,15 +260,29 @@ func createAWSJobStore(ctx context.Context, cmd *RPCServerCmd) (store.JobStore, 
 		return nil, fmt.Errorf("failed to validate aws flags: %w", err)
 	}
 
-	// Load AWS configuration (uses default credential chain: IAM role, env vars, etc.)
+	// Load default AWS configuration
 	awsConfig, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
-	// Create AWS SDK clients
-	sqsClient := sqs.NewFromConfig(awsConfig)
-	dynamoClient := dynamodb.NewFromConfig(awsConfig)
+	// Create SQS client with optional endpoint override
+	sqsClientOpts := []func(*sqs.Options){}
+	if cmd.AWSStore.SQSEndpointURL != "" {
+		sqsClientOpts = append(sqsClientOpts, func(o *sqs.Options) {
+			o.BaseEndpoint = aws.String(cmd.AWSStore.SQSEndpointURL)
+		})
+	}
+	sqsClient := sqs.NewFromConfig(awsConfig, sqsClientOpts...)
+
+	// Create DynamoDB client with optional endpoint override
+	dynamoClientOpts := []func(*dynamodb.Options){}
+	if cmd.AWSStore.DynamoDBEndpointURL != "" {
+		dynamoClientOpts = append(dynamoClientOpts, func(o *dynamodb.Options) {
+			o.BaseEndpoint = aws.String(cmd.AWSStore.DynamoDBEndpointURL)
+		})
+	}
+	dynamoClient := dynamodb.NewFromConfig(awsConfig, dynamoClientOpts...)
 
 	// Build store configuration with execution config
 	storeCfg := awsstore.JobStoreConfig{

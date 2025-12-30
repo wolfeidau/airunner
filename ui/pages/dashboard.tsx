@@ -9,6 +9,7 @@ import { timestampToJsDate } from "../lib/proto_convert";
 
 import "./app.css";
 import "./dashboard.css";
+import type { Timestamp } from "@bufbuild/protobuf/wkt";
 
 function Dashboard() {
   const { data } = useQuery(listJobs, {});
@@ -55,7 +56,7 @@ function Dashboard() {
     }
   };
 
-  const formatDate = (timestamp: any): string => {
+  const formatDate = (timestamp: Timestamp | undefined): string => {
     if (!timestamp) return "-";
     const date = timestampToJsDate(timestamp);
     return new Intl.DateTimeFormat("en-US", {
@@ -89,10 +90,15 @@ function Dashboard() {
         <div className="cli-section">
           <div className="cli-header">
             <h2>Submit a Job</h2>
-            <p className="cli-subtitle">Use the CLI to submit jobs to your queue</p>
+            <p className="cli-subtitle">
+              Use the CLI to submit jobs to your queue
+            </p>
           </div>
           <div className="cli-command">
-            <code>$ airunner-cli submit --server=https://localhost:8993 --queue=default github.com/example/repo</code>
+            <code>
+              $ airunner-cli submit --server=https://localhost:8993
+              --queue=default github.com/example/repo
+            </code>
           </div>
         </div>
 
@@ -110,9 +116,8 @@ function Dashboard() {
                   <tr>
                     <th>Job ID</th>
                     <th>Repository</th>
-                    <th>Status</th>
                     <th>Created</th>
-                    <th>Updated</th>
+                    <th className="cell-status">Status</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -124,13 +129,14 @@ function Dashboard() {
                       <td className="cell-repo">
                         {job.jobParams?.repository || "-"}
                       </td>
+                      <td className="cell-date">{formatDate(job.createdAt)}</td>
                       <td className="cell-status">
-                        <span className={`status-badge ${getStateColor(job.state)}`}>
+                        <span
+                          className={`status-badge ${getStateColor(job.state)}`}
+                        >
                           {getStateLabel(job.state)}
                         </span>
                       </td>
-                      <td className="cell-date">{formatDate(job.createdAt)}</td>
-                      <td className="cell-date">{formatDate(job.updatedAt)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -149,11 +155,13 @@ const finalTransport = createConnectTransport({
 });
 
 // Initialize on load
-const root = createRoot(document.getElementById("app")!);
+const appElement = document.getElementById("app");
+if (!appElement) throw new Error("App element not found");
+const root = createRoot(appElement);
 root.render(
   <TransportProvider transport={finalTransport}>
     <QueryClientProvider client={queryClient}>
       <Dashboard />
     </QueryClientProvider>
-  </TransportProvider>
+  </TransportProvider>,
 );

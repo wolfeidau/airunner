@@ -7,10 +7,9 @@ steps:
     image: "buildkite/hosted-agent-base-images:ubuntu-jammy"
     label: ":docker: Create base image"
     command: |
-      docker buildx build \
+      docker build \
         --no-cache \
         --file .buildkite/Dockerfile.build \
-        --platform linux/amd64,linux/arm64 \
         --tag "${BUILDKITE_HOSTED_REGISTRY_URL}/airunner_base:latest" \
         --progress plain \
         --push .
@@ -21,10 +20,9 @@ steps:
     image: "buildkite/hosted-agent-base-images:ubuntu-jammy"
     label: ":docker: Check base image"
     command: |
-      docker buildx build \
+      docker build \
         --no-cache \
         --file .buildkite/Dockerfile.build \
-        --platform linux/amd64,linux/arm64 \
         --tag "${BUILDKITE_HOSTED_REGISTRY_URL}/console-stream_base:dev" \
         --progress plain .
 

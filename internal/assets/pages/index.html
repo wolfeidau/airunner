@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ .Title }}</title>
+
+    {{ range .Styles }}
+    <link rel="stylesheet" href="{{ . }}">
+    {{ end }}
+</head>
+<body>
+    <div id="app"></div>
+
+    <script id="__WEB_ROOT_DATA__" type="json">
+      {{ if .Context }}
+        {{ .Context | marshal | safe }}
+      {{ else }}
+        {}
+      {{ end }}
+    </script>
+
+    {{ range .Scripts }}
+    <script src="{{ . }}" type="module"></script>
+    {{ end }}
+</body>
+</html>

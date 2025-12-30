@@ -1,0 +1,36 @@
+{
+  "name": "airunner",
+  "version": "1.0.0",
+  "description": "This is demonstrating the use of [console-stream](https://github.com/wolfeidau/console-stream) and a [connectrpc](https://connectrpc.com/) server which recieves job events, and an agent which dequeues jobs and executes them.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wolfeidau/airunner.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/wolfeidau/airunner/issues"
+  },
+  "homepage": "https://github.com/wolfeidau/airunner#readme",
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.10.2",
+    "@connectrpc/connect-query": "^2.2.0",
+    "@connectrpc/connect-web": "^2.1.1",
+    "@tanstack/react-query": "^5.90.14",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3"
+  },
+  "devDependencies": {
+    "@bufbuild/buf": "^1.61.0",
+    "@bufbuild/protoc-gen-connect-query": "^0.4.1",
+    "@bufbuild/protoc-gen-es": "^2.10.2",
+    "@connectrpc/protoc-gen-connect-query": "^2.2.0",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3"
+  }
+}

@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
+	"connectrpc.com/connect"
 	connectcors "connectrpc.com/cors"
 	"connectrpc.com/otelconnect"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -23,14 +25,15 @@ import (
 )
 
 type RPCServerCmd struct {
-	Hostname  string         `help:"hostname for CORS" default:"localhost"`
-	Listen    string         `help:"HTTP server listen address" default:"0.0.0.0:8993" env:"AIRUNNER_LISTEN"`
-	Cert      string         `help:"path to TLS cert file" default:"" env:"AIRUNNER_TLS_CERT"`
-	Key       string         `help:"path to TLS key file" default:"" env:"AIRUNNER_TLS_KEY"`
-	NoAuth    bool           `help:"disable authentication (development only)" default:"false" env:"AIRUNNER_NO_AUTH"`
-	StoreType string         `help:"job store type (memory or aws)" default:"memory" env:"AIRUNNER_STORE_TYPE" enum:"memory,aws"`
-	AWSStore  AWSStoreFlags  `embed:"" prefix:"aws-"`
-	Execution ExecutionFlags `embed:"" prefix:"execution-"`
+	CORSOrigins []string       `help:"allowed CORS origins for frontend requests" default:"https://localhost" env:"AIRUNNER_CORS_ORIGINS"`
+	Listen      string         `help:"HTTP server listen address" default:"0.0.0.0:8993" env:"AIRUNNER_LISTEN"`
+	Cert        string         `help:"path to TLS cert file" default:"" env:"AIRUNNER_TLS_CERT"`
+	Key         string         `help:"path to TLS key file" default:"" env:"AIRUNNER_TLS_KEY"`
+	NoAuth      bool           `help:"disable authentication (development only)" default:"false" env:"AIRUNNER_NO_AUTH"`
+	Tracing     bool           `help:"enable tracing" default:"false" env:"AIRUNNER_TRACING"`
+	StoreType   string         `help:"job store type (memory or aws)" default:"memory" env:"AIRUNNER_STORE_TYPE" enum:"memory,aws"`
+	AWSStore    AWSStoreFlags  `embed:"" prefix:"aws-"`
+	Execution   ExecutionFlags `embed:"" prefix:"execution-"`
 }
 
 type AWSStoreFlags struct {
@@ -90,28 +93,36 @@ func (s *RPCServerCmd) Run(ctx context.Context, globals *Globals) error {
 
 	log.Info().Str("version", globals.Version).Msg("Starting RPC server")
 
-	// Initialize OpenTelemetry (metrics and traces exported to Honeycomb via env vars)
-	shutdown, err := telemetry.InitTelemetry(ctx, "airunner-server", globals.Version)
-	if err != nil {
-		log.Warn().Err(err).Msg("Failed to initialize telemetry, continuing without metrics")
-		shutdown = func(ctx context.Context) error { return nil }
-	}
-	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err = shutdown(shutdownCtx); err != nil {
-			log.Error().Err(err).Msg("Failed to shutdown telemetry")
-		}
-	}()
+	interceptors := []connect.Interceptor{logger.NewConnectRequests(log)}
 
-	// setup OTEL
-	otelInterceptor, err := otelconnect.NewInterceptor()
-	if err != nil {
-		return fmt.Errorf("failed to create OTEL interceptor: %w", err)
+	if s.Tracing {
+		log.Info().Msg("Tracing is enabled")
+		// Initialize OpenTelemetry (metrics and traces exported to Honeycomb via env vars)
+		shutdown, err := telemetry.InitTelemetry(ctx, "airunner-server", globals.Version)
+		if err != nil {
+			log.Warn().Err(err).Msg("Failed to initialize telemetry, continuing without metrics")
+			shutdown = func(ctx context.Context) error { return nil }
+		}
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err = shutdown(shutdownCtx); err != nil {
+				log.Error().Err(err).Msg("Failed to shutdown telemetry")
+			}
+		}()
+		// setup OTEL
+		otelInterceptor, err := otelconnect.NewInterceptor()
+		if err != nil {
+			return fmt.Errorf("failed to create OTEL interceptor: %w", err)
+		}
+		interceptors = append(interceptors, otelInterceptor)
 	}
 
 	// Determine store type and create appropriate store
-	var jobStore store.JobStore
+	var (
+		jobStore store.JobStore
+		err      error
+	)
 
 	switch s.StoreType {
 	case "aws":
@@ -148,27 +159,26 @@ func (s *RPCServerCmd) Run(ctx context.Context, globals *Globals) error {
 	jobServer := server.NewServer(jobStore)
 
 	// Build handler chain: CORS -> Connect handlers
-	handler := jobServer.Handler(logger.NewConnectRequests(log), otelInterceptor)
+	handler := jobServer.Handler(interceptors...)
 
 	if !s.NoAuth {
 		log.Warn().Msg("Authentication is disabled (--no-auth). This should only be used in development!")
 	}
 
 	// Add CORS
-	handler = withCORS(s.Hostname, handler)
+	handler = withCORS(s.CORSOrigins, handler)
 
 	// Create HTTP server
-	httpServer := &http.Server{
-		Addr:              s.Listen,
-		Handler:           handler,
-		ReadHeaderTimeout: time.Second,
-		ReadTimeout:       5 * time.Minute,
-		WriteTimeout:      5 * time.Minute,
-		IdleTimeout:       5 * time.Minute,
-		MaxHeaderBytes:    8 * 1024, // 8KiB
-	}
+	httpServer := configureHTTPServer(s.Listen, handler)
 
 	if s.Cert != "" && s.Key != "" {
+		if _, err := os.Stat(s.Cert); err != nil {
+			return fmt.Errorf("TLS certificate not found at %s. Run 'make certs' to generate certificates: %w", s.Cert, err)
+		}
+		if _, err := os.Stat(s.Key); err != nil {
+			return fmt.Errorf("TLS key not found at %s. Run 'make certs' to generate certificates: %w", s.Key, err)
+		}
+
 		log.Info().Str("addr", s.Listen).Bool("auth", !s.NoAuth).Msg("Starting HTTPS server")
 		return httpServer.ListenAndServeTLS(s.Cert, s.Key)
 	}
@@ -221,12 +231,13 @@ func createAWSJobStore(ctx context.Context, cmd *RPCServerCmd) (store.JobStore, 
 }
 
 // withCORS adds CORS support to a Connect HTTP handler.
-func withCORS(hostname string, h http.Handler) http.Handler {
+func withCORS(allowedOrigins []string, h http.Handler) http.Handler {
 	middleware := cors.New(cors.Options{
-		AllowedOrigins: []string{hostname},
-		AllowedMethods: connectcors.AllowedMethods(),
-		AllowedHeaders: append(connectcors.AllowedHeaders(), "Authorization"),
-		ExposedHeaders: connectcors.ExposedHeaders(),
+		AllowedOrigins:   allowedOrigins,
+		AllowedMethods:   connectcors.AllowedMethods(),
+		AllowedHeaders:   append(connectcors.AllowedHeaders(), "Authorization"),
+		ExposedHeaders:   connectcors.ExposedHeaders(),
+		AllowCredentials: true, // Required for cookie-based authentication
 	})
 	return middleware.Handler(h)
 }

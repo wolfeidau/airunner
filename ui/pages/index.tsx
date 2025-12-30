@@ -15,8 +15,9 @@ function Index() {
 
         <div className="summary">
           <p>
-            A Go-based job orchestration platform with production-ready AWS backend support.
-            Submit, execute, and monitor long-running jobs with ease.
+            A Go-based job orchestration platform with production-ready AWS
+            backend support. Submit, execute, and monitor long-running jobs with
+            ease.
           </p>
         </div>
 
@@ -41,11 +42,13 @@ const finalTransport = createConnectTransport({
 });
 
 // Initialize on load
-const root = createRoot(document.getElementById("app")!);
+const appElement = document.getElementById("app");
+if (!appElement) throw new Error("App element not found");
+const root = createRoot(appElement);
 root.render(
   <TransportProvider transport={finalTransport}>
     <QueryClientProvider client={queryClient}>
       <Index />
     </QueryClientProvider>
-  </TransportProvider>
+  </TransportProvider>,
 );

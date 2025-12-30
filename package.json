@@ -4,7 +4,8 @@
   "description": "This is demonstrating the use of [console-stream](https://github.com/wolfeidau/console-stream) and a [connectrpc](https://connectrpc.com/) server which recieves job events, and an agent which dequeues jobs and executes them.",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "lint": "biome lint",
+    "format": "biome format --write"
   },
   "repository": {
     "type": "git",
@@ -26,8 +27,8 @@
     "react-dom": "^19.2.3"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.3.10",
     "@bufbuild/buf": "^1.61.0",
-    "@bufbuild/protoc-gen-connect-query": "^0.4.1",
     "@bufbuild/protoc-gen-es": "^2.10.2",
     "@connectrpc/protoc-gen-connect-query": "^2.2.0",
     "@types/react": "^19.2.7",

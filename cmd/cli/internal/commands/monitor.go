@@ -282,6 +282,109 @@ func monitorJob(ctx context.Context, clients *client.Clients, args monitorJobArg
 					resize.HeightPixels)
 			}
 
+		// Git clone events
+		case jobv1.EventType_EVENT_TYPE_GIT_CLONE_START:
+			if gitStart := event.GetGitCloneStart(); gitStart != nil {
+				fmt.Printf("[%s] 📦 Git clone started: %s",
+					event.Timestamp.AsTime().Format("15:04:05"),
+					gitStart.Repository)
+				if gitStart.Branch != "" {
+					fmt.Printf(" (branch: %s)", gitStart.Branch)
+				}
+				if gitStart.Commit != "" {
+					fmt.Printf(" (commit: %s)", gitStart.Commit)
+				}
+				fmt.Println()
+			}
+
+		case jobv1.EventType_EVENT_TYPE_GIT_CLONE_END:
+			if gitEnd := event.GetGitCloneEnd(); gitEnd != nil {
+				// Show short SHA (first 8 chars) or full string if shorter
+				shortSha := gitEnd.CommitSha
+				if len(shortSha) > 8 {
+					shortSha = shortSha[:8]
+				}
+				fmt.Printf("[%s] ✅ Git clone completed (SHA: %s, Duration: %v)\n",
+					event.Timestamp.AsTime().Format("15:04:05"),
+					shortSha,
+					gitEnd.CloneDuration.AsDuration())
+				if args.Verbose {
+					fmt.Printf("    Working directory: %s\n", gitEnd.WorkingDirectory)
+				}
+			}
+
+		case jobv1.EventType_EVENT_TYPE_GIT_CLONE_ERROR:
+			if gitErr := event.GetGitCloneError(); gitErr != nil {
+				fmt.Printf("[%s] ❌ Git clone failed: %s\n",
+					event.Timestamp.AsTime().Format("15:04:05"),
+					gitErr.ErrorMessage)
+				if args.Verbose && gitErr.StderrOutput != "" {
+					fmt.Printf("    stderr: %s\n", gitErr.StderrOutput)
+				}
+			}
+
+		// Container lifecycle events
+		case jobv1.EventType_EVENT_TYPE_CONTAINER_CREATE:
+			if create := event.GetContainerCreate(); create != nil {
+				// Show short container ID (first 12 chars) or full string if shorter
+				shortID := create.ContainerId
+				if len(shortID) > 12 {
+					shortID = shortID[:12]
+				}
+				fmt.Printf("[%s] 🐳 Container created (ID: %s, Image: %s)\n",
+					event.Timestamp.AsTime().Format("15:04:05"),
+					shortID,
+					create.Image)
+			}
+
+		case jobv1.EventType_EVENT_TYPE_CONTAINER_REMOVE:
+			if remove := event.GetContainerRemove(); remove != nil {
+				// Show short container ID (first 12 chars) or full string if shorter
+				shortID := remove.ContainerId
+				if len(shortID) > 12 {
+					shortID = shortID[:12]
+				}
+				fmt.Printf("[%s] 🗑️  Container removed (ID: %s)\n",
+					event.Timestamp.AsTime().Format("15:04:05"),
+					shortID)
+			}
+
+		// Image pull events
+		case jobv1.EventType_EVENT_TYPE_IMAGE_PULL_START:
+			if pullStart := event.GetImagePullStart(); pullStart != nil {
+				fmt.Printf("[%s] 📥 Pulling image: %s\n",
+					event.Timestamp.AsTime().Format("15:04:05"),
+					pullStart.Image)
+			}
+
+		case jobv1.EventType_EVENT_TYPE_IMAGE_PULL_PROGRESS:
+			if progress := event.GetImagePullProgress(); progress != nil {
+				if args.Verbose {
+					percentage := float64(0)
+					if progress.TotalBytes > 0 {
+						percentage = float64(progress.CurrentBytes) / float64(progress.TotalBytes) * 100
+					}
+					fmt.Printf("[%s] 📥 %s: %.1f%% (%d/%d bytes)\n",
+						event.Timestamp.AsTime().Format("15:04:05"),
+						progress.Status,
+						percentage,
+						progress.CurrentBytes,
+						progress.TotalBytes)
+				}
+			}
+
+		case jobv1.EventType_EVENT_TYPE_IMAGE_PULL_COMPLETE:
+			if pullComplete := event.GetImagePullComplete(); pullComplete != nil {
+				duration := ""
+				if pullComplete.PullDuration != nil {
+					duration = fmt.Sprintf(" (Duration: %v)", pullComplete.PullDuration.AsDuration())
+				}
+				fmt.Printf("[%s] ✅ Image pull completed: %s%s\n",
+					event.Timestamp.AsTime().Format("15:04:05"),
+					pullComplete.Image,
+					duration)
+			}
+
 		default:
 			fmt.Printf("[%s] ❓ Unknown event type: %s (Sequence: %d)\n",
 				event.Timestamp.AsTime().Format("15:04:05"),

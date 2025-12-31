@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -15,6 +16,12 @@ import (
 	"github.com/wolfeidau/airunner/internal/client"
 	"gopkg.in/yaml.v3"
 )
+
+type ContainerMountConfig struct {
+	Source   string `yaml:"source" json:"source"`
+	Target   string `yaml:"target" json:"target"`
+	ReadOnly bool   `yaml:"readOnly" json:"readOnly"`
+}
 
 type JobConfig struct {
 	Command          string            `yaml:"command" json:"command"`
@@ -28,6 +35,18 @@ type JobConfig struct {
 	Commit           string            `yaml:"commit" json:"commit"`
 	Branch           string            `yaml:"branch" json:"branch"`
 	Owner            string            `yaml:"owner" json:"owner"`
+
+	// Container configuration
+	ContainerEnabled bool                   `yaml:"containerEnabled" json:"containerEnabled"`
+	ContainerImage   string                 `yaml:"containerImage" json:"containerImage"`
+	ContainerRuntime string                 `yaml:"containerRuntime" json:"containerRuntime"`
+	ContainerMounts  []ContainerMountConfig `yaml:"containerMounts" json:"containerMounts"`
+
+	// Git clone configuration (Phase 1: Public repos only)
+	GitCloneEnabled      bool   `yaml:"gitCloneEnabled" json:"gitCloneEnabled"`
+	GitCloneDepth        int32  `yaml:"gitCloneDepth" json:"gitCloneDepth"`
+	GitCloneSingleBranch bool   `yaml:"gitCloneSingleBranch" json:"gitCloneSingleBranch"`
+	GitCloneSubmodules   string `yaml:"gitCloneSubmodules" json:"gitCloneSubmodules"`
 }
 
 type SubmitCmd struct {
@@ -47,6 +66,18 @@ type SubmitCmd struct {
 	WorkingDirectory string            `help:"Working directory for command execution"`
 	Config           string            `help:"YAML/JSON config file path"`
 	Timeout          time.Duration     `help:"Timeout for the monitor" default:"5m"`
+
+	// Container flags
+	ContainerEnabled bool     `help:"Run job in a container"`
+	ContainerImage   string   `help:"Container image (e.g., golang:1.21)"`
+	ContainerRuntime string   `help:"Container runtime: docker or podman" default:"docker"`
+	ContainerMounts  []string `help:"Volume mounts (format: src:dst or src:dst:ro)"`
+
+	// Git clone flags (Phase 1: Public repos only)
+	GitCloneEnabled      bool   `help:"Clone repository before execution (public repos only)"`
+	GitCloneDepth        int32  `help:"Clone depth (0 = full clone, 1 = shallow)"`
+	GitCloneSingleBranch bool   `help:"Only clone the specified branch"`
+	GitCloneSubmodules   string `help:"Submodule handling: recursive, shallow, or empty"`
 }
 
 func (s *SubmitCmd) Run(ctx context.Context, globals *Globals) error {
@@ -167,6 +198,40 @@ func (s *SubmitCmd) loadConfigFile() error {
 		}
 	}
 
+	// Container configuration
+	if config.ContainerEnabled {
+		s.ContainerEnabled = config.ContainerEnabled
+	}
+	if config.ContainerImage != "" {
+		s.ContainerImage = config.ContainerImage
+	}
+	if config.ContainerRuntime != "" {
+		s.ContainerRuntime = config.ContainerRuntime
+	}
+	if len(config.ContainerMounts) > 0 {
+		for _, mount := range config.ContainerMounts {
+			mountStr := mount.Source + ":" + mount.Target
+			if mount.ReadOnly {
+				mountStr += ":ro"
+			}
+			s.ContainerMounts = append(s.ContainerMounts, mountStr)
+		}
+	}
+
+	// Git clone configuration
+	if config.GitCloneEnabled {
+		s.GitCloneEnabled = config.GitCloneEnabled
+	}
+	if config.GitCloneDepth > 0 {
+		s.GitCloneDepth = config.GitCloneDepth
+	}
+	if config.GitCloneSingleBranch {
+		s.GitCloneSingleBranch = config.GitCloneSingleBranch
+	}
+	if config.GitCloneSubmodules != "" {
+		s.GitCloneSubmodules = config.GitCloneSubmodules
+	}
+
 	return nil
 }
 
@@ -206,6 +271,36 @@ func (s *SubmitCmd) submitJob(ctx context.Context, clients *client.Clients) (str
 		processType = jobv1.ProcessType_PROCESS_TYPE_PTY // Default to PTY
 	}
 
+	// Build container config
+	var containerConfig *jobv1.ContainerConfig
+	if s.ContainerEnabled {
+		containerConfig = &jobv1.ContainerConfig{
+			Enabled: true,
+			Image:   s.ContainerImage,
+			Runtime: s.ContainerRuntime,
+		}
+
+		// Parse and validate volume mounts
+		for _, mountStr := range s.ContainerMounts {
+			mount, err := parseMount(mountStr)
+			if err != nil {
+				return "", fmt.Errorf("invalid mount configuration: %w", err)
+			}
+			containerConfig.Mounts = append(containerConfig.Mounts, mount)
+		}
+	}
+
+	// Build git clone config (Phase 1: Public repos only, no auth)
+	var gitCloneConfig *jobv1.GitCloneConfig
+	if s.GitCloneEnabled {
+		gitCloneConfig = &jobv1.GitCloneConfig{
+			Enabled:      true,
+			Depth:        s.GitCloneDepth,
+			SingleBranch: s.GitCloneSingleBranch,
+			Submodules:   s.GitCloneSubmodules,
+		}
+	}
+
 	req := &jobv1.EnqueueJobRequest{
 		RequestId: uuid.New().String(), // Idempotency token
 		Queue:     s.Queue,
@@ -230,6 +325,8 @@ func (s *SubmitCmd) submitJob(ctx context.Context, clients *client.Clients) (str
 				return int32(s.TimeoutSeconds)
 			}(),
 			WorkingDirectory: s.WorkingDirectory,
+			Container:        containerConfig,
+			GitClone:         gitCloneConfig,
 		},
 	}
 
@@ -239,4 +336,55 @@ func (s *SubmitCmd) submitJob(ctx context.Context, clients *client.Clients) (str
 	}
 
 	return resp.Msg.JobId, nil
+}
+
+// parseMount parses and validates volume mount format: src:dst or src:dst:ro
+// Source paths must be absolute and under $HOME/.airunner for security
+// Target paths cannot be mounted to dangerous container paths
+func parseMount(mountStr string) (*jobv1.ContainerMount, error) {
+	parts := strings.Split(mountStr, ":")
+	if len(parts) < 2 {
+		return nil, fmt.Errorf("invalid mount format: %s (expected src:dst or src:dst:ro)", mountStr)
+	}
+
+	source := parts[0]
+	target := parts[1]
+
+	// Validate source is absolute path
+	if !filepath.IsAbs(source) {
+		return nil, fmt.Errorf("mount source must be absolute path: %s", source)
+	}
+
+	// Validate source is under $HOME/.airunner
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get home directory: %w", err)
+	}
+
+	airunnerBase := filepath.Join(homeDir, ".airunner")
+	// Clean the paths to handle .. and . properly
+	cleanSource := filepath.Clean(source)
+	if !strings.HasPrefix(cleanSource, airunnerBase) {
+		return nil, fmt.Errorf("mount source must be under %s for security: %s", airunnerBase, source)
+	}
+
+	// Validate target doesn't mount to dangerous container paths
+	dangerousPaths := []string{"/etc", "/bin", "/sbin", "/usr/bin", "/usr/sbin", "/proc", "/sys", "/dev"}
+	for _, dangerous := range dangerousPaths {
+		if strings.HasPrefix(target, dangerous) {
+			return nil, fmt.Errorf("mounting to %s is not allowed for security", dangerous)
+		}
+	}
+
+	mount := &jobv1.ContainerMount{
+		Source:   cleanSource,
+		Target:   target,
+		ReadOnly: false,
+	}
+
+	if len(parts) == 3 && parts[2] == "ro" {
+		mount.ReadOnly = true
+	}
+
+	return mount, nil
 }

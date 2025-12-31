@@ -212,6 +212,135 @@ function EventItem({
       // Skip heartbeat events (not requested by user)
       return null;
 
+    // Git clone events
+    case EventType.GIT_CLONE_START:
+      if (event.eventData.case === "gitCloneStart") {
+        const gitStart = event.eventData.value;
+        return (
+          <div className="event-lifecycle event-start">
+            <span className="output-offset">+{offsetSeconds}s</span>[{timestamp}
+            ] 📦 Git clone started: {gitStart.repository}
+            {gitStart.branch && ` (branch: ${gitStart.branch})`}
+            {gitStart.commit && ` (commit: ${gitStart.commit})`}
+          </div>
+        );
+      }
+      break;
+
+    case EventType.GIT_CLONE_END:
+      if (event.eventData.case === "gitCloneEnd") {
+        const gitEnd = event.eventData.value;
+        const shortSha =
+          gitEnd.commitSha.length > 8
+            ? gitEnd.commitSha.slice(0, 8)
+            : gitEnd.commitSha;
+        return (
+          <div className="event-lifecycle event-success">
+            <span className="output-offset">+{offsetSeconds}s</span>[{timestamp}
+            ] ✅ Git clone completed (SHA: {shortSha}, Duration:{" "}
+            {gitEnd.cloneDuration
+              ? `${(Number(gitEnd.cloneDuration.seconds) + Number(gitEnd.cloneDuration.nanos) / 1e9).toFixed(1)}s`
+              : "unknown"}
+            )
+          </div>
+        );
+      }
+      break;
+
+    case EventType.GIT_CLONE_ERROR:
+      if (event.eventData.case === "gitCloneError") {
+        const gitErr = event.eventData.value;
+        return (
+          <div className="event-lifecycle event-error">
+            <span className="output-offset">+{offsetSeconds}s</span>[{timestamp}
+            ] ❌ Git clone failed: {gitErr.errorMessage}
+          </div>
+        );
+      }
+      break;
+
+    // Container lifecycle events
+    case EventType.CONTAINER_CREATE:
+      if (event.eventData.case === "containerCreate") {
+        const create = event.eventData.value;
+        const shortId =
+          create.containerId.length > 12
+            ? create.containerId.slice(0, 12)
+            : create.containerId;
+        return (
+          <div className="event-lifecycle event-start">
+            <span className="output-offset">+{offsetSeconds}s</span>[{timestamp}
+            ] 🐳 Container created (ID: {shortId}, Image: {create.image})
+          </div>
+        );
+      }
+      break;
+
+    case EventType.CONTAINER_REMOVE:
+      if (event.eventData.case === "containerRemove") {
+        const remove = event.eventData.value;
+        const shortId =
+          remove.containerId.length > 12
+            ? remove.containerId.slice(0, 12)
+            : remove.containerId;
+        return (
+          <div className="event-lifecycle">
+            <span className="output-offset">+{offsetSeconds}s</span>[{timestamp}
+            ] 🗑️ Container removed (ID: {shortId})
+          </div>
+        );
+      }
+      break;
+
+    // Image pull events
+    case EventType.IMAGE_PULL_START:
+      if (event.eventData.case === "imagePullStart") {
+        const pullStart = event.eventData.value;
+        return (
+          <div className="event-lifecycle event-start">
+            <span className="output-offset">+{offsetSeconds}s</span>[{timestamp}
+            ] 📥 Pulling image: {pullStart.image}
+          </div>
+        );
+      }
+      break;
+
+    case EventType.IMAGE_PULL_PROGRESS:
+      if (event.eventData.case === "imagePullProgress") {
+        const progress = event.eventData.value;
+        const percentage =
+          progress.totalBytes > 0
+            ? (
+                (Number(progress.currentBytes) / Number(progress.totalBytes)) *
+                100
+              ).toFixed(1)
+            : "0.0";
+        return (
+          <div className="event-lifecycle">
+            <span className="output-offset">+{offsetSeconds}s</span>[{timestamp}
+            ] 📥 {progress.status}: {percentage}% ({progress.currentBytes}/
+            {progress.totalBytes} bytes)
+          </div>
+        );
+      }
+      break;
+
+    case EventType.IMAGE_PULL_COMPLETE:
+      if (event.eventData.case === "imagePullComplete") {
+        const pullComplete = event.eventData.value;
+        const duration = pullComplete.pullDuration
+          ? `${(Number(pullComplete.pullDuration.seconds) + Number(pullComplete.pullDuration.nanos) / 1e9).toFixed(1)}s`
+          : "";
+        return (
+          <div className="event-lifecycle event-success">
+            <span className="output-offset">+{offsetSeconds}s</span>[{timestamp}
+            ] ✅ Image pull completed: {pullComplete.image}
+            {duration && ` (Duration: ${duration})`}
+          </div>
+        );
+      }
+      break;
+
     default:
       return null;
   }

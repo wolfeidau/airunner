@@ -9,6 +9,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/rs/zerolog/log"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
+	"github.com/wolfeidau/airunner/internal/git"
 	"github.com/wolfeidau/airunner/internal/util"
 	consolestream "github.com/wolfeidau/console-stream"
 	"google.golang.org/protobuf/types/known/durationpb"
@@ -44,6 +45,40 @@ func (je *JobExecutor) Execute(ctx context.Context, job *jobv1.Job) error {
 		}
 	}()
 
+	// Git cloning step (if enabled)
+	var gitCloner *git.GitCloner
+	if job.JobParams.GitClone != nil && job.JobParams.GitClone.Enabled {
+		gitCloner = git.NewGitCloner(je.batcher, job.JobId)
+
+		clonedDir, err := gitCloner.Clone(ctx, job.JobParams.GitClone, job.JobParams)
+		if err != nil {
+			log.Error().Err(err).Str("job_id", job.JobId).Msg("Git clone failed")
+			return fmt.Errorf("git clone failed: %w", err)
+		}
+
+		// Ensure cleanup
+		defer func() {
+			if err := gitCloner.Cleanup(); err != nil {
+				log.Error().Err(err).Msg("Failed to cleanup git workspace")
+			}
+		}()
+
+		// Set working directory or mount path based on execution mode
+		if job.JobParams.Container != nil && job.JobParams.Container.Enabled {
+			// For containers: mount cloned repo as volume
+			mount := &jobv1.ContainerMount{
+				Source:   clonedDir,
+				Target:   "/workspace",
+				ReadOnly: false,
+			}
+			job.JobParams.Container.Mounts = append(job.JobParams.Container.Mounts, mount)
+			job.JobParams.WorkingDirectory = "/workspace"
+		} else {
+			// For direct execution: set working directory
+			job.JobParams.WorkingDirectory = clonedDir
+		}
+	}
+
 	// Determine flush interval from ExecutionConfig
 	flushInterval := 100 * time.Millisecond // Default: 100ms
 	if job.ExecutionConfig != nil && job.ExecutionConfig.OutputFlushIntervalMillis > 0 {
@@ -57,7 +92,59 @@ func (je *JobExecutor) Execute(ctx context.Context, job *jobv1.Job) error {
 			Msg("Using default output flush interval")
 	}
 
-	// Create console-stream process options
+	// Create and execute the appropriate process type
+	if job.JobParams.Container != nil && job.JobParams.Container.Enabled {
+		return je.executeContainer(ctx, job, flushInterval)
+	}
+	return je.executeDirect(ctx, job, flushInterval)
+}
+
+// executeDirect executes a direct process
+func (je *JobExecutor) executeDirect(ctx context.Context, job *jobv1.Job, flushInterval time.Duration) error {
+	process := je.createDirectProcess(job, flushInterval)
+
+	for event, err := range process.ExecuteAndStream(ctx) {
+		if err != nil {
+			return je.handleStreamError(err, job.JobId)
+		}
+
+		if err := je.handleEvent(event, job.JobId); err != nil {
+			log.Error().Err(err).Str("job_id", job.JobId).Msg("Failed to handle event")
+			return fmt.Errorf("event handling failed: %w", err)
+		}
+
+		if _, ok := event.Event.(*consolestream.ProcessEnd); ok {
+			return nil
+		}
+	}
+
+	return errors.New("failed job execution")
+}
+
+// executeContainer executes a container process
+func (je *JobExecutor) executeContainer(ctx context.Context, job *jobv1.Job, flushInterval time.Duration) error {
+	process := je.createContainerProcess(ctx, job, flushInterval)
+
+	for event, err := range process.ExecuteAndStream(ctx) {
+		if err != nil {
+			return je.handleStreamError(err, job.JobId)
+		}
+
+		if err := je.handleEvent(event, job.JobId); err != nil {
+			log.Error().Err(err).Str("job_id", job.JobId).Msg("Failed to handle event")
+			return fmt.Errorf("event handling failed: %w", err)
+		}
+
+		if _, ok := event.Event.(*consolestream.ProcessEnd); ok {
+			return nil
+		}
+	}
+
+	return errors.New("failed job execution")
+}
+
+// createDirectProcess creates a standard process execution
+func (je *JobExecutor) createDirectProcess(job *jobv1.Job, flushInterval time.Duration) *consolestream.Process {
 	opts := []consolestream.ProcessOption{
 		consolestream.WithEnvMap(job.JobParams.Environment),
 		consolestream.WithFlushInterval(flushInterval),
@@ -75,35 +162,47 @@ func (je *JobExecutor) Execute(ctx context.Context, job *jobv1.Job) error {
 
 	// Set working directory if specified
 	if job.JobParams.WorkingDirectory != "" {
-		// Note: console-stream doesn't have a direct working directory option
-		// We would need to handle this by changing directory or modifying the command
-		log.Info().Str("dir", job.JobParams.WorkingDirectory).Msg("Changing working directory")
-
+		log.Info().Str("dir", job.JobParams.WorkingDirectory).Msg("Setting working directory")
 		opts = append(opts, consolestream.WithWorkingDir(job.JobParams.WorkingDirectory))
 	}
 
-	// Create the process
-	process := consolestream.NewProcess(job.JobParams.Command, job.JobParams.Args, opts...)
+	return consolestream.NewProcess(job.JobParams.Command, job.JobParams.Args, opts...)
+}
 
-	// Execute and stream the process
-	for event, err := range process.ExecuteAndStream(ctx) {
-		if err != nil {
-			return je.handleStreamError(err, job.JobId)
-		}
+// createContainerProcess creates a container-based process execution
+func (je *JobExecutor) createContainerProcess(ctx context.Context, job *jobv1.Job, flushInterval time.Duration) *consolestream.ContainerProcess {
+	cfg := job.JobParams.Container
 
-		// Delegate event handling to testable helper method
-		if err := je.handleEvent(event, job.JobId); err != nil {
-			log.Error().Err(err).Str("job_id", job.JobId).Msg("Failed to handle event")
-			return fmt.Errorf("event handling failed: %w", err)
-		}
-
-		// ProcessEnd returns nil from handleEvent, but we need to exit the loop
-		if _, ok := event.Event.(*consolestream.ProcessEnd); ok {
-			return nil
-		}
+	opts := []consolestream.ContainerProcessOption{
+		consolestream.WithContainerImage(cfg.Image),
+		consolestream.WithContainerEnvMap(job.JobParams.Environment),
+		consolestream.WithContainerFlushInterval(flushInterval),
 	}
 
-	return errors.New("failed job execution") // Should not reach here normally
+	// Runtime selection
+	if cfg.Runtime != "" {
+		opts = append(opts, consolestream.WithContainerRuntime(cfg.Runtime))
+	}
+
+	// Volume mounts
+	for _, mount := range cfg.Mounts {
+		opts = append(opts, consolestream.WithContainerMount(
+			mount.Source, mount.Target, mount.ReadOnly,
+		))
+	}
+
+	// Working directory
+	if job.JobParams.WorkingDirectory != "" {
+		opts = append(opts, consolestream.WithContainerWorkingDir(job.JobParams.WorkingDirectory))
+	}
+
+	log.Info().
+		Str("image", cfg.Image).
+		Str("runtime", cfg.Runtime).
+		Int("mounts", len(cfg.Mounts)).
+		Msg("Creating container process")
+
+	return consolestream.NewContainerProcess(job.JobParams.Command, job.JobParams.Args, opts...)
 }
 
 // handleEvent dispatches individual events to appropriate handlers
@@ -132,6 +231,23 @@ func (je *JobExecutor) handleEvent(event consolestream.Event, jobID string) erro
 		// Drop heartbeat events for now - they're sent every flush interval
 		// and we don't currently need them. May implement in the future.
 		return nil
+
+	// Container lifecycle events
+	case *consolestream.ContainerCreate:
+		return je.publishContainerCreateEvent(e)
+
+	case *consolestream.ContainerRemove:
+		return je.publishContainerRemoveEvent(e)
+
+	// Image pull events
+	case *consolestream.ImagePullStart:
+		return je.publishImagePullStartEvent(e)
+
+	case *consolestream.ImagePullProgress:
+		return je.publishImagePullProgressEvent(e)
+
+	case *consolestream.ImagePullComplete:
+		return je.publishImagePullCompleteEvent(e)
 
 	default:
 		// Handle other unexpected event types
@@ -219,6 +335,106 @@ func (je *JobExecutor) publishErrorEvent(errorMessage string) error {
 	if err := je.batcher.AddEvent(context.Background(), errorEvent); err != nil {
 		log.Error().Err(err).Msg("Failed to add error event to batcher")
 		return fmt.Errorf("failed to publish error event: %w", err)
+	}
+
+	return nil
+}
+
+// Container event publishing methods
+
+func (je *JobExecutor) publishContainerCreateEvent(event *consolestream.ContainerCreate) error {
+	jobEvent := &jobv1.JobEvent{
+		EventType: jobv1.EventType_EVENT_TYPE_CONTAINER_CREATE,
+		EventData: &jobv1.JobEvent_ContainerCreate{
+			ContainerCreate: &jobv1.ContainerCreateEvent{
+				ContainerId: event.ContainerID,
+				Image:       event.Image,
+				CreatedAt:   timestamppb.Now(),
+			},
+		},
+	}
+
+	if err := je.batcher.AddEvent(context.Background(), jobEvent); err != nil {
+		log.Error().Err(err).Msg("Failed to add container create event to batcher")
+		return fmt.Errorf("failed to publish container create event: %w", err)
+	}
+
+	return nil
+}
+
+func (je *JobExecutor) publishContainerRemoveEvent(event *consolestream.ContainerRemove) error {
+	jobEvent := &jobv1.JobEvent{
+		EventType: jobv1.EventType_EVENT_TYPE_CONTAINER_REMOVE,
+		EventData: &jobv1.JobEvent_ContainerRemove{
+			ContainerRemove: &jobv1.ContainerRemoveEvent{
+				ContainerId: event.ContainerID,
+				RemovedAt:   timestamppb.Now(),
+			},
+		},
+	}
+
+	if err := je.batcher.AddEvent(context.Background(), jobEvent); err != nil {
+		log.Error().Err(err).Msg("Failed to add container remove event to batcher")
+		return fmt.Errorf("failed to publish container remove event: %w", err)
+	}
+
+	return nil
+}
+
+func (je *JobExecutor) publishImagePullStartEvent(event *consolestream.ImagePullStart) error {
+	jobEvent := &jobv1.JobEvent{
+		EventType: jobv1.EventType_EVENT_TYPE_IMAGE_PULL_START,
+		EventData: &jobv1.JobEvent_ImagePullStart{
+			ImagePullStart: &jobv1.ImagePullStartEvent{
+				Image:     event.Image,
+				StartedAt: timestamppb.Now(),
+			},
+		},
+	}
+
+	if err := je.batcher.AddEvent(context.Background(), jobEvent); err != nil {
+		log.Error().Err(err).Msg("Failed to add image pull start event to batcher")
+		return fmt.Errorf("failed to publish image pull start event: %w", err)
+	}
+
+	return nil
+}
+
+func (je *JobExecutor) publishImagePullProgressEvent(event *consolestream.ImagePullProgress) error {
+	jobEvent := &jobv1.JobEvent{
+		EventType: jobv1.EventType_EVENT_TYPE_IMAGE_PULL_PROGRESS,
+		EventData: &jobv1.JobEvent_ImagePullProgress{
+			ImagePullProgress: &jobv1.ImagePullProgressEvent{
+				Image:        event.Image,
+				Status:       event.Status,
+				CurrentBytes: event.BytesDownloaded,
+				TotalBytes:   event.BytesTotal,
+			},
+		},
+	}
+
+	if err := je.batcher.AddEvent(context.Background(), jobEvent); err != nil {
+		log.Error().Err(err).Msg("Failed to add image pull progress event to batcher")
+		return fmt.Errorf("failed to publish image pull progress event: %w", err)
+	}
+
+	return nil
+}
+
+func (je *JobExecutor) publishImagePullCompleteEvent(event *consolestream.ImagePullComplete) error {
+	jobEvent := &jobv1.JobEvent{
+		EventType: jobv1.EventType_EVENT_TYPE_IMAGE_PULL_COMPLETE,
+		EventData: &jobv1.JobEvent_ImagePullComplete{
+			ImagePullComplete: &jobv1.ImagePullCompleteEvent{
+				Image:        event.Image,
+				PullDuration: nil, // Duration not available in console-stream v0.4.0
+			},
+		},
+	}
+
+	if err := je.batcher.AddEvent(context.Background(), jobEvent); err != nil {
+		log.Error().Err(err).Msg("Failed to add image pull complete event to batcher")
+		return fmt.Errorf("failed to publish image pull complete event: %w", err)
 	}
 
 	return nil

@@ -45,6 +45,18 @@ message JobEvent {
     OutputEvent output = 8;
     TerminalResizeEvent terminal_resize = 9;
     OutputBatchEvent output_batch = 10; // Batched outputs
+
+    // Container events
+    ContainerCreateEvent container_create = 11;
+    ContainerRemoveEvent container_remove = 12;
+    ImagePullStartEvent image_pull_start = 13;
+    ImagePullProgressEvent image_pull_progress = 14;
+    ImagePullCompleteEvent image_pull_complete = 15;
+
+    // Git events
+    GitCloneStartEvent git_clone_start = 16;
+    GitCloneEndEvent git_clone_end = 17;
+    GitCloneErrorEvent git_clone_error = 18;
   }
 }
 
@@ -95,6 +107,55 @@ message OutputBatchEvent {
   int32 playback_interval_millis = 5; // Interval for client replay timing (fallback if timing is critical)
 }
 
+// Container events
+message ContainerCreateEvent {
+  string container_id = 1;
+  string image = 2;
+  google.protobuf.Timestamp created_at = 3;
+}
+
+message ContainerRemoveEvent {
+  string container_id = 1;
+  google.protobuf.Timestamp removed_at = 2;
+}
+
+// Image pull events
+message ImagePullStartEvent {
+  string image = 1;
+  google.protobuf.Timestamp started_at = 2;
+}
+
+message ImagePullProgressEvent {
+  string image = 1;
+  string status = 2; // "Downloading", "Extracting", etc.
+  int64 current_bytes = 3;
+  int64 total_bytes = 4;
+}
+
+message ImagePullCompleteEvent {
+  string image = 1;
+  google.protobuf.Duration pull_duration = 2;
+}
+
+// Git clone events
+message GitCloneStartEvent {
+  string repository = 1;
+  string commit = 2;
+  string branch = 3;
+  google.protobuf.Timestamp started_at = 4;
+}
+
+message GitCloneEndEvent {
+  string commit_sha = 1; // Actual SHA cloned
+  google.protobuf.Duration clone_duration = 2;
+  string working_directory = 3; // Where repo was cloned
+}
+
+message GitCloneErrorEvent {
+  string error_message = 1;
+  string stderr_output = 2;
+}
+
 // Batch configuration for event publishing
 //
 // IMPORTANT: max_batch_bytes must account for persistence backend limits:
@@ -131,6 +192,20 @@ enum EventType {
   EVENT_TYPE_OUTPUT = 5;
   EVENT_TYPE_TERMINAL_RESIZE = 6;
   EVENT_TYPE_OUTPUT_BATCH = 7; // Batched outputs
+
+  // Container lifecycle events
+  EVENT_TYPE_CONTAINER_CREATE = 8;
+  EVENT_TYPE_CONTAINER_REMOVE = 9;
+
+  // Image pull events
+  EVENT_TYPE_IMAGE_PULL_START = 10;
+  EVENT_TYPE_IMAGE_PULL_PROGRESS = 11;
+  EVENT_TYPE_IMAGE_PULL_COMPLETE = 12;
+
+  // Git clone events
+  EVENT_TYPE_GIT_CLONE_START = 13;
+  EVENT_TYPE_GIT_CLONE_END = 14;
+  EVENT_TYPE_GIT_CLONE_ERROR = 15;
 }
 
 message PublishJobEventsRequest {
@@ -208,6 +283,42 @@ enum ProcessType {
   PROCESS_TYPE_PTY = 2; // PTY mode for interactive processes
 }
 
+// Container volume mount
+message ContainerMount {
+  string source = 1; // Host path
+  string target = 2; // Container path
+  bool read_only = 3; // Mount read-only
+}
+
+// Container execution configuration
+message ContainerConfig {
+  bool enabled = 1;
+  string image = 2; // Required: e.g., "golang:1.21", "ubuntu:22.04"
+  string runtime = 3; // "docker" or "podman" (default: "docker")
+
+  // Volume mounts
+  repeated ContainerMount mounts = 4;
+
+  // Note: Resource limits (CPU/memory) not supported in console-stream v0.4.0
+  // Will be added in future version when console-stream adds support
+}
+
+// Git repository cloning configuration (Phase 1: Public repos only)
+message GitCloneConfig {
+  bool enabled = 1;
+
+  // Clone options
+  int32 depth = 2; // Clone depth (0 = full, 1 = shallow)
+  bool single_branch = 3; // Only clone specified branch
+  string submodules = 4; // "recursive", "shallow", or empty
+
+  // Phase 2 (Future): Add authentication fields for private repos
+  // oneof auth {
+  //   GitSSHAuth ssh_auth = 5;
+  //   GitHTTPSAuth https_auth = 6;
+  // }
+}
+
 message JobParams {
   string repository = 1; // Repository URL for the job
   string commit = 2; // Commit hash or identifier for the job
@@ -220,6 +331,10 @@ message JobParams {
   ProcessType process_type = 9; // Process execution mode
   int32 timeout_seconds = 10; // Command execution timeout in seconds
   string working_directory = 11; // Optional working directory override
+
+  // Container and git configuration
+  ContainerConfig container = 12;
+  GitCloneConfig git_clone = 13;
 }
 
 enum JobState {

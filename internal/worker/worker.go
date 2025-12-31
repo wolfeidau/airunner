@@ -34,6 +34,14 @@ func NewJobExecutor(eventStream *connect.ClientStreamForClient[jobv1.PublishJobE
 }
 
 func (je *JobExecutor) Execute(ctx context.Context, job *jobv1.Job) error {
+	// Validate job parameters
+	if job == nil {
+		return fmt.Errorf("job is nil")
+	}
+	if job.JobParams == nil {
+		return fmt.Errorf("job params is nil")
+	}
+
 	log.Info().Str("job_id", job.JobId).Msg("Starting job execution")
 
 	// Ensure batcher is stopped and flushes any remaining events
@@ -48,7 +56,12 @@ func (je *JobExecutor) Execute(ctx context.Context, job *jobv1.Job) error {
 	// Git cloning step (if enabled)
 	var gitCloner *git.GitCloner
 	if job.JobParams.GitClone != nil && job.JobParams.GitClone.Enabled {
-		gitCloner = git.NewGitCloner(je.batcher, job.JobId)
+		var err error
+		gitCloner, err = git.NewGitCloner(je.batcher, job.JobId)
+		if err != nil {
+			log.Error().Err(err).Str("job_id", job.JobId).Msg("Failed to create git cloner")
+			return fmt.Errorf("failed to create git cloner: %w", err)
+		}
 
 		clonedDir, err := gitCloner.Clone(ctx, job.JobParams.GitClone, job.JobParams)
 		if err != nil {

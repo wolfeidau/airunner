@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -279,12 +280,13 @@ func (s *SubmitCmd) submitJob(ctx context.Context, clients *client.Clients) (str
 			Runtime: s.ContainerRuntime,
 		}
 
-		// Parse volume mounts
+		// Parse and validate volume mounts
 		for _, mountStr := range s.ContainerMounts {
-			mount := parseMount(mountStr)
-			if mount != nil {
-				containerConfig.Mounts = append(containerConfig.Mounts, mount)
+			mount, err := parseMount(mountStr)
+			if err != nil {
+				return "", fmt.Errorf("invalid mount configuration: %w", err)
 			}
+			containerConfig.Mounts = append(containerConfig.Mounts, mount)
 		}
 	}
 
@@ -336,16 +338,47 @@ func (s *SubmitCmd) submitJob(ctx context.Context, clients *client.Clients) (str
 	return resp.Msg.JobId, nil
 }
 
-// parseMount parses volume mount format: src:dst or src:dst:ro
-func parseMount(mountStr string) *jobv1.ContainerMount {
+// parseMount parses and validates volume mount format: src:dst or src:dst:ro
+// Source paths must be absolute and under $HOME/.airunner for security
+// Target paths cannot be mounted to dangerous container paths
+func parseMount(mountStr string) (*jobv1.ContainerMount, error) {
 	parts := strings.Split(mountStr, ":")
 	if len(parts) < 2 {
-		return nil
+		return nil, fmt.Errorf("invalid mount format: %s (expected src:dst or src:dst:ro)", mountStr)
+	}
+
+	source := parts[0]
+	target := parts[1]
+
+	// Validate source is absolute path
+	if !filepath.IsAbs(source) {
+		return nil, fmt.Errorf("mount source must be absolute path: %s", source)
+	}
+
+	// Validate source is under $HOME/.airunner
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get home directory: %w", err)
+	}
+
+	airunnerBase := filepath.Join(homeDir, ".airunner")
+	// Clean the paths to handle .. and . properly
+	cleanSource := filepath.Clean(source)
+	if !strings.HasPrefix(cleanSource, airunnerBase) {
+		return nil, fmt.Errorf("mount source must be under %s for security: %s", airunnerBase, source)
+	}
+
+	// Validate target doesn't mount to dangerous container paths
+	dangerousPaths := []string{"/etc", "/bin", "/sbin", "/usr/bin", "/usr/sbin", "/proc", "/sys", "/dev"}
+	for _, dangerous := range dangerousPaths {
+		if strings.HasPrefix(target, dangerous) {
+			return nil, fmt.Errorf("mounting to %s is not allowed for security", dangerous)
+		}
 	}
 
 	mount := &jobv1.ContainerMount{
-		Source:   parts[0],
-		Target:   parts[1],
+		Source:   cleanSource,
+		Target:   target,
 		ReadOnly: false,
 	}
 
@@ -353,5 +386,5 @@ func parseMount(mountStr string) *jobv1.ContainerMount {
 		mount.ReadOnly = true
 	}
 
-	return mount
+	return mount, nil
 }

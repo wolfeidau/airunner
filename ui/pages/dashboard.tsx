@@ -50,7 +50,7 @@ function useJobEventStream(
 
         for await (const response of stream) {
           if (response.event) {
-            setEvents((prev) => [...prev, response.event!]);
+            setEvents((prev) => [...prev, response.event]);
 
             // Detect job completion and close stream
             if (response.event.eventType === EventType.PROCESS_END) {
@@ -59,9 +59,12 @@ function useJobEventStream(
             }
           }
         }
-      } catch (err: any) {
-        if (err.name !== "AbortError") {
+      } catch (err: unknown) {
+        if (err instanceof Error && err.name !== "AbortError") {
           setError(err.message || "Stream error");
+          setIsConnecting(false);
+        } else if (!(err instanceof Error)) {
+          setError("Stream error");
           setIsConnecting(false);
         }
       }
@@ -88,7 +91,7 @@ function OutputBatchRenderer({
 
   return (
     <>
-      {batch.outputs.map((output, idx) => {
+      {batch.outputs.map((output) => {
         // Reconstruct absolute timestamp from batch
         const outputTimestampMs =
           Number(batch.firstTimestampMs) + output.timestampDeltaMs;
@@ -116,7 +119,10 @@ function OutputBatchRenderer({
             : "output-stdout";
 
         return (
-          <div key={idx} className={`output-line ${className}`}>
+          <div
+            key={`${batch.firstTimestampMs}-${output.timestampDeltaMs}`}
+            className={`output-line ${className}`}
+          >
             <span className="output-offset">+{offsetSeconds}s</span>
             <span className="output-timestamp">[{timestamp}]</span>
             <span className="output-text">{text}</span>
@@ -226,12 +232,16 @@ function EventsConsole({ events }: { events: JobEvent[] }) {
   // Auto-scroll to bottom when new events arrive
   useEffect(() => {
     consoleEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [events]);
+  });
 
   return (
     <div className="events-console">
-      {events.map((event, idx) => (
-        <EventItem key={idx} event={event} startTimeMs={startTimeMs} />
+      {events.map((event) => (
+        <EventItem
+          key={event.sequence}
+          event={event}
+          startTimeMs={startTimeMs}
+        />
       ))}
       <div ref={consoleEndRef} />
     </div>
@@ -255,8 +265,11 @@ function JobEventsView({
     <div className="events-container">
       <div className="events-header">
         <button
+          type="button"
           className="btn-back"
-          onClick={() => (window.location.hash = "")}
+          onClick={() => {
+            window.location.hash = "";
+          }}
         >
           ← Back to Jobs
         </button>
@@ -282,7 +295,14 @@ function JobEventsView({
       {error && (
         <div className="events-error">
           <p>Failed to load events: {error}</p>
-          <button onClick={() => (window.location.hash = "")}>Close</button>
+          <button
+            type="button"
+            onClick={() => {
+              window.location.hash = "";
+            }}
+          >
+            Close
+          </button>
         </div>
       )}
 
@@ -438,9 +458,9 @@ function Dashboard() {
                       <tr
                         key={job.jobId}
                         className="job-row job-row-clickable"
-                        onClick={() =>
-                          (window.location.hash = `#job-${job.jobId}`)
-                        }
+                        onClick={() => {
+                          window.location.hash = `#job-${job.jobId}`;
+                        }}
                         onKeyDown={(e) => {
                           if (e.key === "Enter" || e.key === " ") {
                             e.preventDefault();
@@ -448,7 +468,6 @@ function Dashboard() {
                           }
                         }}
                         tabIndex={0}
-                        role="button"
                         aria-label={`View details for job ${job.jobId?.slice(0, 8)}`}
                       >
                         <td className="cell-job-id">

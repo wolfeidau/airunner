@@ -37,5 +37,23 @@ services:
       timeout: 5s
       retries: 30
 
+  # PostgreSQL for postgres job store
+  postgres:
+    image: postgres:18-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=airunner
+      - POSTGRES_PASSWORD=${COMPOSE_POSTGRES_PASSWORD}
+      - POSTGRES_DB=airunner_test
+    volumes:
+      - "postgres-data:/var/lib/postgresql/18/docker"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airunner"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
 volumes:
   dynamodb-data:
+  postgres-data:

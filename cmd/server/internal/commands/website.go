@@ -25,9 +25,9 @@ type WebsiteCmd struct {
 }
 
 func (c *WebsiteCmd) Run(globals *Globals) error {
-	log := logger.Setup(globals.Dev)
+	log := logger.Setup(globals.Debug)
 
-	log.Info().Str("version", globals.Version).Msg("Starting website server")
+	log.Info().Str("version", globals.Version).Bool("debug", globals.Debug).Msg("Starting website server")
 
 	// Build assets
 	pipeline, err := assets.New(assets.DefaultConfig())

@@ -6,7 +6,7 @@ import (
 )
 
 type Globals struct {
-	Dev     bool
+	Debug   bool
 	Version string
 }
 

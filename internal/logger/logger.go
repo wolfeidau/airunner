@@ -7,22 +7,25 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 )
 
-func Setup(dev bool) zerolog.Logger {
+func Setup(debug bool) zerolog.Logger {
 	var logger zerolog.Logger
 	level := zerolog.InfoLevel
-	if dev {
+	if debug {
 		level = zerolog.DebugLevel
 	}
 
 	logger = zerolog.New(os.Stderr).Level(level).With().Timestamp().Caller().Logger()
 
-	if dev {
+	if debug {
 		logger = logger.Output(zerolog.ConsoleWriter{Out: os.Stderr, FormatTimestamp: func(i any) string {
 			return time.Now().Format(time.RFC3339)
 		}}).Level(level).With().Stack().Logger()
 	}
+
+	log.Logger = logger
 
 	return logger
 }
@@ -50,7 +53,6 @@ func (c *ConnectRequests) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 			Logger().WithContext(ctx)
 
 		resp, err := next(ctx, req)
-
 		if err != nil {
 			zerolog.Ctx(ctx).Error().
 				Err(err).

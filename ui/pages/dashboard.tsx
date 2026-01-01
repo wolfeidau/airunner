@@ -600,7 +600,7 @@ function Dashboard() {
                         aria-label={`View details for job ${job.jobId?.slice(0, 8)}`}
                       >
                         <td className="cell-job-id">
-                          <code>{job.jobId?.slice(0, 8)}</code>
+                          <code>{job.jobId?.slice(-8)}</code>
                         </td>
                         <td className="cell-repo">
                           {job.jobParams?.repository || "-"}

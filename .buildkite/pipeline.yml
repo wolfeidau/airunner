@@ -42,14 +42,14 @@ steps:
         artifact_paths:
           - cover-tree.svg
           - coverage.out
-        env:
-          DYNAMODB_TABLE: airunner_test
-          DYNAMODB_ENDPOINT: http://localhost:4101
         commands:
-          - docker compose -f .buildkite/docker-compose.yml up dynamodb --wait -d
           - go test -coverprofile coverage.out -coverpkg=./... ./...
           - go run github.com/nikolaydubina/go-cover-treemap -coverprofile coverage.out > cover-tree.svg
           - echo '<details><summary>Coverage tree map</summary><img src="artifact://cover-tree.svg" alt="Test coverage tree map" width="70%"></details>' | buildkite-agent annotate --style "info"
+
+      - label: ":test_tube: integration tests"
+        commands:
+          - make test-integration
 
       - label: ":hammer: build"
         command: make build

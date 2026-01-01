@@ -87,15 +87,25 @@ make proto-breaking # Check for breaking changes
 
 **Testing:**
 ```bash
-make test           # Run all tests with coverage
-make test-coverage  # Run tests and show coverage report
+make test                       # Run all tests with coverage
+make test-coverage              # Run tests and show coverage report
+make test-integration           # Run all integration tests (uses testcontainers)
+make test-integration-aws       # Run AWS integration tests only
+make test-integration-postgres  # Run PostgreSQL integration tests only
 ```
 
-**Local Infrastructure (for integration tests):**
+**Integration Testing with Testcontainers:**
+All integration tests use [testcontainers-go](https://golang.testcontainers.org/) to automatically spin up isolated containers. No manual infrastructure setup required - just run the tests and testcontainers handles everything:
+- DynamoDB Local for AWS tests
+- LocalStack (SQS) for AWS tests
+- PostgreSQL for PostgreSQL tests
+
+**Local Infrastructure (optional, for manual testing):**
 ```bash
-docker-compose up -d  # Start local DynamoDB and LocalStack (SQS)
-docker-compose down   # Stop local infrastructure
+make infra-up    # Start local DynamoDB and LocalStack (SQS) via docker-compose
+make infra-down  # Stop local infrastructure
 ```
+Note: This is no longer required for integration tests, but available for manual testing or debugging.
 
 **Code Quality:**
 ```bash
@@ -119,8 +129,9 @@ make mkcert        # Generate local TLS certificates
 
 - **internal/store/** - Job storage backends
   - `JobStore` interface defines the contract for all storage implementations
-  - `MemoryJobStore` - In-memory FIFO queues with visibility timeouts for development
-  - `AWSJobStore` - Production backend using AWS SQS for queuing and DynamoDB for persistence
+  - `MemoryJobStore` (`internal/store/memory/`) - In-memory FIFO queues with visibility timeouts for development
+  - `AWSJobStore` (`internal/store/aws/`) - Production backend using AWS SQS for queuing and DynamoDB for persistence
+  - `PostgreSQLJobStore` (`internal/store/postgres/`) - Production backend using PostgreSQL with SKIP LOCKED for job queuing
 
 - **internal/worker/** - Job execution engine
   - `JobExecutor` - Runs jobs via console-stream library with output capture
@@ -140,7 +151,7 @@ make mkcert        # Generate local TLS certificates
 
 ### Key Patterns
 
-- **Interface-Based Design**: `JobStore` interface allows swapping MemoryJobStore or AWSJobStore
+- **Interface-Based Design**: `JobStore` interface allows swapping MemoryJobStore, AWSJobStore, or PostgreSQLJobStore
 - **Stateless Task Tokens**: HMAC-signed tokens containing job_id, queue, receipt_handle
 - **Event Streaming**: Bi-directional streaming with historical replay from DynamoDB
 - **Visibility Timeout**: SQS-like job invisibility for at-least-once delivery
@@ -154,6 +165,17 @@ The production backend uses:
 - **DynamoDB Jobs Table** - Job metadata with GSI1 (queue) and GSI2 (request_id)
 - **DynamoDB JobEvents Table** - Event persistence with TTL support
 - Task tokens use HMAC-SHA256 signing with constant-time validation
+
+### PostgreSQL Backend (PostgreSQLJobStore)
+
+The PostgreSQL backend provides a relational database implementation:
+- **Jobs Table** - Job metadata with indexes on queue, state, and request_id for idempotency
+- **Job Events Table** - Event persistence with partitioning support
+- **SKIP LOCKED** - Used for concurrent job dequeuing without blocking
+- **Automatic migrations** - Schema management with auto-migrate support
+- **Visibility timeout** - Managed via `visible_at` timestamp column
+- Task tokens use HMAC-SHA256 signing with constant-time validation
+- Supports PostgreSQL 12+
 
 ## Code Style
 - **Logging**: ALWAYS use `"github.com/rs/zerolog/log"` for all logging operations

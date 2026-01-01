@@ -58,7 +58,7 @@ func NewJobStore() *JobStore {
 
 // Start begins background cleanup operations
 func (s *JobStore) Start() error {
-	s.cleanupTicker = time.NewTicker(30 * time.Second)
+	s.cleanupTicker = time.NewTicker(2 * time.Second)
 	go s.cleanupLoop()
 	return nil
 }

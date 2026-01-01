@@ -4,6 +4,7 @@ package aws
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -15,29 +16,59 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+	"github.com/testcontainers/testcontainers-go"
+	"github.com/testcontainers/testcontainers-go/wait"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 )
 
 const (
-	testDynamoDBEndpoint = "http://localhost:4101"
-	testDynamoDBRegion   = "us-east-1"
-	testJobsTable        = "test_jobs_integration"
-	testEventsTable      = "test_events_integration"
+	testDynamoDBRegion  = "us-east-1"
+	testJobsTable       = "test_jobs_integration"
+	testEventsTable     = "test_events_integration"
 )
 
-// getDynamoDBClient creates a DynamoDB client for testing
-func getDynamoDBClient(t *testing.T, ctx context.Context) *dynamodb.Client {
+// setupDynamoDBContainer creates a DynamoDB Local container and returns a client and cleanup function
+func setupDynamoDBContainer(t *testing.T, ctx context.Context) (*dynamodb.Client, func()) {
+	// Start DynamoDB Local container
+	req := testcontainers.ContainerRequest{
+		Image:        "amazon/dynamodb-local:latest",
+		ExposedPorts: []string{"8000/tcp"},
+		Cmd:          []string{"-jar", "DynamoDBLocal.jar", "-inMemory", "-sharedDb"},
+		WaitingFor:   wait.ForListeningPort("8000/tcp"),
+	}
+
+	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: req,
+		Started:          true,
+	})
+	require.NoError(t, err)
+
+	host, err := container.Host(ctx)
+	require.NoError(t, err)
+
+	port, err := container.MappedPort(ctx, "8000")
+	require.NoError(t, err)
+
+	endpoint := fmt.Sprintf("http://%s:%s", host, port.Port())
+
+	// Create DynamoDB client
 	cfg, err := config.LoadDefaultConfig(ctx,
 		config.WithRegion(testDynamoDBRegion),
 		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("test", "test", "test")),
 	)
 	require.NoError(t, err)
 
-	return dynamodb.NewFromConfig(cfg, func(o *dynamodb.Options) {
-		o.BaseEndpoint = aws.String(testDynamoDBEndpoint)
+	client := dynamodb.NewFromConfig(cfg, func(o *dynamodb.Options) {
+		o.BaseEndpoint = aws.String(endpoint)
 	})
+
+	cleanup := func() {
+		_ = container.Terminate(ctx)
+	}
+
+	return client, cleanup
 }
 
 // createTestTable creates a simple DynamoDB table for testing
@@ -91,7 +122,9 @@ func putJobRecord(t *testing.T, ctx context.Context, client *dynamodb.Client, ta
 // TestDynamoDB_JobStoreGetPut tests basic put and get operations
 func TestDynamoDB_JobStoreGetPut(t *testing.T) {
 	ctx := context.Background()
-	client := getDynamoDBClient(t, ctx)
+	client, cleanup := setupDynamoDBContainer(t, ctx)
+	defer cleanup()
+
 	createTestTable(t, ctx, client, testJobsTable)
 	defer deleteTestTable(t, ctx, client, testJobsTable)
 
@@ -130,7 +163,9 @@ func TestDynamoDB_JobStoreGetPut(t *testing.T) {
 // TestDynamoDB_UpdateJobState tests job state updates
 func TestDynamoDB_UpdateJobState(t *testing.T) {
 	ctx := context.Background()
-	client := getDynamoDBClient(t, ctx)
+	client, cleanup := setupDynamoDBContainer(t, ctx)
+	defer cleanup()
+
 	createTestTable(t, ctx, client, testJobsTable)
 	defer deleteTestTable(t, ctx, client, testJobsTable)
 
@@ -176,7 +211,9 @@ func TestDynamoDB_UpdateJobState(t *testing.T) {
 // TestDynamoDB_NotFound tests error handling for missing items
 func TestDynamoDB_NotFound(t *testing.T) {
 	ctx := context.Background()
-	client := getDynamoDBClient(t, ctx)
+	client, cleanup := setupDynamoDBContainer(t, ctx)
+	defer cleanup()
+
 	createTestTable(t, ctx, client, testJobsTable)
 	defer deleteTestTable(t, ctx, client, testJobsTable)
 
@@ -194,7 +231,9 @@ func TestDynamoDB_NotFound(t *testing.T) {
 // TestDynamoDB_JobParamsMarshaling tests that complex JobParams are preserved
 func TestDynamoDB_JobParamsMarshaling(t *testing.T) {
 	ctx := context.Background()
-	client := getDynamoDBClient(t, ctx)
+	client, cleanup := setupDynamoDBContainer(t, ctx)
+	defer cleanup()
+
 	createTestTable(t, ctx, client, testJobsTable)
 	defer deleteTestTable(t, ctx, client, testJobsTable)
 
@@ -255,7 +294,9 @@ func TestDynamoDB_JobParamsMarshaling(t *testing.T) {
 // TestDynamoDB_ConcurrentPuts tests concurrent operations
 func TestDynamoDB_ConcurrentPuts(t *testing.T) {
 	ctx := context.Background()
-	client := getDynamoDBClient(t, ctx)
+	client, cleanup := setupDynamoDBContainer(t, ctx)
+	defer cleanup()
+
 	createTestTable(t, ctx, client, testJobsTable)
 	defer deleteTestTable(t, ctx, client, testJobsTable)
 

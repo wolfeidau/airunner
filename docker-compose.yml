@@ -45,7 +45,7 @@ services:
     environment:
       - POSTGRES_USER=airunner
       - POSTGRES_PASSWORD=${COMPOSE_POSTGRES_PASSWORD}
-      - POSTGRES_DB=airunner_test
+      - POSTGRES_DB=airunner_dev
     volumes:
       - "postgres-data:/var/lib/postgresql/18/docker"
     healthcheck:

@@ -10,7 +10,7 @@ import (
 var (
 	version = "dev"
 	cli     struct {
-		Dev       bool `help:"Enable dev mode."`
+		Debug     bool `help:"Enable debug mode."`
 		Version   kong.VersionFlag
 		RPCServer commands.RPCServerCmd `cmd:"" help:"Start the RPC server"`
 		Website   commands.WebsiteCmd   `cmd:"" help:"Start the website server"`
@@ -24,6 +24,6 @@ func main() {
 			"version": version,
 		},
 		kong.BindTo(ctx, (*context.Context)(nil)))
-	err := cmd.Run(&commands.Globals{Dev: cli.Dev, Version: version})
+	err := cmd.Run(&commands.Globals{Debug: cli.Debug, Version: version})
 	cmd.FatalIfErrorf(err)
 }

@@ -68,8 +68,16 @@ test: ## Run tests with coverage
 	go test -coverprofile $(COVERAGE_FILE) -covermode atomic -v ./...
 
 .PHONY: test-integration
-test-integration: infra-up ## Run integration tests with local DynamoDB and SQS
+test-integration: ## Run all integration tests (uses testcontainers, no infra needed)
 	go test -tags integration -v ./...
+
+.PHONY: test-integration-aws
+test-integration-aws: ## Run AWS integration tests only (SQS + DynamoDB via testcontainers)
+	go test -tags integration -v ./internal/store/aws/
+
+.PHONY: test-integration-postgres
+test-integration-postgres: ## Run PostgreSQL integration tests only (via testcontainers)
+	go test -tags integration -v ./internal/store/postgres/
 
 .PHONY: test-coverage
 test-coverage: test ## Run tests and show coverage report

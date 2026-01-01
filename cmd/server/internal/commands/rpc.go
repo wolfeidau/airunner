@@ -24,21 +24,23 @@ import (
 	"github.com/wolfeidau/airunner/internal/store"
 	awsstore "github.com/wolfeidau/airunner/internal/store/aws"
 	memorystore "github.com/wolfeidau/airunner/internal/store/memory"
+	postgresstore "github.com/wolfeidau/airunner/internal/store/postgres"
 	"github.com/wolfeidau/airunner/internal/telemetry"
 )
 
 type RPCServerCmd struct {
-	CORSOrigins      []string       `help:"allowed CORS origins for frontend requests" default:"https://localhost" env:"AIRUNNER_CORS_ORIGINS"`
-	Listen           string         `help:"HTTP server listen address" default:"0.0.0.0:8993" env:"AIRUNNER_LISTEN"`
-	Cert             string         `help:"path to TLS cert file" default:"" env:"AIRUNNER_TLS_CERT"`
-	Key              string         `help:"path to TLS key file" default:"" env:"AIRUNNER_TLS_KEY"`
-	NoAuth           bool           `help:"disable authentication (development only)" default:"false" env:"AIRUNNER_NO_AUTH"`
-	Development      bool           `help:"development mode - auto-setup LocalStack infrastructure" default:"false" env:"AIRUNNER_DEVELOPMENT"`
-	DevelopmentClean bool           `help:"clean resources on startup in development mode (deletes all data)" default:"false" env:"AIRUNNER_DEVELOPMENT_CLEAN"`
-	Tracing          bool           `help:"enable tracing" default:"false" env:"AIRUNNER_TRACING"`
-	StoreType        string         `help:"job store type (memory or aws)" default:"memory" env:"AIRUNNER_STORE_TYPE" enum:"memory,aws"`
-	AWSStore         AWSStoreFlags  `embed:"" prefix:"aws-"`
-	Execution        ExecutionFlags `embed:"" prefix:"execution-"`
+	CORSOrigins      []string           `help:"allowed CORS origins for frontend requests" default:"https://localhost" env:"AIRUNNER_CORS_ORIGINS"`
+	Listen           string             `help:"HTTP server listen address" default:"0.0.0.0:8993" env:"AIRUNNER_LISTEN"`
+	Cert             string             `help:"path to TLS cert file" default:"" env:"AIRUNNER_TLS_CERT"`
+	Key              string             `help:"path to TLS key file" default:"" env:"AIRUNNER_TLS_KEY"`
+	NoAuth           bool               `help:"disable authentication (development only)" default:"false" env:"AIRUNNER_NO_AUTH"`
+	Development      bool               `help:"development mode - auto-setup LocalStack infrastructure" default:"false" env:"AIRUNNER_DEVELOPMENT"`
+	DevelopmentClean bool               `help:"clean resources on startup in development mode (deletes all data)" default:"false" env:"AIRUNNER_DEVELOPMENT_CLEAN"`
+	Tracing          bool               `help:"enable tracing" default:"false" env:"AIRUNNER_TRACING"`
+	StoreType        string             `help:"job store type (memory, aws, or postgres)" default:"memory" env:"AIRUNNER_STORE_TYPE" enum:"memory,aws,postgres"`
+	AWSStore         AWSStoreFlags      `embed:"" prefix:"aws-"`
+	PostgresStore    PostgresStoreFlags `embed:"" prefix:"postgres-"`
+	Execution        ExecutionFlags     `embed:"" prefix:"execution-"`
 }
 
 type AWSStoreFlags struct {
@@ -58,6 +60,40 @@ type AWSStoreFlags struct {
 	// Endpoint overrides for local development
 	SQSEndpointURL      string `help:"SQS endpoint URL override (for LocalStack)" default:"" env:"AIRUNNER_AWS_SQS_ENDPOINT_URL"`
 	DynamoDBEndpointURL string `help:"DynamoDB endpoint URL override (for DynamoDB Local)" default:"" env:"AIRUNNER_AWS_DYNAMODB_ENDPOINT_URL"`
+}
+
+type PostgresStoreFlags struct {
+	// Connection Configuration
+	ConnString string `help:"PostgreSQL connection string" env:"POSTGRES_CONNECTION_STRING"`
+
+	// Store Configuration
+	TokenSigningSecret string `help:"secret key for HMAC signing of task tokens" env:"AIRUNNER_POSTGRES_TOKEN_SECRET"`
+	EventsTTLDays      int32  `help:"TTL in days for job events" default:"30"`
+
+	// Connection Pool Configuration
+	MaxConns        int32 `help:"maximum number of connections in pool" default:"20"`
+	MinConns        int32 `help:"minimum number of connections in pool" default:"5"`
+	MaxConnLifetime int32 `help:"maximum connection lifetime in seconds" default:"3600"`
+	MaxConnIdleTime int32 `help:"maximum connection idle time in seconds" default:"1800"`
+
+	// Migration Configuration
+	AutoMigrate bool `help:"run database migrations on startup" default:"false" env:"AIRUNNER_POSTGRES_AUTO_MIGRATE"`
+}
+
+func (s *PostgresStoreFlags) Validate() error {
+	if s.ConnString == "" {
+		return errors.New("PostgreSQL connection string is required (--postgres-conn-string or POSTGRES_CONNECTION_STRING)")
+	}
+
+	if s.TokenSigningSecret == "" {
+		return errors.New("token signing secret is required (--postgres-token-secret or AIRUNNER_POSTGRES_TOKEN_SECRET)")
+	}
+
+	if len(s.TokenSigningSecret) < 32 {
+		return errors.New("token signing secret must be at least 32 bytes (256 bits) for HMAC-SHA256")
+	}
+
+	return nil
 }
 
 func (s *AWSStoreFlags) Validate() error {
@@ -98,7 +134,7 @@ type ExecutionFlags struct {
 }
 
 func (s *RPCServerCmd) Run(ctx context.Context, globals *Globals) error {
-	log := logger.Setup(globals.Dev)
+	log := logger.Setup(globals.Debug)
 
 	log.Info().Str("version", globals.Version).Msg("Starting RPC server")
 
@@ -196,6 +232,12 @@ func (s *RPCServerCmd) Run(ctx context.Context, globals *Globals) error {
 			return err
 		}
 		log.Info().Msg("Using AWS job store (SQS + DynamoDB)")
+	case "postgres":
+		jobStore, err = createPostgresJobStore(ctx, s)
+		if err != nil {
+			return err
+		}
+		log.Info().Msg("Using PostgreSQL job store")
 	default:
 		// Default to memory store for backward compatibility
 		memStore := memorystore.NewJobStore()
@@ -307,6 +349,37 @@ func createAWSJobStore(ctx context.Context, cmd *RPCServerCmd) (store.JobStore, 
 	}
 
 	return awsstore.NewJobStore(sqsClient, dynamoClient, storeCfg), nil
+}
+
+// createPostgresJobStore creates and configures a PostgreSQL-backed job store
+func createPostgresJobStore(ctx context.Context, cmd *RPCServerCmd) (store.JobStore, error) {
+	// Validate Postgres store flags
+	if err := cmd.PostgresStore.Validate(); err != nil {
+		return nil, fmt.Errorf("failed to validate postgres flags: %w", err)
+	}
+
+	// Build store configuration with execution config
+	storeCfg := &postgresstore.JobStoreConfig{
+		ConnString:         cmd.PostgresStore.ConnString,
+		TokenSigningSecret: []byte(cmd.PostgresStore.TokenSigningSecret),
+		DefaultExecutionConfig: &jobv1.ExecutionConfig{
+			Batching: &jobv1.BatchingConfig{
+				FlushIntervalSeconds:   cmd.Execution.BatchFlushInterval,
+				MaxBatchSize:           cmd.Execution.BatchMaxSize,
+				MaxBatchBytes:          cmd.Execution.BatchMaxBytes,
+				PlaybackIntervalMillis: cmd.Execution.PlaybackInterval,
+			},
+			HeartbeatIntervalSeconds: cmd.Execution.HeartbeatInterval,
+		},
+		EventsTTLDays:   cmd.PostgresStore.EventsTTLDays,
+		MaxConns:        cmd.PostgresStore.MaxConns,
+		MinConns:        cmd.PostgresStore.MinConns,
+		MaxConnLifetime: cmd.PostgresStore.MaxConnLifetime,
+		MaxConnIdleTime: cmd.PostgresStore.MaxConnIdleTime,
+		AutoMigrate:     cmd.PostgresStore.AutoMigrate,
+	}
+
+	return postgresstore.NewJobStore(ctx, storeCfg)
 }
 
 // withCORS adds CORS support to a Connect HTTP handler.

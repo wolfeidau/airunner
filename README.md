@@ -109,7 +109,7 @@ Job Store ([`internal/store/store.go`](internal/store/store.go))
   - `invisibleJobs` - visibility timeout tracking
   - `taskTokens` - capability-based authentication
   - `requestIds` - idempotency (prevents duplicate submissions)
-- Background cleanup task (30s interval) requeues expired jobs
+- Background cleanup task (2s interval) requeues expired jobs
 
 Event Streaming ([`internal/server/job_event.go`](internal/server/job_event.go))
 - Events stored per-job in append-only buffer
@@ -175,13 +175,51 @@ See `specs/mtls/README.md` for complete documentation.
 - Role-based authorization (admin, worker, user, service)
 - Pagination and filtering
 - Idempotent job submission
+- **Multiple storage backends:**
+  - In-memory (development)
+  - AWS (SQS + DynamoDB for production)
+  - PostgreSQL (production with SKIP LOCKED)
 
 **Not Implemented:**
-- `airunner-orchestrator` (cloud backend with SQS/DynamoDB/EventBridge)
-- Job persistence (currently in-memory only)
+- `airunner-orchestrator` (EventBridge integration for cloud deployment)
 - Multi-tenancy
 
 This provides a production-ready development environment for testing job workflows, with clear extension points for cloud deployment. The architecture is similar to Buildkite Agent or GitHub Actions runners, but self-hosted.
+
+## Development
+
+### Testing
+
+The project includes comprehensive integration tests using [testcontainers-go](https://golang.testcontainers.org/). No manual infrastructure setup required:
+
+```bash
+# Run all tests
+make test
+
+# Run integration tests (automatically spins up containers)
+make test-integration
+
+# Run specific backend integration tests
+make test-integration-aws       # AWS (LocalStack + DynamoDB Local)
+make test-integration-postgres  # PostgreSQL
+```
+
+Testcontainers automatically manages:
+- DynamoDB Local containers for AWS backend tests
+- LocalStack containers for SQS tests
+- PostgreSQL containers for PostgreSQL backend tests
+
+All containers are isolated, use dynamic ports, and clean up automatically after tests complete.
+
+### Building
+
+```bash
+make build         # Build all binaries
+make build-cli     # Build CLI only
+make build-server  # Build server only
+```
+
+See the [Makefile](Makefile) for all available targets.
 
 ## License
 

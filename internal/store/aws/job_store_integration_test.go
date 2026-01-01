@@ -4,6 +4,7 @@ package aws
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -13,43 +14,111 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/stretchr/testify/require"
+	"github.com/testcontainers/testcontainers-go"
+	"github.com/testcontainers/testcontainers-go/wait"
 
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 	"github.com/wolfeidau/airunner/internal/bootstrap"
 )
 
 const (
-	testSQSEndpoint      = "http://localhost:4566"
 	testDefaultQueueName = "airunner-test-default"
 )
 
 // Test signing secret for HMAC task tokens
 var testTokenSigningSecret = []byte("integration-test-secret-key-do-not-use-in-production")
 
-// getSQSClient creates an SQS client for testing with LocalStack
-func getSQSClient(t *testing.T, ctx context.Context) *sqs.Client {
-	cfg, err := config.LoadDefaultConfig(ctx,
-		config.WithRegion(testDynamoDBRegion),
-		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("test", "test", "test")),
-	)
-	require.NoError(t, err)
-
-	return sqs.NewFromConfig(cfg, func(o *sqs.Options) {
-		o.BaseEndpoint = aws.String(testSQSEndpoint)
-	})
+// awsTestClients holds the AWS clients and cleanup function for tests
+type awsTestClients struct {
+	sqsClient    *sqs.Client
+	dynamoClient *dynamodb.Client
+	queueURL     string
+	cleanup      func()
 }
 
-// getDynamoDBClientV2 creates a DynamoDB client using BaseEndpoint (preferred method)
-func getDynamoDBClientV2(t *testing.T, ctx context.Context) *dynamodb.Client {
+// setupAWSContainers creates LocalStack (SQS) and DynamoDB Local containers
+func setupAWSContainers(t *testing.T, ctx context.Context) *awsTestClients {
+	// Start LocalStack container for SQS
+	localstackReq := testcontainers.ContainerRequest{
+		Image:        "localstack/localstack:latest",
+		ExposedPorts: []string{"4566/tcp"},
+		Env: map[string]string{
+			"SERVICES": "sqs",
+		},
+		WaitingFor: wait.ForLog("Ready."),
+	}
+
+	localstackContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: localstackReq,
+		Started:          true,
+	})
+	require.NoError(t, err)
+
+	localstackHost, err := localstackContainer.Host(ctx)
+	require.NoError(t, err)
+
+	localstackPort, err := localstackContainer.MappedPort(ctx, "4566")
+	require.NoError(t, err)
+
+	sqsEndpoint := fmt.Sprintf("http://%s:%s", localstackHost, localstackPort.Port())
+
+	// Start DynamoDB Local container
+	dynamoReq := testcontainers.ContainerRequest{
+		Image:        "amazon/dynamodb-local:latest",
+		ExposedPorts: []string{"8000/tcp"},
+		Cmd:          []string{"-jar", "DynamoDBLocal.jar", "-inMemory", "-sharedDb"},
+		WaitingFor:   wait.ForListeningPort("8000/tcp"),
+	}
+
+	dynamoContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: dynamoReq,
+		Started:          true,
+	})
+	require.NoError(t, err)
+
+	dynamoHost, err := dynamoContainer.Host(ctx)
+	require.NoError(t, err)
+
+	dynamoPort, err := dynamoContainer.MappedPort(ctx, "8000")
+	require.NoError(t, err)
+
+	dynamoEndpoint := fmt.Sprintf("http://%s:%s", dynamoHost, dynamoPort.Port())
+
+	// Create AWS config
 	cfg, err := config.LoadDefaultConfig(ctx,
 		config.WithRegion(testDynamoDBRegion),
 		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("test", "test", "test")),
 	)
 	require.NoError(t, err)
 
-	return dynamodb.NewFromConfig(cfg, func(o *dynamodb.Options) {
-		o.BaseEndpoint = aws.String(testDynamoDBEndpoint)
+	// Create SQS client
+	sqsClient := sqs.NewFromConfig(cfg, func(o *sqs.Options) {
+		o.BaseEndpoint = aws.String(sqsEndpoint)
 	})
+
+	// Create DynamoDB client
+	dynamoClient := dynamodb.NewFromConfig(cfg, func(o *dynamodb.Options) {
+		o.BaseEndpoint = aws.String(dynamoEndpoint)
+	})
+
+	// Create SQS queue
+	createQueueResp, err := sqsClient.CreateQueue(ctx, &sqs.CreateQueueInput{
+		QueueName: aws.String(testDefaultQueueName),
+	})
+	require.NoError(t, err)
+	queueURL := *createQueueResp.QueueUrl
+
+	cleanup := func() {
+		_ = localstackContainer.Terminate(ctx)
+		_ = dynamoContainer.Terminate(ctx)
+	}
+
+	return &awsTestClients{
+		sqsClient:    sqsClient,
+		dynamoClient: dynamoClient,
+		queueURL:     queueURL,
+		cleanup:      cleanup,
+	}
 }
 
 // createTestTableWithGSIs creates a DynamoDB jobs table with GSI1 and GSI2 using the bootstrap package
@@ -59,44 +128,23 @@ func createTestTableWithGSIs(t *testing.T, ctx context.Context, client *dynamodb
 	require.NoError(t, err)
 }
 
-// getQueueURL retrieves the SQS queue URL
-func getQueueURL(t *testing.T, ctx context.Context, sqsClient *sqs.Client, queueName string) string {
-	result, err := sqsClient.GetQueueUrl(ctx, &sqs.GetQueueUrlInput{
-		QueueName: aws.String(queueName),
-	})
-	require.NoError(t, err)
-	return *result.QueueUrl
-}
-
-// purgeQueue removes all messages from the queue
-func purgeQueue(t *testing.T, ctx context.Context, sqsClient *sqs.Client, queueURL string) {
-	_, _ = sqsClient.PurgeQueue(ctx, &sqs.PurgeQueueInput{
-		QueueUrl: aws.String(queueURL),
-	})
-	// Give SQS time to purge
-	time.Sleep(100 * time.Millisecond)
-}
-
 // TestIntegration_EnqueueJob tests job enqueue with real SQS and DynamoDB
 func TestIntegration_EnqueueJob(t *testing.T) {
 	ctx := context.Background()
-
-	sqsClient := getSQSClient(t, ctx)
-	dynamoClient := getDynamoDBClientV2(t, ctx)
+	clients := setupAWSContainers(t, ctx)
+	defer clients.cleanup()
 
 	tableName := "test_enqueue_" + time.Now().Format("20060102150405")
-	createTestTableWithGSIs(t, ctx, dynamoClient, tableName)
-	defer deleteTestTable(t, ctx, dynamoClient, tableName)
+	createTestTableWithGSIs(t, ctx, clients.dynamoClient, tableName)
+	defer deleteTestTable(t, ctx, clients.dynamoClient, tableName)
 
-	queueURL := getQueueURL(t, ctx, sqsClient, testDefaultQueueName)
-	purgeQueue(t, ctx, sqsClient, queueURL)
-
-	store := NewJobStore(sqsClient, dynamoClient, JobStoreConfig{
+	store := NewJobStore(clients.sqsClient, clients.dynamoClient, JobStoreConfig{
 		JobsTableName: tableName,
 		QueueURLs: map[string]string{
-			"default": queueURL,
+			"default": clients.queueURL,
 		},
 		DefaultVisibilityTimeoutSeconds: 30,
+		SQSLongPollSeconds:              1, // Use 1s for tests to avoid long waits
 		TokenSigningSecret:              testTokenSigningSecret,
 	})
 
@@ -125,8 +173,8 @@ func TestIntegration_EnqueueJob(t *testing.T) {
 	require.Equal(t, jobv1.JobState_JOB_STATE_SCHEDULED, job.State)
 
 	// Verify message was sent to SQS (by receiving it)
-	receiveResult, err := sqsClient.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
-		QueueUrl:            aws.String(queueURL),
+	receiveResult, err := clients.sqsClient.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
+		QueueUrl:            aws.String(clients.queueURL),
 		MaxNumberOfMessages: 1,
 		WaitTimeSeconds:     1,
 	})
@@ -137,22 +185,19 @@ func TestIntegration_EnqueueJob(t *testing.T) {
 // TestIntegration_EnqueueIdempotency tests that duplicate request IDs return the same job
 func TestIntegration_EnqueueIdempotency(t *testing.T) {
 	ctx := context.Background()
-
-	sqsClient := getSQSClient(t, ctx)
-	dynamoClient := getDynamoDBClientV2(t, ctx)
+	clients := setupAWSContainers(t, ctx)
+	defer clients.cleanup()
 
 	tableName := "test_idempotency_" + time.Now().Format("20060102150405")
-	createTestTableWithGSIs(t, ctx, dynamoClient, tableName)
-	defer deleteTestTable(t, ctx, dynamoClient, tableName)
+	createTestTableWithGSIs(t, ctx, clients.dynamoClient, tableName)
+	defer deleteTestTable(t, ctx, clients.dynamoClient, tableName)
 
-	queueURL := getQueueURL(t, ctx, sqsClient, testDefaultQueueName)
-	purgeQueue(t, ctx, sqsClient, queueURL)
-
-	store := NewJobStore(sqsClient, dynamoClient, JobStoreConfig{
+	store := NewJobStore(clients.sqsClient, clients.dynamoClient, JobStoreConfig{
 		JobsTableName: tableName,
 		QueueURLs: map[string]string{
-			"default": queueURL,
+			"default": clients.queueURL,
 		},
+		SQSLongPollSeconds: 1, // Use 1s for tests to avoid long waits
 		TokenSigningSecret: testTokenSigningSecret,
 	})
 
@@ -179,23 +224,20 @@ func TestIntegration_EnqueueIdempotency(t *testing.T) {
 // TestIntegration_FullJobLifecycle tests enqueue -> dequeue -> complete
 func TestIntegration_FullJobLifecycle(t *testing.T) {
 	ctx := context.Background()
-
-	sqsClient := getSQSClient(t, ctx)
-	dynamoClient := getDynamoDBClientV2(t, ctx)
+	clients := setupAWSContainers(t, ctx)
+	defer clients.cleanup()
 
 	tableName := "test_lifecycle_" + time.Now().Format("20060102150405")
-	createTestTableWithGSIs(t, ctx, dynamoClient, tableName)
-	defer deleteTestTable(t, ctx, dynamoClient, tableName)
+	createTestTableWithGSIs(t, ctx, clients.dynamoClient, tableName)
+	defer deleteTestTable(t, ctx, clients.dynamoClient, tableName)
 
-	queueURL := getQueueURL(t, ctx, sqsClient, testDefaultQueueName)
-	purgeQueue(t, ctx, sqsClient, queueURL)
-
-	store := NewJobStore(sqsClient, dynamoClient, JobStoreConfig{
+	store := NewJobStore(clients.sqsClient, clients.dynamoClient, JobStoreConfig{
 		JobsTableName: tableName,
 		QueueURLs: map[string]string{
-			"default": queueURL,
+			"default": clients.queueURL,
 		},
 		DefaultVisibilityTimeoutSeconds: 30,
+		SQSLongPollSeconds:              1, // Use 1s for tests to avoid long waits
 		TokenSigningSecret:              testTokenSigningSecret,
 	})
 
@@ -245,8 +287,8 @@ func TestIntegration_FullJobLifecycle(t *testing.T) {
 	require.Equal(t, jobv1.JobState_JOB_STATE_COMPLETED, job.State)
 
 	// 4. Verify message was deleted from SQS (queue should be empty)
-	receiveResult, err := sqsClient.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
-		QueueUrl:            aws.String(queueURL),
+	receiveResult, err := clients.sqsClient.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
+		QueueUrl:            aws.String(clients.queueURL),
 		MaxNumberOfMessages: 1,
 		WaitTimeSeconds:     1,
 	})
@@ -257,22 +299,19 @@ func TestIntegration_FullJobLifecycle(t *testing.T) {
 // TestIntegration_DequeueNoJobs tests dequeue when queue is empty
 func TestIntegration_DequeueNoJobs(t *testing.T) {
 	ctx := context.Background()
-
-	sqsClient := getSQSClient(t, ctx)
-	dynamoClient := getDynamoDBClientV2(t, ctx)
+	clients := setupAWSContainers(t, ctx)
+	defer clients.cleanup()
 
 	tableName := "test_empty_dequeue_" + time.Now().Format("20060102150405")
-	createTestTableWithGSIs(t, ctx, dynamoClient, tableName)
-	defer deleteTestTable(t, ctx, dynamoClient, tableName)
+	createTestTableWithGSIs(t, ctx, clients.dynamoClient, tableName)
+	defer deleteTestTable(t, ctx, clients.dynamoClient, tableName)
 
-	queueURL := getQueueURL(t, ctx, sqsClient, testDefaultQueueName)
-	purgeQueue(t, ctx, sqsClient, queueURL)
-
-	store := NewJobStore(sqsClient, dynamoClient, JobStoreConfig{
+	store := NewJobStore(clients.sqsClient, clients.dynamoClient, JobStoreConfig{
 		JobsTableName: tableName,
 		QueueURLs: map[string]string{
-			"default": queueURL,
+			"default": clients.queueURL,
 		},
+		SQSLongPollSeconds: 1, // Use 1s for tests to avoid long waits
 		TokenSigningSecret: testTokenSigningSecret,
 	})
 
@@ -285,22 +324,19 @@ func TestIntegration_DequeueNoJobs(t *testing.T) {
 // TestIntegration_CompleteJobFailed tests marking a job as failed
 func TestIntegration_CompleteJobFailed(t *testing.T) {
 	ctx := context.Background()
-
-	sqsClient := getSQSClient(t, ctx)
-	dynamoClient := getDynamoDBClientV2(t, ctx)
+	clients := setupAWSContainers(t, ctx)
+	defer clients.cleanup()
 
 	tableName := "test_failed_" + time.Now().Format("20060102150405")
-	createTestTableWithGSIs(t, ctx, dynamoClient, tableName)
-	defer deleteTestTable(t, ctx, dynamoClient, tableName)
+	createTestTableWithGSIs(t, ctx, clients.dynamoClient, tableName)
+	defer deleteTestTable(t, ctx, clients.dynamoClient, tableName)
 
-	queueURL := getQueueURL(t, ctx, sqsClient, testDefaultQueueName)
-	purgeQueue(t, ctx, sqsClient, queueURL)
-
-	store := NewJobStore(sqsClient, dynamoClient, JobStoreConfig{
+	store := NewJobStore(clients.sqsClient, clients.dynamoClient, JobStoreConfig{
 		JobsTableName: tableName,
 		QueueURLs: map[string]string{
-			"default": queueURL,
+			"default": clients.queueURL,
 		},
+		SQSLongPollSeconds: 1, // Use 1s for tests to avoid long waits
 		TokenSigningSecret: testTokenSigningSecret,
 	})
 
@@ -336,22 +372,19 @@ func TestIntegration_CompleteJobFailed(t *testing.T) {
 // TestIntegration_UpdateVisibility tests extending visibility timeout
 func TestIntegration_UpdateVisibility(t *testing.T) {
 	ctx := context.Background()
-
-	sqsClient := getSQSClient(t, ctx)
-	dynamoClient := getDynamoDBClientV2(t, ctx)
+	clients := setupAWSContainers(t, ctx)
+	defer clients.cleanup()
 
 	tableName := "test_visibility_" + time.Now().Format("20060102150405")
-	createTestTableWithGSIs(t, ctx, dynamoClient, tableName)
-	defer deleteTestTable(t, ctx, dynamoClient, tableName)
+	createTestTableWithGSIs(t, ctx, clients.dynamoClient, tableName)
+	defer deleteTestTable(t, ctx, clients.dynamoClient, tableName)
 
-	queueURL := getQueueURL(t, ctx, sqsClient, testDefaultQueueName)
-	purgeQueue(t, ctx, sqsClient, queueURL)
-
-	store := NewJobStore(sqsClient, dynamoClient, JobStoreConfig{
+	store := NewJobStore(clients.sqsClient, clients.dynamoClient, JobStoreConfig{
 		JobsTableName: tableName,
 		QueueURLs: map[string]string{
-			"default": queueURL,
+			"default": clients.queueURL,
 		},
+		SQSLongPollSeconds: 1, // Use 1s for tests to avoid long waits
 		TokenSigningSecret: testTokenSigningSecret,
 	})
 
@@ -382,10 +415,10 @@ func TestIntegration_UpdateVisibility(t *testing.T) {
 // TestIntegration_QueueNotConfigured tests error when queue is not configured
 func TestIntegration_QueueNotConfigured(t *testing.T) {
 	ctx := context.Background()
+	clients := setupAWSContainers(t, ctx)
+	defer clients.cleanup()
 
-	dynamoClient := getDynamoDBClientV2(t, ctx)
-
-	store := NewJobStore(nil, dynamoClient, JobStoreConfig{
+	store := NewJobStore(nil, clients.dynamoClient, JobStoreConfig{
 		JobsTableName: "unused",
 		QueueURLs:     map[string]string{}, // No queues configured
 	})
@@ -410,29 +443,26 @@ func createTestEventsTable(t *testing.T, ctx context.Context, client *dynamodb.C
 // TestIntegration_EventPersistence tests publishing and querying events
 func TestIntegration_EventPersistence(t *testing.T) {
 	ctx := context.Background()
-
-	sqsClient := getSQSClient(t, ctx)
-	dynamoClient := getDynamoDBClientV2(t, ctx)
+	clients := setupAWSContainers(t, ctx)
+	defer clients.cleanup()
 
 	jobsTableName := "test_events_jobs_" + time.Now().Format("20060102150405")
 	eventsTableName := "test_events_" + time.Now().Format("20060102150405")
 
-	createTestTableWithGSIs(t, ctx, dynamoClient, jobsTableName)
-	defer deleteTestTable(t, ctx, dynamoClient, jobsTableName)
+	createTestTableWithGSIs(t, ctx, clients.dynamoClient, jobsTableName)
+	defer deleteTestTable(t, ctx, clients.dynamoClient, jobsTableName)
 
-	createTestEventsTable(t, ctx, dynamoClient, eventsTableName)
-	defer deleteTestTable(t, ctx, dynamoClient, eventsTableName)
+	createTestEventsTable(t, ctx, clients.dynamoClient, eventsTableName)
+	defer deleteTestTable(t, ctx, clients.dynamoClient, eventsTableName)
 
-	queueURL := getQueueURL(t, ctx, sqsClient, testDefaultQueueName)
-	purgeQueue(t, ctx, sqsClient, queueURL)
-
-	store := NewJobStore(sqsClient, dynamoClient, JobStoreConfig{
+	store := NewJobStore(clients.sqsClient, clients.dynamoClient, JobStoreConfig{
 		JobsTableName:      jobsTableName,
 		JobEventsTableName: eventsTableName,
 		EventsTTLDays:      7,
 		QueueURLs: map[string]string{
-			"default": queueURL,
+			"default": clients.queueURL,
 		},
+		SQSLongPollSeconds: 1, // Use 1s for tests to avoid long waits
 		TokenSigningSecret: testTokenSigningSecret,
 	})
 
@@ -509,29 +539,26 @@ func TestIntegration_EventPersistence(t *testing.T) {
 // TestIntegration_EventFiltering tests event filtering by sequence, timestamp, and type
 func TestIntegration_EventFiltering(t *testing.T) {
 	ctx := context.Background()
-
-	sqsClient := getSQSClient(t, ctx)
-	dynamoClient := getDynamoDBClientV2(t, ctx)
+	clients := setupAWSContainers(t, ctx)
+	defer clients.cleanup()
 
 	jobsTableName := "test_filter_jobs_" + time.Now().Format("20060102150405")
 	eventsTableName := "test_filter_events_" + time.Now().Format("20060102150405")
 
-	createTestTableWithGSIs(t, ctx, dynamoClient, jobsTableName)
-	defer deleteTestTable(t, ctx, dynamoClient, jobsTableName)
+	createTestTableWithGSIs(t, ctx, clients.dynamoClient, jobsTableName)
+	defer deleteTestTable(t, ctx, clients.dynamoClient, jobsTableName)
 
-	createTestEventsTable(t, ctx, dynamoClient, eventsTableName)
-	defer deleteTestTable(t, ctx, dynamoClient, eventsTableName)
+	createTestEventsTable(t, ctx, clients.dynamoClient, eventsTableName)
+	defer deleteTestTable(t, ctx, clients.dynamoClient, eventsTableName)
 
-	queueURL := getQueueURL(t, ctx, sqsClient, testDefaultQueueName)
-	purgeQueue(t, ctx, sqsClient, queueURL)
-
-	store := NewJobStore(sqsClient, dynamoClient, JobStoreConfig{
+	store := NewJobStore(clients.sqsClient, clients.dynamoClient, JobStoreConfig{
 		JobsTableName:      jobsTableName,
 		JobEventsTableName: eventsTableName,
 		EventsTTLDays:      0, // No TTL for this test
 		QueueURLs: map[string]string{
-			"default": queueURL,
+			"default": clients.queueURL,
 		},
+		SQSLongPollSeconds: 1, // Use 1s for tests to avoid long waits
 		TokenSigningSecret: testTokenSigningSecret,
 	})
 

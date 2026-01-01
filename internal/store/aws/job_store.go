@@ -56,6 +56,7 @@ type JobStoreConfig struct {
 	JobEventsTableName              string
 	DefaultVisibilityTimeoutSeconds int32
 	EventsTTLDays                   int32  // Optional: TTL for event retention in days (0 = no TTL)
+	SQSLongPollSeconds              int32  // Optional: SQS long poll wait time (0-20 seconds, default 20)
 	TokenSigningSecret              []byte // Secret key for HMAC signing task tokens (required for security)
 	DefaultExecutionConfig          *jobv1.ExecutionConfig
 }
@@ -391,12 +392,18 @@ func (s *JobStore) DequeueJobs(ctx context.Context, queue string, maxJobs int, t
 	// Limit to SQS max messages per call
 	numToReceive := min(maxJobs, sqsMaxMessages)
 
+	// Determine SQS long poll timeout (default to 20s if not configured)
+	longPollSeconds := s.cfg.SQSLongPollSeconds
+	if longPollSeconds == 0 {
+		longPollSeconds = sqsLongPollSeconds
+	}
+
 	// ReceiveMessage from SQS with long polling enabled
 	// Long polling reduces API calls and provides near-instant response when messages arrive
 	receiveInput := &sqs.ReceiveMessageInput{
 		QueueUrl:            aws.String(queueURL),
 		MaxNumberOfMessages: int32(min(numToReceive, sqsMaxMessages)),            //nolint:gosec // bounded above
-		WaitTimeSeconds:     sqsLongPollSeconds,                                  // Long polling (20s max)
+		WaitTimeSeconds:     longPollSeconds,                                     // Long polling (configurable, max 20s)
 		VisibilityTimeout:   int32(min(timeoutSeconds, sqsMaxVisibilitySeconds)), //nolint:gosec // SQS max is 12h
 	}
 

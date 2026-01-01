@@ -156,8 +156,12 @@ func (s *JobStore) monitorConnectionPool() {
 // EnqueueJob adds a new job to the queue with idempotency support.
 // If a job with the same request_id already exists, returns the existing job.
 func (s *JobStore) EnqueueJob(ctx context.Context, req *jobv1.EnqueueJobRequest) (*jobv1.EnqueueJobResponse, error) {
+	// Apply query timeout
+	queryCtx, cancel := s.withQueryTimeout(ctx)
+	defer cancel()
+
 	// Check idempotency first
-	existing, err := s.getJobByRequestID(ctx, req.RequestId)
+	existing, err := s.getJobByRequestID(queryCtx, req.RequestId)
 	if err != nil {
 		log.Error().Err(err).Str("request_id", req.RequestId).Msg("Failed to check idempotency")
 		return nil, err
@@ -176,7 +180,11 @@ func (s *JobStore) EnqueueJob(ctx context.Context, req *jobv1.EnqueueJobRequest)
 	}
 
 	// Generate new job ID
-	jobID := uuid.Must(uuid.NewV7()).String()
+	jobUUID, err := uuid.NewV7()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate job ID: %w", err)
+	}
+	jobID := jobUUID.String()
 	now := time.Now()
 
 	// Use default execution config
@@ -206,7 +214,7 @@ func (s *JobStore) EnqueueJob(ctx context.Context, req *jobv1.EnqueueJobRequest)
 	`
 
 	var returnedJobID string
-	err = s.pool.QueryRow(ctx, query,
+	err = s.pool.QueryRow(queryCtx, query,
 		jobID,
 		req.Queue,
 		jobv1.JobState_JOB_STATE_SCHEDULED,
@@ -220,7 +228,7 @@ func (s *JobStore) EnqueueJob(ctx context.Context, req *jobv1.EnqueueJobRequest)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			// Conflict occurred, fetch the existing job
-			existing, err := s.getJobByRequestID(ctx, req.RequestId)
+			existing, err := s.getJobByRequestID(queryCtx, req.RequestId)
 			if err != nil {
 				return nil, err
 			}
@@ -257,6 +265,10 @@ func (s *JobStore) EnqueueJob(ctx context.Context, req *jobv1.EnqueueJobRequest)
 // DequeueJobs claims jobs from the queue using SELECT FOR UPDATE SKIP LOCKED.
 // Returns at most maxJobs jobs that are SCHEDULED and not currently visible.
 func (s *JobStore) DequeueJobs(ctx context.Context, queue string, maxJobs int, timeoutSeconds int) ([]*store.JobWithToken, error) {
+	// Apply query timeout
+	queryCtx, cancel := s.withQueryTimeout(ctx)
+	defer cancel()
+
 	query := `
 		WITH claimable AS (
 			SELECT job_id, queue, created_at, job_params, execution_config
@@ -280,7 +292,7 @@ func (s *JobStore) DequeueJobs(ctx context.Context, queue string, maxJobs int, t
 		          jobs.job_params, jobs.execution_config
 	`
 
-	rows, err := s.pool.Query(ctx, query,
+	rows, err := s.pool.Query(queryCtx, query,
 		queue,
 		jobv1.JobState_JOB_STATE_SCHEDULED,
 		maxJobs,
@@ -414,6 +426,10 @@ func (s *JobStore) UpdateJobVisibility(ctx context.Context, queue string, taskTo
 // CompleteJob marks a job as completed or failed and removes it from the queue.
 // Clears the receipt_handle and visibility_until fields.
 func (s *JobStore) CompleteJob(ctx context.Context, taskToken string, result *jobv1.JobResult) error {
+	// Apply query timeout
+	queryCtx, cancel := s.withQueryTimeout(ctx)
+	defer cancel()
+
 	// Decode and verify task token
 	tt, err := s.decodeTaskToken(taskToken)
 	if err != nil {
@@ -452,7 +468,7 @@ func (s *JobStore) CompleteJob(ctx context.Context, taskToken string, result *jo
 		  AND receipt_handle = $4::UUID
 	`
 
-	execResult, err := s.pool.Exec(ctx, query,
+	execResult, err := s.pool.Exec(queryCtx, query,
 		finalState,
 		resultJSON,
 		tt.JobID,
@@ -642,6 +658,10 @@ func (s *JobStore) PublishEvents(ctx context.Context, taskToken string, events [
 		return nil
 	}
 
+	// Apply query timeout
+	queryCtx, cancel := s.withQueryTimeout(ctx)
+	defer cancel()
+
 	// Decode and verify task token
 	tt, err := s.decodeTaskToken(taskToken)
 	if err != nil {
@@ -650,7 +670,7 @@ func (s *JobStore) PublishEvents(ctx context.Context, taskToken string, events [
 	}
 
 	// Verify job exists
-	job, err := s.getJobByID(ctx, tt.JobID)
+	job, err := s.getJobByID(queryCtx, tt.JobID)
 	if err != nil {
 		return err
 	}
@@ -708,7 +728,7 @@ func (s *JobStore) PublishEvents(ctx context.Context, taskToken string, events [
 	}
 
 	// Execute batch
-	batchResults := s.pool.SendBatch(ctx, batch)
+	batchResults := s.pool.SendBatch(queryCtx, batch)
 	defer batchResults.Close()
 
 	// Check for errors
@@ -842,6 +862,16 @@ func (s *JobStore) StreamEvents(ctx context.Context, jobID string, fromSequence 
 }
 
 // Helper methods
+
+// withQueryTimeout creates a context with a query timeout.
+// If a parent context already has a deadline, it uses the earlier deadline.
+func (s *JobStore) withQueryTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if s.cfg.QueryTimeoutSeconds > 0 {
+		return context.WithTimeout(ctx, time.Duration(s.cfg.QueryTimeoutSeconds)*time.Second)
+	}
+	// If QueryTimeoutSeconds is 0, use a reasonable default
+	return context.WithTimeout(ctx, 10*time.Second)
+}
 
 // getJobByID retrieves a job by its job_id.
 func (s *JobStore) getJobByID(ctx context.Context, jobID string) (*jobv1.Job, error) {

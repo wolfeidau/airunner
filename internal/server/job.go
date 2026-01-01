@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"math/rand/v2"
 	"time"
 
 	"connectrpc.com/connect"
@@ -13,10 +14,26 @@ import (
 
 // Server-side polling configuration
 const (
-	// dequeuePollingInterval is the interval between polls when no messages are available.
+	// dequeuePollingInterval is the base interval between polls when no messages are available.
 	// With SQS long polling enabled (20s), this only applies when the queue is empty.
+	// Actual interval will have jitter applied (±25%) to prevent thundering herd.
 	dequeuePollingInterval = 500 * time.Millisecond
 )
+
+// addJitter adds random jitter to a duration to prevent thundering herd.
+// Returns a duration between base*(1-jitterFactor) and base*(1+jitterFactor).
+// For jitterFactor=0.25, returns a value between 75% and 125% of base.
+func addJitter(base time.Duration, jitterFactor float64) time.Duration {
+	if jitterFactor <= 0 {
+		return base
+	}
+	// Calculate jitter range: base * (1 - jitterFactor) to base * (1 + jitterFactor)
+	min := float64(base) * (1.0 - jitterFactor)
+	max := float64(base) * (1.0 + jitterFactor)
+	//nolint:gosec // G404: Using math/rand for timing jitter is safe and appropriate
+	jittered := min + rand.Float64()*(max-min)
+	return time.Duration(jittered)
+}
 
 var _ jobv1connect.JobServiceHandler = &JobServer{}
 
@@ -49,10 +66,8 @@ func (s *JobServer) DequeueJob(ctx context.Context, req *connect.Request[v1.Dequ
 		timeoutSeconds = 300 // 5 minutes default
 	}
 
-	// Polling with reduced frequency - SQS long polling handles the wait
-	ticker := time.NewTicker(dequeuePollingInterval)
-	defer ticker.Stop()
-
+	// Polling with jitter to prevent thundering herd
+	// SQS long polling handles the wait, this is for when queue is empty
 	for {
 		jobs, err := s.store.DequeueJobs(ctx, req.Msg.Queue, maxJobs, timeoutSeconds)
 		if err != nil {
@@ -82,9 +97,10 @@ func (s *JobServer) DequeueJob(ctx context.Context, req *connect.Request[v1.Dequ
 			return nil
 		}
 
-		// Wait for next poll or timeout
+		// Wait for next poll with jitter (±25%) to prevent thundering herd
+		pollInterval := addJitter(dequeuePollingInterval, 0.25)
 		select {
-		case <-ticker.C:
+		case <-time.After(pollInterval):
 			continue
 		case <-ctx.Done():
 			return ctx.Err()

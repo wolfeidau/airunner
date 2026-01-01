@@ -42,6 +42,11 @@ type JobStoreConfig struct {
 	// Default: 1800 (30 minutes)
 	MaxConnIdleTime int32
 
+	// QueryTimeoutSeconds is the maximum time a query can run before timing out.
+	// Default: 10 seconds
+	// Set to 0 to use context timeouts only (no additional timeout)
+	QueryTimeoutSeconds int32
+
 	// AutoMigrate controls whether migrations run automatically on startup.
 	// Default: false (migrations must be explicitly enabled)
 	AutoMigrate bool
@@ -90,6 +95,10 @@ func (c *JobStoreConfig) ApplyDefaults() {
 
 	if c.MaxConnIdleTime == 0 {
 		c.MaxConnIdleTime = 1800 // 30 minutes
+	}
+
+	if c.QueryTimeoutSeconds == 0 {
+		c.QueryTimeoutSeconds = 10 // 10 seconds
 	}
 
 	// Apply default execution config if not provided

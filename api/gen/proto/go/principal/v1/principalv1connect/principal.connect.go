@@ -56,10 +56,11 @@ const (
 type PrincipalServiceClient interface {
 	// GetPublicKey fetches a worker's public key by fingerprint.
 	// Used by API server to verify worker JWTs (cached via HTTP).
-	// This RPC is idempotent and cacheable.
+	// This RPC is idempotent and cacheable - uses HTTP GET for better caching.
 	GetPublicKey(context.Context, *connect.Request[v1.GetPublicKeyRequest]) (*connect.Response[v1.GetPublicKeyResponse], error)
 	// ListRevokedPrincipals returns all currently revoked fingerprints.
 	// Used by API server to maintain revocation blocklist (polled every 5 min).
+	// This RPC is idempotent and cacheable - uses HTTP GET for better caching.
 	ListRevokedPrincipals(context.Context, *connect.Request[v1.ListRevokedPrincipalsRequest]) (*connect.Response[v1.ListRevokedPrincipalsResponse], error)
 }
 
@@ -78,12 +79,14 @@ func NewPrincipalServiceClient(httpClient connect.HTTPClient, baseURL string, op
 			httpClient,
 			baseURL+PrincipalServiceGetPublicKeyProcedure,
 			connect.WithSchema(principalServiceMethods.ByName("GetPublicKey")),
+			connect.WithIdempotency(connect.IdempotencyNoSideEffects),
 			connect.WithClientOptions(opts...),
 		),
 		listRevokedPrincipals: connect.NewClient[v1.ListRevokedPrincipalsRequest, v1.ListRevokedPrincipalsResponse](
 			httpClient,
 			baseURL+PrincipalServiceListRevokedPrincipalsProcedure,
 			connect.WithSchema(principalServiceMethods.ByName("ListRevokedPrincipals")),
+			connect.WithIdempotency(connect.IdempotencyNoSideEffects),
 			connect.WithClientOptions(opts...),
 		),
 	}
@@ -109,10 +112,11 @@ func (c *principalServiceClient) ListRevokedPrincipals(ctx context.Context, req 
 type PrincipalServiceHandler interface {
 	// GetPublicKey fetches a worker's public key by fingerprint.
 	// Used by API server to verify worker JWTs (cached via HTTP).
-	// This RPC is idempotent and cacheable.
+	// This RPC is idempotent and cacheable - uses HTTP GET for better caching.
 	GetPublicKey(context.Context, *connect.Request[v1.GetPublicKeyRequest]) (*connect.Response[v1.GetPublicKeyResponse], error)
 	// ListRevokedPrincipals returns all currently revoked fingerprints.
 	// Used by API server to maintain revocation blocklist (polled every 5 min).
+	// This RPC is idempotent and cacheable - uses HTTP GET for better caching.
 	ListRevokedPrincipals(context.Context, *connect.Request[v1.ListRevokedPrincipalsRequest]) (*connect.Response[v1.ListRevokedPrincipalsResponse], error)
 }
 
@@ -127,12 +131,14 @@ func NewPrincipalServiceHandler(svc PrincipalServiceHandler, opts ...connect.Han
 		PrincipalServiceGetPublicKeyProcedure,
 		svc.GetPublicKey,
 		connect.WithSchema(principalServiceMethods.ByName("GetPublicKey")),
+		connect.WithIdempotency(connect.IdempotencyNoSideEffects),
 		connect.WithHandlerOptions(opts...),
 	)
 	principalServiceListRevokedPrincipalsHandler := connect.NewUnaryHandler(
 		PrincipalServiceListRevokedPrincipalsProcedure,
 		svc.ListRevokedPrincipals,
 		connect.WithSchema(principalServiceMethods.ByName("ListRevokedPrincipals")),
+		connect.WithIdempotency(connect.IdempotencyNoSideEffects),
 		connect.WithHandlerOptions(opts...),
 	)
 	return "/principal.v1.PrincipalService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -164,6 +170,7 @@ type CredentialServiceClient interface {
 	// Creates a new worker principal and stores the public key.
 	ImportCredential(context.Context, *connect.Request[v1.ImportCredentialRequest]) (*connect.Response[v1.ImportCredentialResponse], error)
 	// ListCredentials returns all credentials (principals) for the current user's org.
+	// This RPC is idempotent and cacheable - uses HTTP GET for better caching.
 	ListCredentials(context.Context, *connect.Request[v1.ListCredentialsRequest]) (*connect.Response[v1.ListCredentialsResponse], error)
 	// RevokeCredential revokes a credential by principal ID.
 	// Adds fingerprint to revocation list and soft-deletes principal.
@@ -191,6 +198,7 @@ func NewCredentialServiceClient(httpClient connect.HTTPClient, baseURL string, o
 			httpClient,
 			baseURL+CredentialServiceListCredentialsProcedure,
 			connect.WithSchema(credentialServiceMethods.ByName("ListCredentials")),
+			connect.WithIdempotency(connect.IdempotencyNoSideEffects),
 			connect.WithClientOptions(opts...),
 		),
 		revokeCredential: connect.NewClient[v1.RevokeCredentialRequest, v1.RevokeCredentialResponse](
@@ -230,6 +238,7 @@ type CredentialServiceHandler interface {
 	// Creates a new worker principal and stores the public key.
 	ImportCredential(context.Context, *connect.Request[v1.ImportCredentialRequest]) (*connect.Response[v1.ImportCredentialResponse], error)
 	// ListCredentials returns all credentials (principals) for the current user's org.
+	// This RPC is idempotent and cacheable - uses HTTP GET for better caching.
 	ListCredentials(context.Context, *connect.Request[v1.ListCredentialsRequest]) (*connect.Response[v1.ListCredentialsResponse], error)
 	// RevokeCredential revokes a credential by principal ID.
 	// Adds fingerprint to revocation list and soft-deletes principal.
@@ -253,6 +262,7 @@ func NewCredentialServiceHandler(svc CredentialServiceHandler, opts ...connect.H
 		CredentialServiceListCredentialsProcedure,
 		svc.ListCredentials,
 		connect.WithSchema(credentialServiceMethods.ByName("ListCredentials")),
+		connect.WithIdempotency(connect.IdempotencyNoSideEffects),
 		connect.WithHandlerOptions(opts...),
 	)
 	credentialServiceRevokeCredentialHandler := connect.NewUnaryHandler(

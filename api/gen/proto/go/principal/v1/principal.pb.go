@@ -7,6 +7,7 @@
 package principalv1
 
 import (
+	_ "google.golang.org/genproto/googleapis/api/annotations"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -625,7 +626,7 @@ var File_principal_v1_principal_proto protoreflect.FileDescriptor
 
 const file_principal_v1_principal_proto_rawDesc = "" +
 	"\n" +
-	"\x1cprincipal/v1/principal.proto\x12\fprincipal.v1\"7\n" +
+	"\x1cprincipal/v1/principal.proto\x12\fprincipal.v1\x1a\x1cgoogle/api/annotations.proto\"7\n" +
 	"\x13GetPublicKeyRequest\x12 \n" +
 	"\vfingerprint\x18\x01 \x01(\tR\vfingerprint\"u\n" +
 	"\x14GetPublicKeyResponse\x12 \n" +
@@ -661,13 +662,13 @@ const file_principal_v1_principal_proto_rawDesc = "" +
 	"\vcredentials\x18\x01 \x03(\v2\x18.principal.v1.CredentialR\vcredentials\"<\n" +
 	"\x17RevokeCredentialRequest\x12!\n" +
 	"\fprincipal_id\x18\x01 \x01(\tR\vprincipalId\"\x1a\n" +
-	"\x18RevokeCredentialResponse2\xdf\x01\n" +
-	"\x10PrincipalService\x12W\n" +
-	"\fGetPublicKey\x12!.principal.v1.GetPublicKeyRequest\x1a\".principal.v1.GetPublicKeyResponse\"\x00\x12r\n" +
-	"\x15ListRevokedPrincipals\x12*.principal.v1.ListRevokedPrincipalsRequest\x1a+.principal.v1.ListRevokedPrincipalsResponse\"\x002\xbf\x02\n" +
+	"\x18RevokeCredentialResponse2\xe5\x01\n" +
+	"\x10PrincipalService\x12Z\n" +
+	"\fGetPublicKey\x12!.principal.v1.GetPublicKeyRequest\x1a\".principal.v1.GetPublicKeyResponse\"\x03\x90\x02\x01\x12u\n" +
+	"\x15ListRevokedPrincipals\x12*.principal.v1.ListRevokedPrincipalsRequest\x1a+.principal.v1.ListRevokedPrincipalsResponse\"\x03\x90\x02\x012\xc2\x02\n" +
 	"\x11CredentialService\x12c\n" +
-	"\x10ImportCredential\x12%.principal.v1.ImportCredentialRequest\x1a&.principal.v1.ImportCredentialResponse\"\x00\x12`\n" +
-	"\x0fListCredentials\x12$.principal.v1.ListCredentialsRequest\x1a%.principal.v1.ListCredentialsResponse\"\x00\x12c\n" +
+	"\x10ImportCredential\x12%.principal.v1.ImportCredentialRequest\x1a&.principal.v1.ImportCredentialResponse\"\x00\x12c\n" +
+	"\x0fListCredentials\x12$.principal.v1.ListCredentialsRequest\x1a%.principal.v1.ListCredentialsResponse\"\x03\x90\x02\x01\x12c\n" +
 	"\x10RevokeCredential\x12%.principal.v1.RevokeCredentialRequest\x1a&.principal.v1.RevokeCredentialResponse\"\x00B\xbc\x01\n" +
 	"\x10com.principal.v1B\x0ePrincipalProtoP\x01ZGgithub.com/wolfeidau/airunner/api/gen/proto/go/principal/v1;principalv1\xa2\x02\x03PXX\xaa\x02\fPrincipal.V1\xca\x02\fPrincipal\\V1\xe2\x02\x18Principal\\V1\\GPBMetadata\xea\x02\rPrincipal::V1b\x06proto3"
 

@@ -7,7 +7,7 @@ import { PrincipalService } from "./principal_pb";
 /**
  * GetPublicKey fetches a worker's public key by fingerprint.
  * Used by API server to verify worker JWTs (cached via HTTP).
- * This RPC is idempotent and cacheable.
+ * This RPC is idempotent and cacheable - uses HTTP GET for better caching.
  *
  * @generated from rpc principal.v1.PrincipalService.GetPublicKey
  */
@@ -16,6 +16,7 @@ export const getPublicKey = PrincipalService.method.getPublicKey;
 /**
  * ListRevokedPrincipals returns all currently revoked fingerprints.
  * Used by API server to maintain revocation blocklist (polled every 5 min).
+ * This RPC is idempotent and cacheable - uses HTTP GET for better caching.
  *
  * @generated from rpc principal.v1.PrincipalService.ListRevokedPrincipals
  */

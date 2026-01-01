@@ -2,18 +2,25 @@ syntax = "proto3";
 
 package principal.v1;
 
+import "google/api/annotations.proto";
+
 // PrincipalService provides public key lookup and revocation info
 // for API servers to verify worker JWTs.
 // These endpoints are PUBLIC (no auth required) for MVP.
 service PrincipalService {
   // GetPublicKey fetches a worker's public key by fingerprint.
   // Used by API server to verify worker JWTs (cached via HTTP).
-  // This RPC is idempotent and cacheable.
-  rpc GetPublicKey(GetPublicKeyRequest) returns (GetPublicKeyResponse) {}
+  // This RPC is idempotent and cacheable - uses HTTP GET for better caching.
+  rpc GetPublicKey(GetPublicKeyRequest) returns (GetPublicKeyResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
 
   // ListRevokedPrincipals returns all currently revoked fingerprints.
   // Used by API server to maintain revocation blocklist (polled every 5 min).
-  rpc ListRevokedPrincipals(ListRevokedPrincipalsRequest) returns (ListRevokedPrincipalsResponse) {}
+  // This RPC is idempotent and cacheable - uses HTTP GET for better caching.
+  rpc ListRevokedPrincipals(ListRevokedPrincipalsRequest) returns (ListRevokedPrincipalsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
 }
 
 // CredentialService provides credential management for web UI.
@@ -24,7 +31,10 @@ service CredentialService {
   rpc ImportCredential(ImportCredentialRequest) returns (ImportCredentialResponse) {}
 
   // ListCredentials returns all credentials (principals) for the current user's org.
-  rpc ListCredentials(ListCredentialsRequest) returns (ListCredentialsResponse) {}
+  // This RPC is idempotent and cacheable - uses HTTP GET for better caching.
+  rpc ListCredentials(ListCredentialsRequest) returns (ListCredentialsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
 
   // RevokeCredential revokes a credential by principal ID.
   // Adds fingerprint to revocation list and soft-deletes principal.

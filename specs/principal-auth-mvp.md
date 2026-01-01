@@ -1,5 +1,72 @@
 # Principal Authentication MVP - OIDC + JWT
 
+## Implementation Progress
+
+**Status:** 🟢 Core Implementation Complete (11/13 tasks complete)
+
+**Completed:**
+- ✅ Phase 1: Data models (Principal and Organization structs)
+- ✅ Phase 2: Store interfaces (PrincipalStore and OrganizationStore)
+- ✅ Phase 2: PostgreSQL stores with migrations (UUIDv7, soft delete)
+- ✅ Phase 3: Memory stores for testing
+- ✅ Phase 5: Proto services (PrincipalService + CredentialService with idempotency)
+- ✅ Phase 6: PrincipalService implementation with Cache-Control headers
+- ✅ Phase 7: CredentialService implementation (stubbed, waiting for auth)
+- ✅ Phase 8: OIDC key manager and HTTP endpoints (discovery, JWKS, token)
+- ✅ Phase 9: Dual JWT verification middleware (user + worker JWTs)
+- ✅ Phase 10: Public key cache (JWKS + database)
+- ✅ Phase 11: RevocationChecker with periodic refresh (5min polling)
+
+**Remaining:**
+- ⚪ Wire up services to servers (integration guide created at `internal/auth/README.md`)
+- ⚪ Integration testing
+
+**Files Created:**
+```
+internal/models/
+├── principal.go           # Principal model with UUIDv7, soft delete
+└── organization.go        # Organization model
+
+internal/store/
+├── principal_store.go     # PrincipalStore interface (9 methods)
+├── organization_store.go  # OrganizationStore interface (5 methods)
+├── postgres/
+│   ├── migrations/2_principal_auth.sql   # Migration with UUIDv7, indexes
+│   ├── principal_store.go                # PostgreSQL implementation
+│   ├── organization_store.go             # PostgreSQL implementation
+│   └── errors.go                         # Added isUniqueViolation helper
+└── memory/
+    ├── principal_store.go                # In-memory for tests
+    └── organization_store.go             # In-memory for tests
+
+api/principal/v1/
+└── principal.proto        # PrincipalService + CredentialService (with idempotency)
+
+api/gen/proto/go/principal/v1/
+├── principal.pb.go        # Generated proto messages
+└── principalv1connect/
+    └── principal.connect.go   # Generated Connect RPC interfaces
+
+internal/server/
+├── principal_service.go   # PrincipalService implementation (complete)
+└── credential_service.go  # CredentialService implementation (stubbed)
+
+internal/website/oidc/
+├── key_manager.go         # ECDSA keypair management, JWT signing
+└── handlers.go            # OIDC discovery, JWKS, token endpoints
+
+internal/auth/
+├── jwt_middleware.go      # Dual JWT verification (user + worker)
+├── public_key_cache.go    # JWKS and database key caching
+├── revocation_checker.go  # Periodic revocation list refresh
+└── README.md              # Integration guide for wiring up servers
+
+internal/client/
+└── caching_transport.go   # HTTP caching wrapper for Connect RPC
+```
+
+---
+
 ## Overview
 
 **Goal:** Implement principal-based authentication where:
@@ -837,19 +904,30 @@ postgres_connection_string: "postgres://user:pass@localhost:5432/airunner"
 
 ## Success Criteria
 
+### Backend Implementation
+- [x] **PostgreSQL uses UUID type for all IDs** - Migration 2 complete
+- [x] **UUIDv7 generation works correctly** - Using `uuid.NewV7()` throughout
+- [x] **Soft delete works for revocation tracking** - `deleted_at` column with partial indexes
+- [x] **No Redis dependency** - Using HTTP caching and in-memory RevocationChecker
+- [x] **PrincipalService RPCs work with Cache-Control headers** - `max-age=86400` for keys, `max-age=300` for revocation
+- [x] **Proto services use idempotency_level = NO_SIDE_EFFECTS** - Enables HTTP GET for caching
+
+### Partially Complete
+- [~] **CredentialService RPCs work** - Structure implemented, waiting for auth middleware
+  - [x] ImportCredential - Input validation, error handling
+  - [x] ListCredentials - Type filtering, response formatting
+  - [x] RevokeCredential - UUID validation, soft delete logic
+  - [ ] Session-based authentication (requires auth middleware)
+  - [ ] Credential blob parsing (format TBD)
+
+### Not Yet Implemented
 - [ ] User can login via GitHub, get JWT, call API successfully
 - [ ] Worker pool can import shared credential via CredentialService RPC
 - [ ] Workers can sign JWTs and call API successfully
 - [ ] API verifies both JWT types using HTTP caching (no DB lookups)
-- [ ] PrincipalService RPCs work with Cache-Control headers
-- [ ] CredentialService RPCs work (ImportCredential, ListCredentials, RevokeCredential)
 - [ ] HTTP caching transport works with httpcache library
 - [ ] Revocation works (periodic refresh, max 5 min delay)
 - [ ] All tests pass (unit + integration)
-- [ ] PostgreSQL uses UUID type for all IDs
-- [ ] UUIDv7 generation works correctly (time-ordered)
-- [ ] Soft delete works for revocation tracking (deleted_at column)
-- [ ] No Redis dependency
 
 ## Out of Scope (Future)
 

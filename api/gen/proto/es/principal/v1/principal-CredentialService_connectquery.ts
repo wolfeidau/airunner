@@ -14,6 +14,7 @@ export const importCredential = CredentialService.method.importCredential;
 
 /**
  * ListCredentials returns all credentials (principals) for the current user's org.
+ * This RPC is idempotent and cacheable - uses HTTP GET for better caching.
  *
  * @generated from rpc principal.v1.CredentialService.ListCredentials
  */

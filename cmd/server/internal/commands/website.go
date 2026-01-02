@@ -9,6 +9,7 @@ import (
 	"filippo.io/csrf"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wolfeidau/airunner/internal/assets"
+	httpmiddleware "github.com/wolfeidau/airunner/internal/http"
 	"github.com/wolfeidau/airunner/internal/logger"
 	"github.com/wolfeidau/airunner/internal/login"
 	"github.com/wolfeidau/airunner/internal/store"
@@ -121,10 +122,13 @@ func (c *WebsiteCmd) Run(globals *Globals) error {
 		Str("kid", keyManager.Kid()).
 		Msg("OIDC provider initialized")
 
-	// Register routes
-	mux.HandleFunc("/login", gh.LoginHandler)              // Public
-	mux.HandleFunc("/github/callback", gh.CallbackHandler) // Public
-	mux.HandleFunc("/logout", gh.LogoutHandler)            // Public
+	// Create client IP middleware for audit logging
+	clientIPMiddleware := httpmiddleware.ClientIPMiddleware()
+
+	// Register routes with client IP tracking
+	mux.Handle("/login", clientIPMiddleware(http.HandlerFunc(gh.LoginHandler)))              // Public
+	mux.Handle("/github/callback", clientIPMiddleware(http.HandlerFunc(gh.CallbackHandler))) // Public
+	mux.Handle("/logout", clientIPMiddleware(http.HandlerFunc(gh.LogoutHandler)))            // Public
 
 	// Wrap with authentication middleware
 	authMiddleware := gh.RequireAuth("/") // Redirect to / on auth failure

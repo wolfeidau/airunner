@@ -225,6 +225,35 @@ func TestGithub_LoginHandler(t *testing.T) {
 	require.Equal(t, "state", cookies[0].Name)
 }
 
+func TestGithub_LoginHandler_withExistingSession(t *testing.T) {
+	stores := createTestStores()
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", stores, 24*time.Hour)
+	require.NoError(t, err)
+
+	// Create a valid session
+	sessionID := createTestSession(t, stores, "Test User", "test@example.com")
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/login", nil)
+	r.AddCookie(&http.Cookie{
+		Name:  "_session",
+		Value: sessionID.String(),
+	})
+
+	gh.LoginHandler(w, r)
+
+	// Should redirect to dashboard, not GitHub
+	require.Equal(t, http.StatusFound, w.Code)
+
+	location := w.Header().Get("Location")
+	require.Equal(t, "/dashboard", location)
+	require.NotContains(t, location, "github.com")
+
+	// Should NOT set state cookie (no OAuth flow)
+	cookies := w.Result().Cookies()
+	require.Empty(t, cookies)
+}
+
 func TestGithub_CallbackHandler_invalidRequest(t *testing.T) {
 	stores := createTestStores()
 	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", stores, 24*time.Hour)

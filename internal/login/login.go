@@ -8,11 +8,11 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
+	httpmiddleware "github.com/wolfeidau/airunner/internal/http"
 	"github.com/wolfeidau/airunner/internal/models"
 	"github.com/wolfeidau/airunner/internal/store"
 	"golang.org/x/oauth2"
@@ -191,6 +191,16 @@ func (g *Github) saveState(w http.ResponseWriter, r *http.Request) string {
 }
 
 func (g *Github) LoginHandler(w http.ResponseWriter, r *http.Request) {
+	// Check if user already has a valid session
+	session, err := g.GetSession(r)
+	if err == nil && session != nil {
+		// Valid session exists, redirect to dashboard
+		log.Debug().Str("user", session.Email).Msg("User already authenticated, redirecting to dashboard")
+		http.Redirect(w, r, "/dashboard", http.StatusFound)
+		return
+	}
+
+	// No valid session, proceed with OAuth flow
 	log.Debug().Msg("Initiating GitHub OAuth flow")
 
 	state := g.saveState(w, r)
@@ -292,7 +302,7 @@ func (g *Github) CallbackHandler(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:   now.Add(g.sessionTTL),
 		LastUsedAt:  now,
 		UserAgent:   r.UserAgent(),
-		IPAddress:   getClientIP(r),
+		IPAddress:   httpmiddleware.ClientIPFromContext(r.Context()),
 	}
 
 	if err := g.stores.Sessions.Create(ctx, session); err != nil {
@@ -410,33 +420,6 @@ func (g *Github) getOrCreatePrincipal(ctx context.Context, githubID string, user
 		Msg("Created new organization and principal")
 
 	return principal, orgID, nil
-}
-
-// getClientIP extracts the client IP address from the request.
-func getClientIP(r *http.Request) string {
-	// Check X-Forwarded-For header first (for proxied requests)
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// Take the first IP in the list
-		if idx := len(xff); idx > 0 {
-			for i, c := range xff {
-				if c == ',' {
-					return xff[:i]
-				}
-			}
-			return xff
-		}
-	}
-
-	// Check X-Real-IP header
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return xri
-	}
-
-	// Fall back to RemoteAddr, stripping port
-	if idx := strings.LastIndex(r.RemoteAddr, ":"); idx != -1 {
-		return r.RemoteAddr[:idx]
-	}
-	return r.RemoteAddr
 }
 
 // LogoutHandler handles user logout by deleting the session from the store and clearing the cookie.

@@ -54,15 +54,39 @@ type RevocationChecker interface {
 	IsRevoked(ctx context.Context, fingerprint string) bool
 }
 
-// JWTAuthMiddleware creates middleware that verifies JWTs for both user and worker requests.
-// It handles two types of JWTs:
-//   - User JWTs: Signed by website, verified with website's public key from JWKS
-//   - Worker JWTs: Self-signed by workers, verified with worker's public key from cache
-func JWTAuthMiddleware(
+// JWTVerifier handles JWT verification for both user and worker tokens.
+// It supports updating the website URL after creation, which is useful for testing
+// with dynamically-created test servers.
+type JWTVerifier struct {
+	websiteBaseURL    string
+	publicKeyCache    PublicKeyCache
+	revocationChecker RevocationChecker
+}
+
+// NewJWTVerifier creates a new JWT verifier.
+func NewJWTVerifier(
 	websiteBaseURL string,
 	publicKeyCache PublicKeyCache,
 	revocationChecker RevocationChecker,
-) func(http.Handler) http.Handler {
+) *JWTVerifier {
+	return &JWTVerifier{
+		websiteBaseURL:    websiteBaseURL,
+		publicKeyCache:    publicKeyCache,
+		revocationChecker: revocationChecker,
+	}
+}
+
+// SetWebsiteURL updates the website base URL used for user JWT verification.
+// This is useful in tests where the URL is only known after creating an httptest.Server.
+func (v *JWTVerifier) SetWebsiteURL(url string) {
+	v.websiteBaseURL = url
+}
+
+// Middleware returns an HTTP middleware that verifies JWTs.
+// It handles two types of JWTs:
+//   - User JWTs: Signed by website, verified with website's public key from JWKS
+//   - Worker JWTs: Self-signed by workers, verified with worker's public key from cache
+func (v *JWTVerifier) Middleware() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Extract JWT from Authorization header
@@ -108,11 +132,11 @@ func JWTAuthMiddleware(
 
 			// Route based on issuer
 			switch issuer {
-			case websiteBaseURL:
+			case v.websiteBaseURL:
 				// ========================================
 				// USER JWT (signed by website)
 				// ========================================
-				principal, err = verifyUserJWT(ctx, tokenString, websiteBaseURL, kid, publicKeyCache)
+				principal, err = verifyUserJWT(ctx, tokenString, v.websiteBaseURL, kid, v.publicKeyCache)
 				if err != nil {
 					log.Warn().Err(err).Msg("Failed to verify user JWT")
 					http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -126,13 +150,13 @@ func JWTAuthMiddleware(
 				fingerprint := kid
 
 				// Check revocation list FIRST
-				if revocationChecker.IsRevoked(ctx, fingerprint) {
+				if v.revocationChecker.IsRevoked(ctx, fingerprint) {
 					log.Warn().Str("fingerprint", fingerprint).Msg("Credential revoked")
 					http.Error(w, "credential revoked", http.StatusUnauthorized)
 					return
 				}
 
-				principal, err = verifyWorkerJWT(ctx, tokenString, fingerprint, publicKeyCache)
+				principal, err = verifyWorkerJWT(ctx, tokenString, fingerprint, v.publicKeyCache)
 				if err != nil {
 					log.Warn().Err(err).Str("fingerprint", fingerprint).Msg("Failed to verify worker JWT")
 					http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -151,6 +175,16 @@ func JWTAuthMiddleware(
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// JWTAuthMiddleware is a deprecated alias for backward compatibility.
+// Use NewJWTVerifier().Middleware() instead.
+func JWTAuthMiddleware(
+	websiteBaseURL string,
+	publicKeyCache PublicKeyCache,
+	revocationChecker RevocationChecker,
+) func(http.Handler) http.Handler {
+	return NewJWTVerifier(websiteBaseURL, publicKeyCache, revocationChecker).Middleware()
 }
 
 // verifyUserJWT verifies a user JWT signed by the website.

@@ -22,7 +22,10 @@ type Principal struct {
 	Name        string    // Display name (e.g., "production-workers", "Jane Doe")
 
 	// For user principals (GitHub OAuth)
-	GitHubID *string // GitHub user ID (unique)
+	GitHubID    *string // GitHub user ID (numeric, as string)
+	GitHubLogin *string // GitHub username (for org name, display)
+	Email       *string // Primary email address
+	AvatarURL   *string // GitHub avatar URL
 
 	// For worker/service principals
 	PublicKey    string // PEM format (for display/export)

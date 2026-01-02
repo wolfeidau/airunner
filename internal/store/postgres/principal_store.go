@@ -32,12 +32,33 @@ func (s *PrincipalStore) Create(ctx context.Context, principal *models.Principal
 	query := `
 		INSERT INTO principals (
 			principal_id, org_id, type, name,
-			github_id, public_key, public_key_der, fingerprint,
+			github_id, github_login, email, avatar_url,
+			public_key, public_key_der, fingerprint,
 			roles, created_at, updated_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
 		)
 	`
+
+	// Convert empty strings to NULL for optional fields (to satisfy DB constraints)
+	var publicKey, fingerprint any
+	if principal.PublicKey == "" {
+		publicKey = nil
+	} else {
+		publicKey = principal.PublicKey
+	}
+	if principal.Fingerprint == "" {
+		fingerprint = nil
+	} else {
+		fingerprint = principal.Fingerprint
+	}
+
+	var publicKeyDER any
+	if len(principal.PublicKeyDER) == 0 {
+		publicKeyDER = nil
+	} else {
+		publicKeyDER = principal.PublicKeyDER
+	}
 
 	_, err := s.pool.Exec(ctx, query,
 		principal.PrincipalID,
@@ -45,9 +66,12 @@ func (s *PrincipalStore) Create(ctx context.Context, principal *models.Principal
 		principal.Type,
 		principal.Name,
 		principal.GitHubID,
-		principal.PublicKey,
-		principal.PublicKeyDER,
-		principal.Fingerprint,
+		principal.GitHubLogin,
+		principal.Email,
+		principal.AvatarURL,
+		publicKey,
+		publicKeyDER,
+		fingerprint,
 		principal.Roles,
 		principal.CreatedAt,
 		principal.UpdatedAt,
@@ -74,22 +98,27 @@ func (s *PrincipalStore) Get(ctx context.Context, principalID uuid.UUID) (*model
 	query := `
 		SELECT
 			principal_id, org_id, type, name,
-			github_id, public_key, public_key_der, fingerprint,
+			github_id, github_login, email, avatar_url,
+			public_key, public_key_der, fingerprint,
 			roles, created_at, updated_at, last_used_at, deleted_at
 		FROM principals
 		WHERE principal_id = $1
 	`
 
 	var p models.Principal
+	var publicKey, publicKeyDER, fingerprint any
 	err := s.pool.QueryRow(ctx, query, principalID).Scan(
 		&p.PrincipalID,
 		&p.OrgID,
 		&p.Type,
 		&p.Name,
 		&p.GitHubID,
-		&p.PublicKey,
-		&p.PublicKeyDER,
-		&p.Fingerprint,
+		&p.GitHubLogin,
+		&p.Email,
+		&p.AvatarURL,
+		&publicKey,
+		&publicKeyDER,
+		&fingerprint,
 		&p.Roles,
 		&p.CreatedAt,
 		&p.UpdatedAt,
@@ -104,6 +133,17 @@ func (s *PrincipalStore) Get(ctx context.Context, principalID uuid.UUID) (*model
 		return nil, fmt.Errorf("failed to get principal: %w", err)
 	}
 
+	// Convert NULL values from database to Go zero values
+	if publicKey != nil {
+		p.PublicKey = publicKey.(string)
+	}
+	if publicKeyDER != nil {
+		p.PublicKeyDER = publicKeyDER.([]byte)
+	}
+	if fingerprint != nil {
+		p.Fingerprint = fingerprint.(string)
+	}
+
 	return &p, nil
 }
 
@@ -112,22 +152,27 @@ func (s *PrincipalStore) GetByFingerprint(ctx context.Context, fingerprint strin
 	query := `
 		SELECT
 			principal_id, org_id, type, name,
-			github_id, public_key, public_key_der, fingerprint,
+			github_id, github_login, email, avatar_url,
+			public_key, public_key_der, fingerprint,
 			roles, created_at, updated_at, last_used_at, deleted_at
 		FROM principals
 		WHERE fingerprint = $1 AND deleted_at IS NULL
 	`
 
 	var p models.Principal
+	var publicKey, publicKeyDER, fingerprint_val any
 	err := s.pool.QueryRow(ctx, query, fingerprint).Scan(
 		&p.PrincipalID,
 		&p.OrgID,
 		&p.Type,
 		&p.Name,
 		&p.GitHubID,
-		&p.PublicKey,
-		&p.PublicKeyDER,
-		&p.Fingerprint,
+		&p.GitHubLogin,
+		&p.Email,
+		&p.AvatarURL,
+		&publicKey,
+		&publicKeyDER,
+		&fingerprint_val,
 		&p.Roles,
 		&p.CreatedAt,
 		&p.UpdatedAt,
@@ -142,6 +187,17 @@ func (s *PrincipalStore) GetByFingerprint(ctx context.Context, fingerprint strin
 		return nil, fmt.Errorf("failed to get principal by fingerprint: %w", err)
 	}
 
+	// Convert NULL values from database to Go zero values
+	if publicKey != nil {
+		p.PublicKey = publicKey.(string)
+	}
+	if publicKeyDER != nil {
+		p.PublicKeyDER = publicKeyDER.([]byte)
+	}
+	if fingerprint_val != nil {
+		p.Fingerprint = fingerprint_val.(string)
+	}
+
 	return &p, nil
 }
 
@@ -150,22 +206,27 @@ func (s *PrincipalStore) GetByGitHubID(ctx context.Context, githubID string) (*m
 	query := `
 		SELECT
 			principal_id, org_id, type, name,
-			github_id, public_key, public_key_der, fingerprint,
+			github_id, github_login, email, avatar_url,
+			public_key, public_key_der, fingerprint,
 			roles, created_at, updated_at, last_used_at, deleted_at
 		FROM principals
 		WHERE github_id = $1 AND deleted_at IS NULL
 	`
 
 	var p models.Principal
+	var publicKey, publicKeyDER, fingerprint any
 	err := s.pool.QueryRow(ctx, query, githubID).Scan(
 		&p.PrincipalID,
 		&p.OrgID,
 		&p.Type,
 		&p.Name,
 		&p.GitHubID,
-		&p.PublicKey,
-		&p.PublicKeyDER,
-		&p.Fingerprint,
+		&p.GitHubLogin,
+		&p.Email,
+		&p.AvatarURL,
+		&publicKey,
+		&publicKeyDER,
+		&fingerprint,
 		&p.Roles,
 		&p.CreatedAt,
 		&p.UpdatedAt,
@@ -178,6 +239,17 @@ func (s *PrincipalStore) GetByGitHubID(ctx context.Context, githubID string) (*m
 			return nil, store.ErrPrincipalNotFound
 		}
 		return nil, fmt.Errorf("failed to get principal by GitHub ID: %w", err)
+	}
+
+	// Convert NULL values from database to Go zero values
+	if publicKey != nil {
+		p.PublicKey = publicKey.(string)
+	}
+	if publicKeyDER != nil {
+		p.PublicKeyDER = publicKeyDER.([]byte)
+	}
+	if fingerprint != nil {
+		p.Fingerprint = fingerprint.(string)
 	}
 
 	return &p, nil
@@ -193,15 +265,38 @@ func (s *PrincipalStore) Update(ctx context.Context, principal *models.Principal
 			type = $3,
 			name = $4,
 			github_id = $5,
-			public_key = $6,
-			public_key_der = $7,
-			fingerprint = $8,
-			roles = $9,
-			updated_at = $10,
-			last_used_at = $11,
-			deleted_at = $12
+			github_login = $6,
+			email = $7,
+			avatar_url = $8,
+			public_key = $9,
+			public_key_der = $10,
+			fingerprint = $11,
+			roles = $12,
+			updated_at = $13,
+			last_used_at = $14,
+			deleted_at = $15
 		WHERE principal_id = $1
 	`
+
+	// Convert empty strings to NULL for optional fields (to satisfy DB constraints)
+	var publicKey, fingerprint any
+	if principal.PublicKey == "" {
+		publicKey = nil
+	} else {
+		publicKey = principal.PublicKey
+	}
+	if principal.Fingerprint == "" {
+		fingerprint = nil
+	} else {
+		fingerprint = principal.Fingerprint
+	}
+
+	var publicKeyDER any
+	if len(principal.PublicKeyDER) == 0 {
+		publicKeyDER = nil
+	} else {
+		publicKeyDER = principal.PublicKeyDER
+	}
 
 	result, err := s.pool.Exec(ctx, query,
 		principal.PrincipalID,
@@ -209,9 +304,12 @@ func (s *PrincipalStore) Update(ctx context.Context, principal *models.Principal
 		principal.Type,
 		principal.Name,
 		principal.GitHubID,
-		principal.PublicKey,
-		principal.PublicKeyDER,
-		principal.Fingerprint,
+		principal.GitHubLogin,
+		principal.Email,
+		principal.AvatarURL,
+		publicKey,
+		publicKeyDER,
+		fingerprint,
 		principal.Roles,
 		principal.UpdatedAt,
 		principal.LastUsedAt,
@@ -263,7 +361,8 @@ func (s *PrincipalStore) ListByOrg(ctx context.Context, orgID uuid.UUID, princip
 	query := `
 		SELECT
 			principal_id, org_id, type, name,
-			github_id, public_key, public_key_der, fingerprint,
+			github_id, github_login, email, avatar_url,
+			public_key, public_key_der, fingerprint,
 			roles, created_at, updated_at, last_used_at, deleted_at
 		FROM principals
 		WHERE org_id = $1 AND deleted_at IS NULL
@@ -293,6 +392,9 @@ func (s *PrincipalStore) ListByOrg(ctx context.Context, orgID uuid.UUID, princip
 			&p.Type,
 			&p.Name,
 			&p.GitHubID,
+			&p.GitHubLogin,
+			&p.Email,
+			&p.AvatarURL,
 			&p.PublicKey,
 			&p.PublicKeyDER,
 			&p.Fingerprint,
@@ -320,7 +422,8 @@ func (s *PrincipalStore) ListRevoked(ctx context.Context) ([]*models.Principal, 
 	query := `
 		SELECT
 			principal_id, org_id, type, name,
-			github_id, public_key, public_key_der, fingerprint,
+			github_id, github_login, email, avatar_url,
+			public_key, public_key_der, fingerprint,
 			roles, created_at, updated_at, last_used_at, deleted_at
 		FROM principals
 		WHERE deleted_at IS NOT NULL
@@ -342,6 +445,9 @@ func (s *PrincipalStore) ListRevoked(ctx context.Context) ([]*models.Principal, 
 			&p.Type,
 			&p.Name,
 			&p.GitHubID,
+			&p.GitHubLogin,
+			&p.Email,
+			&p.AvatarURL,
 			&p.PublicKey,
 			&p.PublicKeyDER,
 			&p.Fingerprint,

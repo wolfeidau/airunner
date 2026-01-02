@@ -212,16 +212,8 @@ func parseJWK(jwk map[string]any) (*ecdsa.PublicKey, error) {
 }
 
 // decodeBase64URL decodes a base64url-encoded string (without padding).
+// RawURLEncoding expects no padding, so we use it directly.
 func decodeBase64URL(s string) ([]byte, error) {
-	// Add padding if needed
-	switch len(s) % 4 {
-	case 2:
-		s += "=="
-	case 3:
-		s += "="
-	}
-
-	// Use base64.RawURLEncoding for decoding (handles both padded and unpadded)
 	return base64.RawURLEncoding.DecodeString(s)
 }
 

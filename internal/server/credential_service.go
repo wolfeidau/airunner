@@ -2,13 +2,10 @@ package server
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/base64"
 	"errors"
 
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
-	"github.com/mr-tron/base58"
 	"github.com/rs/zerolog/log"
 	principalv1 "github.com/wolfeidau/airunner/api/gen/proto/go/principal/v1"
 	"github.com/wolfeidau/airunner/api/gen/proto/go/principal/v1/principalv1connect"
@@ -212,46 +209,8 @@ func (s *CredentialServiceServer) RevokeCredential(
 	// return connect.NewResponse(&principalv1.RevokeCredentialResponse{}), nil
 }
 
-// parseCredentialBlob parses a base58-encoded credential blob.
-// TODO: Implement this function based on the credential format specification.
-func parseCredentialBlob(blob string) (*credentialData, error) {
-	// Decode base58
-	decoded, err := base58.Decode(blob)
-	if err != nil {
-		return nil, errors.New("invalid base58 encoding")
-	}
-
-	// TODO: Define and parse credential format
-	// The format should include:
-	// - Version byte
-	// - Credential type (worker/service)
-	// - Name
-	// - Public key (DER format)
-	// - Optional metadata
-	//
-	// For now, return a placeholder
-	_ = decoded
-	return nil, errors.New("credential parsing not yet implemented")
-}
-
-// credentialData represents parsed credential information.
-// TODO: Define the actual credential format.
-type credentialData struct {
-	Name         string
-	Type         string
-	PublicKeyPEM string
-	PublicKeyDER []byte
-}
-
-// Helper function to compute fingerprint from public key DER
-func computeFingerprint(publicKeyDER []byte) string {
-	hash := sha256.Sum256(publicKeyDER)
-	return base58.Encode(hash[:])
-}
-
-// Helper function to encode public key DER to PEM format
-func encodePublicKeyPEM(publicKeyDER []byte) string {
-	// TODO: Implement proper PEM encoding
-	// For now, use base64 as placeholder
-	return base64.StdEncoding.EncodeToString(publicKeyDER)
-}
+// TODO: The following helper functions will be implemented when
+// credential blob parsing is finalized:
+// - parseCredentialBlob: parses base58-encoded credential blob
+// - computeFingerprint: computes SHA256 fingerprint of public key DER
+// - encodePublicKeyPEM: encodes public key DER to PEM format

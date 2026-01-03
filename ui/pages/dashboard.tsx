@@ -1,11 +1,16 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { createRoot } from "react-dom/client";
-import { createConnectTransport } from "@connectrpc/connect-web";
 import { createClient } from "@connectrpc/connect";
-import { TransportProvider, useQuery } from "@connectrpc/connect-query";
+import {
+  TransportProvider,
+  useQuery,
+  useTransport,
+} from "@connectrpc/connect-query";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { listJobs } from "../../api/gen/proto/es/job/v1/job-JobService_connectquery";
 import { usePageContext } from "../lib/context";
+import { useToken } from "../lib/useToken";
+import { createAuthTransport } from "../lib/createAuthTransport";
 import {
   JobState,
   EventType,
@@ -21,14 +26,14 @@ import "./dashboard.css";
 import type { Timestamp } from "@bufbuild/protobuf/wkt";
 
 // Custom hook to stream job events in real-time
-function useJobEventStream(
-  jobId: string,
-  transport: ReturnType<typeof createConnectTransport>,
-) {
+function useJobEventStream(jobId: string) {
   const [events, setEvents] = useState<JobEvent[]>([]);
   const [isConnecting, setIsConnecting] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [jobCompleted, setJobCompleted] = useState(false);
+
+  // Get transport from provider
+  const transport = useTransport();
 
   useEffect(() => {
     const abortController = new AbortController();
@@ -378,17 +383,9 @@ function EventsConsole({ events }: { events: JobEvent[] }) {
 }
 
 // Job Events View component (Phase 3 - with streaming, Phase 4 will add full rendering)
-function JobEventsView({
-  jobId,
-  transport,
-}: {
-  jobId: string;
-  transport: ReturnType<typeof createConnectTransport>;
-}) {
-  const { events, isConnecting, error, jobCompleted } = useJobEventStream(
-    jobId,
-    transport,
-  );
+function JobEventsView({ jobId }: { jobId: string }) {
+  const { events, isConnecting, error, jobCompleted } =
+    useJobEventStream(jobId);
 
   return (
     <div className="events-container">
@@ -545,7 +542,7 @@ function Dashboard() {
 
       {/* Conditional rendering: show event view or job list */}
       {selectedJobId ? (
-        <JobEventsView jobId={selectedJobId} transport={finalTransport} />
+        <JobEventsView jobId={selectedJobId} />
       ) : (
         <div className="dashboard-content">
           {/* CLI Section */}
@@ -629,18 +626,81 @@ function Dashboard() {
 }
 
 const queryClient = new QueryClient();
-const finalTransport = createConnectTransport({
-  baseUrl: "https://localhost:8993",
-});
+
+// App wrapper that manages token and provides authenticated transport
+function AppWithToken() {
+  const { token, isLoading: isTokenLoading, error: tokenError } = useToken();
+  const user = usePageContext();
+
+  // Create transport with auth token
+  const transport = useMemo(
+    () => createAuthTransport("https://localhost:8993", token),
+    [token],
+  );
+
+  // Show loading state while token is being fetched
+  if (isTokenLoading) {
+    return (
+      <div className="dashboard-container">
+        <div className="dashboard-topbar">
+          <div className="topbar-left">
+            <h1 className="topbar-title">airunner</h1>
+          </div>
+          <div className="topbar-right">
+            <span className="user-name">{user?.name || "User"}</span>
+            <a href="/logout" className="btn-logout">
+              Logout
+            </a>
+          </div>
+        </div>
+        <div className="dashboard-content">
+          <div className="token-loading">
+            <div className="spinner"></div>
+            <p>Initializing authentication...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Show error if token fetch failed
+  if (tokenError) {
+    return (
+      <div className="dashboard-container">
+        <div className="dashboard-topbar">
+          <div className="topbar-left">
+            <h1 className="topbar-title">airunner</h1>
+          </div>
+          <div className="topbar-right">
+            <span className="user-name">{user?.name || "User"}</span>
+            <a href="/logout" className="btn-logout">
+              Logout
+            </a>
+          </div>
+        </div>
+        <div className="dashboard-content">
+          <div className="token-error">
+            <p>Failed to authenticate: {tokenError}</p>
+            <a href="/login" className="btn-logout">
+              Back to Login
+            </a>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <TransportProvider transport={transport}>
+      <QueryClientProvider client={queryClient}>
+        <Dashboard />
+      </QueryClientProvider>
+    </TransportProvider>
+  );
+}
 
 // Initialize on load
 const appElement = document.getElementById("app");
 if (!appElement) throw new Error("App element not found");
 const root = createRoot(appElement);
-root.render(
-  <TransportProvider transport={finalTransport}>
-    <QueryClientProvider client={queryClient}>
-      <Dashboard />
-    </QueryClientProvider>
-  </TransportProvider>,
-);
+root.render(<AppWithToken />);

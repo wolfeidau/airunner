@@ -343,13 +343,13 @@ func (g *Github) getOrCreatePrincipal(ctx context.Context, githubID string, user
 		principal.AvatarURL = &userInfo.AvatarURL
 		principal.GitHubLogin = &userInfo.Login
 
-		if err := g.stores.Principals.Update(ctx, principal); err != nil {
+		if err = g.stores.Principals.Update(ctx, principal); err != nil {
 			log.Warn().Err(err).Msg("Failed to update principal with latest GitHub info")
 			// Non-fatal - continue with existing data
 		}
 
 		// Update last used timestamp
-		if err := g.stores.Principals.UpdateLastUsed(ctx, principal.PrincipalID); err != nil {
+		if err = g.stores.Principals.UpdateLastUsed(ctx, principal.PrincipalID); err != nil {
 			log.Warn().Err(err).Msg("Failed to update last used timestamp")
 		}
 

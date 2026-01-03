@@ -18,7 +18,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/rs/cors"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
+	principalv1connect "github.com/wolfeidau/airunner/api/gen/proto/go/principal/v1/principalv1connect"
+	"github.com/wolfeidau/airunner/internal/auth"
 	"github.com/wolfeidau/airunner/internal/bootstrap"
+	"github.com/wolfeidau/airunner/internal/client"
 	"github.com/wolfeidau/airunner/internal/logger"
 	"github.com/wolfeidau/airunner/internal/server"
 	"github.com/wolfeidau/airunner/internal/store"
@@ -37,6 +40,7 @@ type RPCServerCmd struct {
 	Development      bool               `help:"development mode - auto-setup LocalStack infrastructure" default:"false" env:"AIRUNNER_DEVELOPMENT"`
 	DevelopmentClean bool               `help:"clean resources on startup in development mode (deletes all data)" default:"false" env:"AIRUNNER_DEVELOPMENT_CLEAN"`
 	Tracing          bool               `help:"enable tracing" default:"false" env:"AIRUNNER_TRACING"`
+	WebsiteURL       string             `help:"website base URL for OIDC JWKS endpoint" default:"https://localhost" env:"AIRUNNER_WEBSITE_URL"`
 	StoreType        string             `help:"job store type (memory, aws, or postgres)" default:"memory" env:"AIRUNNER_STORE_TYPE" enum:"memory,aws,postgres"`
 	AWSStore         AWSStoreFlags      `embed:"" prefix:"aws-"`
 	PostgresStore    PostgresStoreFlags `embed:"" prefix:"postgres-"`
@@ -268,7 +272,45 @@ func (s *RPCServerCmd) Run(ctx context.Context, globals *Globals) error {
 	// Build handler chain: CORS -> Connect handlers
 	handler := jobServer.Handler(interceptors...)
 
+	// Add JWT authentication middleware if enabled
 	if !s.NoAuth {
+		// Create caching HTTP client for Connect RPC
+		cachingClient := client.NewInMemoryCachingHTTPClient()
+
+		// Create PrincipalService client (for worker public keys and revocation list)
+		principalClient := principalv1connect.NewPrincipalServiceClient(
+			cachingClient,
+			s.WebsiteURL,
+		)
+
+		// Create principal store adapter (bridges RPC client to store interface)
+		principalStore := client.NewPrincipalStoreAdapter(principalClient)
+
+		// Create public key cache (caches both website JWKS and worker keys)
+		publicKeyCache := auth.NewPublicKeyCache(principalStore, cachingClient)
+
+		// Create revocation checker (polls every 5 minutes)
+		revocationChecker := auth.NewRevocationChecker(
+			ctx,
+			principalClient,
+			5*time.Minute, // Refresh interval
+		)
+		defer revocationChecker.Stop()
+
+		// Create JWT verifier
+		jwtVerifier := auth.NewJWTVerifier(
+			s.WebsiteURL, // Website URL (OIDC issuer)
+			publicKeyCache,
+			revocationChecker,
+		)
+
+		// Wrap handler with JWT middleware
+		handler = jwtVerifier.Middleware()(handler)
+
+		log.Info().
+			Str("website_url", s.WebsiteURL).
+			Msg("JWT authentication enabled")
+	} else {
 		log.Warn().Msg("Authentication is disabled (--no-auth). This should only be used in development!")
 	}
 

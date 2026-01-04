@@ -41,14 +41,24 @@ func setupPostgresContainer(t *testing.T, ctx context.Context) (*JobStore, func(
 
 	connString := fmt.Sprintf("postgres://test:test@%s:%s/testdb?sslmode=disable", host, port.Port())
 
-	// Create store with auto-migrate enabled
-	cfg := &JobStoreConfig{
-		ConnString:         connString,
+	// Create connection pool
+	poolCfg := &PoolConfig{
+		ConnString: connString,
+	}
+	pool, err := NewPool(ctx, poolCfg)
+	require.NoError(t, err)
+
+	// Run migrations
+	err = RunMigrations(ctx, pool)
+	require.NoError(t, err)
+
+	// Create job store configuration
+	jobCfg := &JobStoreConfig{
 		TokenSigningSecret: []byte("test-secret-key-min-32-bytes-long"),
-		AutoMigrate:        true, // Enable migrations for tests
 	}
 
-	store, err := NewJobStore(ctx, cfg)
+	// Create store with shared pool
+	store, err := NewJobStore(pool, jobCfg)
 	require.NoError(t, err)
 
 	err = store.Start()
@@ -56,6 +66,7 @@ func setupPostgresContainer(t *testing.T, ctx context.Context) (*JobStore, func(
 
 	cleanup := func() {
 		store.Stop()
+		pool.Close()
 		_ = container.Terminate(ctx)
 	}
 

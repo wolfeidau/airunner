@@ -30,6 +30,14 @@ type PoolConfig struct {
 	// MaxConnIdleTime is the maximum time a connection can be idle (in seconds).
 	// Default: 1800 (30 minutes)
 	MaxConnIdleTime int32
+
+	// HealthCheckPeriod is the duration between health checks (in seconds).
+	// Default: 60 (1 minute)
+	HealthCheckPeriod int32
+
+	// ConnectTimeout is the maximum time to wait for a connection (in seconds).
+	// Default: 10
+	ConnectTimeout int32
 }
 
 // Validate checks that the pool configuration is valid.
@@ -53,6 +61,12 @@ func (c *PoolConfig) ApplyDefaults() {
 	}
 	if c.MaxConnIdleTime == 0 {
 		c.MaxConnIdleTime = 1800 // 30 minutes
+	}
+	if c.HealthCheckPeriod == 0 {
+		c.HealthCheckPeriod = 60 // 1 minute
+	}
+	if c.ConnectTimeout == 0 {
+		c.ConnectTimeout = 10 // 10 seconds
 	}
 }
 
@@ -82,6 +96,8 @@ func NewPool(ctx context.Context, cfg *PoolConfig) (*pgxpool.Pool, error) {
 	poolConfig.MinConns = cfg.MinConns
 	poolConfig.MaxConnLifetime = time.Duration(cfg.MaxConnLifetime) * time.Second
 	poolConfig.MaxConnIdleTime = time.Duration(cfg.MaxConnIdleTime) * time.Second
+	poolConfig.HealthCheckPeriod = time.Duration(cfg.HealthCheckPeriod) * time.Second
+	poolConfig.ConnConfig.ConnectTimeout = time.Duration(cfg.ConnectTimeout) * time.Second
 
 	// Create pool
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
@@ -96,16 +112,4 @@ func NewPool(ctx context.Context, cfg *PoolConfig) (*pgxpool.Pool, error) {
 	}
 
 	return pool, nil
-}
-
-// PoolConfigFromJobStoreConfig extracts pool configuration from JobStoreConfig.
-// This allows JobStoreConfig to use the shared NewPool function.
-func PoolConfigFromJobStoreConfig(cfg *JobStoreConfig) *PoolConfig {
-	return &PoolConfig{
-		ConnString:      cfg.ConnString,
-		MaxConns:        cfg.MaxConns,
-		MinConns:        cfg.MinConns,
-		MaxConnLifetime: cfg.MaxConnLifetime,
-		MaxConnIdleTime: cfg.MaxConnIdleTime,
-	}
 }

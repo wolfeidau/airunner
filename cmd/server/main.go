@@ -12,7 +12,7 @@ var (
 	cli     struct {
 		Debug   bool `help:"Enable debug mode."`
 		Version kong.VersionFlag
-		Server  commands.WebsiteCmd `cmd:"" help:"Start the server (website + API)"`
+		Server  commands.ServerCmd `cmd:"" help:"Start the server (website + API)"`
 	}
 )
 

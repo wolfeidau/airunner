@@ -30,7 +30,7 @@ import (
 	"github.com/wolfeidau/airunner/internal/website/oidc"
 )
 
-type WebsiteCmd struct {
+type ServerCmd struct {
 	// Server configuration
 	Listen string `help:"HTTP server listen address" default:"0.0.0.0:443" env:"AIRUNNER_LISTEN"`
 	Cert   string `help:"path to TLS cert file" default:"" env:"AIRUNNER_TLS_CERT"`
@@ -98,7 +98,7 @@ type ExecutionFlags struct {
 	HeartbeatInterval  int32 `help:"heartbeat interval in seconds" default:"30" env:"AIRUNNER_EXEC_HEARTBEAT_INTERVAL"`
 }
 
-func (c *WebsiteCmd) Run(globals *Globals) error {
+func (c *ServerCmd) Run(globals *Globals) error {
 	log := logger.Setup(globals.Debug)
 	ctx := context.Background()
 
@@ -138,11 +138,7 @@ func (c *WebsiteCmd) Run(globals *Globals) error {
 
 	switch c.StoreType {
 	case "postgres":
-		jobStore, err = c.createPostgresJobStore(ctx)
-		if err != nil {
-			return err
-		}
-		// Use same postgres connection for identity stores
+		// Create shared connection pool for all PostgreSQL stores
 		poolCfg := &postgresstore.PoolConfig{
 			ConnString:      c.PostgresStore.ConnString,
 			MaxConns:        c.PostgresStore.MaxConns,
@@ -152,13 +148,46 @@ func (c *WebsiteCmd) Run(globals *Globals) error {
 		}
 		pool, err := postgresstore.NewPool(ctx, poolCfg)
 		if err != nil {
-			return fmt.Errorf("failed to create identity store pool: %w", err)
+			return fmt.Errorf("failed to create connection pool: %w", err)
 		}
+
+		// Run migrations if enabled
+		if c.PostgresStore.AutoMigrate {
+			if err := postgresstore.RunMigrations(ctx, pool); err != nil {
+				pool.Close()
+				return fmt.Errorf("failed to run migrations: %w", err)
+			}
+			log.Info().Msg("Database migrations completed")
+		}
+
+		// Create job store configuration
+		jobStoreCfg := &postgresstore.JobStoreConfig{
+			TokenSigningSecret: []byte(c.PostgresStore.TokenSigningSecret),
+			DefaultExecutionConfig: &jobv1.ExecutionConfig{
+				Batching: &jobv1.BatchingConfig{
+					FlushIntervalSeconds:   c.Execution.BatchFlushInterval,
+					MaxBatchSize:           c.Execution.BatchMaxSize,
+					MaxBatchBytes:          c.Execution.BatchMaxBytes,
+					PlaybackIntervalMillis: c.Execution.PlaybackInterval,
+				},
+				HeartbeatIntervalSeconds: c.Execution.HeartbeatInterval,
+			},
+			EventsTTLDays: c.PostgresStore.EventsTTLDays,
+		}
+
+		// Create job store with shared pool
+		jobStore, err = postgresstore.NewJobStore(pool, jobStoreCfg)
+		if err != nil {
+			pool.Close()
+			return fmt.Errorf("failed to create job store: %w", err)
+		}
+
+		// Create identity stores with shared pool
 		principalStore = postgresstore.NewPrincipalStore(pool)
 		organizationStore = postgresstore.NewOrganizationStore(pool)
 		sessionStore = postgresstore.NewSessionStore(pool)
-		log.Info().Msg("Using PostgreSQL job store")
-		log.Info().Msg("Using PostgreSQL identity stores")
+
+		log.Info().Msg("Using PostgreSQL stores with shared connection pool")
 
 	default:
 		// Default to memory stores
@@ -349,35 +378,6 @@ func (a *sessionProviderAdapter) GetSessionData(r *http.Request) (*auth.SessionD
 		OrgID:       data.OrgID,
 		Roles:       data.Roles,
 	}, nil
-}
-
-// createPostgresJobStore creates and configures a PostgreSQL-backed job store
-func (c *WebsiteCmd) createPostgresJobStore(ctx context.Context) (store.JobStore, error) {
-	if err := c.PostgresStore.Validate(); err != nil {
-		return nil, fmt.Errorf("failed to validate postgres flags: %w", err)
-	}
-
-	storeCfg := &postgresstore.JobStoreConfig{
-		ConnString:         c.PostgresStore.ConnString,
-		TokenSigningSecret: []byte(c.PostgresStore.TokenSigningSecret),
-		DefaultExecutionConfig: &jobv1.ExecutionConfig{
-			Batching: &jobv1.BatchingConfig{
-				FlushIntervalSeconds:   c.Execution.BatchFlushInterval,
-				MaxBatchSize:           c.Execution.BatchMaxSize,
-				MaxBatchBytes:          c.Execution.BatchMaxBytes,
-				PlaybackIntervalMillis: c.Execution.PlaybackInterval,
-			},
-			HeartbeatIntervalSeconds: c.Execution.HeartbeatInterval,
-		},
-		EventsTTLDays:   c.PostgresStore.EventsTTLDays,
-		MaxConns:        c.PostgresStore.MaxConns,
-		MinConns:        c.PostgresStore.MinConns,
-		MaxConnLifetime: c.PostgresStore.MaxConnLifetime,
-		MaxConnIdleTime: c.PostgresStore.MaxConnIdleTime,
-		AutoMigrate:     c.PostgresStore.AutoMigrate,
-	}
-
-	return postgresstore.NewJobStore(ctx, storeCfg)
 }
 
 // withCORS adds CORS support to a Connect HTTP handler.

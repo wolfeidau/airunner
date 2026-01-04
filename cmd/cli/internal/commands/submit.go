@@ -13,6 +13,7 @@ import (
 	"connectrpc.com/otelconnect"
 	"github.com/google/uuid"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
+	"github.com/wolfeidau/airunner/cmd/cli/internal/credentials"
 	"github.com/wolfeidau/airunner/internal/client"
 	"gopkg.in/yaml.v3"
 )
@@ -52,6 +53,7 @@ type JobConfig struct {
 type SubmitCmd struct {
 	Server           string            `help:"Server URL" default:"https://localhost"`
 	Queue            string            `help:"Queue name" default:"default"`
+	Credential       string            `help:"Credential name (uses default if not specified)"`
 	Repository       string            `arg:"" help:"Repository URL to process"`
 	Commit           string            `help:"Commit hash or identifier" default:"main"`
 	Branch           string            `help:"Branch name" default:"main"`
@@ -95,6 +97,17 @@ func (s *SubmitCmd) Run(ctx context.Context, globals *Globals) error {
 
 	fmt.Printf("Submitting job for repository %s to server %s\n", s.Repository, s.Server)
 
+	// Initialize credential store and auth interceptor
+	store, err := credentials.NewStore("")
+	if err != nil {
+		return fmt.Errorf("failed to initialize credentials: %w", err)
+	}
+
+	authInterceptor, err := credentials.NewAuthInterceptor(store, s.Credential, s.Server)
+	if err != nil {
+		return err
+	}
+
 	otelInterceptor, err := otelconnect.NewInterceptor()
 	if err != nil {
 		return fmt.Errorf("failed to create interceptor: %w", err)
@@ -106,7 +119,10 @@ func (s *SubmitCmd) Run(ctx context.Context, globals *Globals) error {
 		Timeout:   s.Timeout,
 		Debug:     globals.Debug,
 	}
-	clients, err := client.NewClients(config, connect.WithInterceptors(otelInterceptor))
+	clients, err := client.NewClients(config,
+		connect.WithInterceptors(authInterceptor),
+		connect.WithInterceptors(otelInterceptor),
+	)
 	if err != nil {
 		return fmt.Errorf("failed to create clients: %w", err)
 	}

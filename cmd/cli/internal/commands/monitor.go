@@ -12,11 +12,13 @@ import (
 	"connectrpc.com/connect"
 	"connectrpc.com/otelconnect"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
+	"github.com/wolfeidau/airunner/cmd/cli/internal/credentials"
 	"github.com/wolfeidau/airunner/internal/client"
 )
 
 type MonitorCmd struct {
 	Server        string            `help:"Server URL" default:"https://localhost"`
+	Credential    string            `help:"Credential name (uses default if not specified)"`
 	JobID         string            `arg:"" help:"Job ID to monitor"`
 	FromSequence  int64             `help:"Start from sequence number" default:"0"`
 	FromTimestamp int64             `help:"Start from timestamp" default:"0"`
@@ -29,6 +31,17 @@ type MonitorCmd struct {
 func (m *MonitorCmd) Run(ctx context.Context, globals *Globals) error {
 	fmt.Printf("Monitoring job %s on server %s\n", m.JobID, m.Server)
 
+	// Initialize credential store and auth interceptor
+	store, err := credentials.NewStore("")
+	if err != nil {
+		return fmt.Errorf("failed to initialize credentials: %w", err)
+	}
+
+	authInterceptor, err := credentials.NewAuthInterceptor(store, m.Credential, m.Server)
+	if err != nil {
+		return err
+	}
+
 	otelInterceptor, err := otelconnect.NewInterceptor()
 	if err != nil {
 		return fmt.Errorf("failed to create interceptor: %w", err)
@@ -40,7 +53,10 @@ func (m *MonitorCmd) Run(ctx context.Context, globals *Globals) error {
 		Timeout:   m.Timeout,
 		Debug:     globals.Debug,
 	}
-	clients, err := client.NewClients(config, connect.WithInterceptors(otelInterceptor))
+	clients, err := client.NewClients(config,
+		connect.WithInterceptors(authInterceptor),
+		connect.WithInterceptors(otelInterceptor),
+	)
 	if err != nil {
 		return fmt.Errorf("failed to create clients: %w", err)
 	}

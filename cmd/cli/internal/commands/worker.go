@@ -14,6 +14,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
+	"github.com/wolfeidau/airunner/cmd/cli/internal/credentials"
 	"github.com/wolfeidau/airunner/internal/client"
 	"github.com/wolfeidau/airunner/internal/worker"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -37,6 +38,7 @@ func addJitter(base time.Duration, jitterFactor float64) time.Duration {
 type WorkerCmd struct {
 	Server            string        `help:"Server URL" default:"https://localhost"`
 	Queue             string        `help:"Queue name to process" default:"default"`
+	Credential        string        `help:"Credential name (uses default if not specified)"`
 	ClientTimeout     time.Duration `help:"Client timeout in seconds" default:"5m"`
 	VisibilityTimeout int32         `help:"Visibility timeout in seconds" default:"300"`
 }
@@ -49,6 +51,17 @@ func (w *WorkerCmd) Run(ctx context.Context, globals *Globals) error {
 
 	log.Info().Str("queue", w.Queue).Str("server", w.Server).Msg("Worker starting")
 
+	// Initialize credential store and auth interceptor
+	store, err := credentials.NewStore("")
+	if err != nil {
+		return fmt.Errorf("failed to initialize credentials: %w", err)
+	}
+
+	authInterceptor, err := credentials.NewAuthInterceptor(store, w.Credential, w.Server)
+	if err != nil {
+		return err
+	}
+
 	otelInterceptor, err := otelconnect.NewInterceptor()
 	if err != nil {
 		return fmt.Errorf("failed to create interceptor: %w", err)
@@ -59,7 +72,10 @@ func (w *WorkerCmd) Run(ctx context.Context, globals *Globals) error {
 		Timeout:   w.ClientTimeout,
 		Debug:     globals.Debug,
 	}
-	clients, err := client.NewClients(config, connect.WithInterceptors(otelInterceptor))
+	clients, err := client.NewClients(config,
+		connect.WithInterceptors(authInterceptor),
+		connect.WithInterceptors(otelInterceptor),
+	)
 	if err != nil {
 		return fmt.Errorf("failed to create clients: %w", err)
 	}

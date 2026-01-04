@@ -66,15 +66,15 @@ This specification covers the CLI-side credential management for airunner, enabl
 
 ## Success Criteria
 
-- [ ] `airunner-cli init <name>` generates keypair and displays public key PEM
-- [ ] `airunner-cli credentials list` shows all credentials with import status
-- [ ] `airunner-cli credentials update` stores org_id and principal_id
-- [ ] `airunner-cli credentials show` displays credential details including public key
-- [ ] `airunner-cli credentials delete` removes credential files
-- [ ] `airunner-cli credentials set-default` changes default credential
-- [ ] `airunner-cli worker --credential <name>` authenticates via JWT
-- [ ] `airunner-cli submit --credential <name>` authenticates via JWT
-- [ ] Graceful error when credential not imported (missing org_id/principal_id)
+- [x] `airunner-cli init <name>` generates keypair and displays public key PEM
+- [x] `airunner-cli credentials list` shows all credentials with import status
+- [x] `airunner-cli credentials update` stores org_id and principal_id
+- [x] `airunner-cli credentials show` displays credential details including public key
+- [x] `airunner-cli credentials delete` removes credential files
+- [x] `airunner-cli credentials set-default` changes default credential
+- [x] `airunner-cli worker --credential <name>` authenticates via JWT
+- [x] `airunner-cli submit --credential <name>` authenticates via JWT
+- [x] Graceful error when credential not imported (missing org_id/principal_id)
 
 ## Related Documentation
 

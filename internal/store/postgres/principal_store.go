@@ -386,6 +386,7 @@ func (s *PrincipalStore) ListByOrg(ctx context.Context, orgID uuid.UUID, princip
 	var principals []*models.Principal
 	for rows.Next() {
 		var p models.Principal
+		var publicKey, publicKeyDER, fingerprint any
 		err := rows.Scan(
 			&p.PrincipalID,
 			&p.OrgID,
@@ -395,9 +396,9 @@ func (s *PrincipalStore) ListByOrg(ctx context.Context, orgID uuid.UUID, princip
 			&p.GitHubLogin,
 			&p.Email,
 			&p.AvatarURL,
-			&p.PublicKey,
-			&p.PublicKeyDER,
-			&p.Fingerprint,
+			&publicKey,
+			&publicKeyDER,
+			&fingerprint,
 			&p.Roles,
 			&p.CreatedAt,
 			&p.UpdatedAt,
@@ -407,6 +408,18 @@ func (s *PrincipalStore) ListByOrg(ctx context.Context, orgID uuid.UUID, princip
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan principal: %w", err)
 		}
+
+		// Convert NULL values from database to Go zero values
+		if publicKey != nil {
+			p.PublicKey = publicKey.(string)
+		}
+		if publicKeyDER != nil {
+			p.PublicKeyDER = publicKeyDER.([]byte)
+		}
+		if fingerprint != nil {
+			p.Fingerprint = fingerprint.(string)
+		}
+
 		principals = append(principals, &p)
 	}
 
@@ -439,6 +452,7 @@ func (s *PrincipalStore) ListRevoked(ctx context.Context) ([]*models.Principal, 
 	var principals []*models.Principal
 	for rows.Next() {
 		var p models.Principal
+		var publicKey, publicKeyDER, fingerprint any
 		err := rows.Scan(
 			&p.PrincipalID,
 			&p.OrgID,
@@ -448,9 +462,9 @@ func (s *PrincipalStore) ListRevoked(ctx context.Context) ([]*models.Principal, 
 			&p.GitHubLogin,
 			&p.Email,
 			&p.AvatarURL,
-			&p.PublicKey,
-			&p.PublicKeyDER,
-			&p.Fingerprint,
+			&publicKey,
+			&publicKeyDER,
+			&fingerprint,
 			&p.Roles,
 			&p.CreatedAt,
 			&p.UpdatedAt,
@@ -460,6 +474,18 @@ func (s *PrincipalStore) ListRevoked(ctx context.Context) ([]*models.Principal, 
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan revoked principal: %w", err)
 		}
+
+		// Convert NULL values from database to Go zero values
+		if publicKey != nil {
+			p.PublicKey = publicKey.(string)
+		}
+		if publicKeyDER != nil {
+			p.PublicKeyDER = publicKeyDER.([]byte)
+		}
+		if fingerprint != nil {
+			p.Fingerprint = fingerprint.(string)
+		}
+
 		principals = append(principals, &p)
 	}
 

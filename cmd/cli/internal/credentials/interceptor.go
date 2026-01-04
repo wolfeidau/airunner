@@ -71,9 +71,10 @@ func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 func (i *AuthInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
 	return func(ctx context.Context, spec connect.Spec) connect.StreamingClientConn {
 		conn := next(ctx, spec)
-		// Note: For streaming, headers are sent with the initial request.
-		// We need to add auth before the stream is established.
-		// This is handled by the transport, not here.
+		// Add Authorization header to streaming requests
+		if err := i.addAuthHeader(conn.RequestHeader()); err != nil {
+			log.Error().Err(err).Msg("Failed to add auth header to streaming request")
+		}
 		return conn
 	}
 }

@@ -55,7 +55,7 @@ type SubmitCmd struct {
 	Queue            string            `help:"Queue name" default:"default"`
 	Credential       string            `help:"Credential name (uses default if not specified)"`
 	Repository       string            `arg:"" help:"Repository URL to process"`
-	Commit           string            `help:"Commit hash or identifier" default:"main"`
+	Commit           string            `help:"Commit hash or identifier (takes precedence over branch if specified)"`
 	Branch           string            `help:"Branch name" default:"main"`
 	Owner            string            `help:"Job owner" default:""`
 	Env              map[string]string `help:"Environment variables"`

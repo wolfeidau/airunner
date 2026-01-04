@@ -2,7 +2,7 @@
 
 ## Implementation Status
 
-**Status:** 🟢 Core Implementation Complete
+**Status:** 🟢 Implementation Complete
 
 | Component | Status | Notes |
 |-----------|--------|-------|
@@ -13,14 +13,21 @@
 | GitHub OAuth | ✅ Complete | Login, callback, logout, auto org creation |
 | Session Management | ✅ Complete | Server-side sessions, opaque cookies |
 | OIDC Provider | ✅ Complete | Discovery, JWKS, token endpoint |
-| JWT Middleware | ✅ Complete | User + Worker JWT verification |
+| JWT Middleware | ✅ Complete | User + Worker JWT verification, local store |
 | Public Key Cache | ✅ Complete | JWKS + worker key caching |
-| Revocation Checker | ✅ Complete | Background polling |
-| PrincipalService RPC | ✅ Implemented | GetPublicKey, ListRevokedPrincipals |
-| CredentialService RPC | ⚪ Stubbed | Waiting for auth context extraction |
-| Website RPC Registration | ⚪ Not done | Services not registered on mux |
-| RPC Server Wiring | ✅ Complete | JWT middleware, caching, revocation |
+| Revocation Checker | ✅ Complete | Background polling from local store |
+| CredentialService RPC | ✅ Complete | Import, List, Revoke credentials |
+| Dual Auth Middleware | ✅ Complete | JWT + session auth on all API endpoints |
+| Unified Server | ✅ Complete | Single server with UI + API |
+| Shared Pool Helper | ✅ Complete | postgres/pool.go |
 | Integration Tests | ✅ Partial | OIDC + JWT signing tests |
+
+### Removed Components
+| Component | Status | Reason |
+|-----------|--------|--------|
+| PrincipalService RPC | ❌ Removed | Replaced by direct store access |
+| PrincipalStoreAdapter | ❌ Removed | No longer needed with shared DB |
+| Separate RPC Server | ❌ Removed | Merged into unified server |
 
 ---
 
@@ -44,37 +51,38 @@
 ## Architecture
 
 ```
-┌─────────────────┐
-│  Website (443)  │  OIDC Provider + Principal Management
-│                 │
-│  Components:    │
-│  • PrincipalStore (PostgreSQL)
-│  • OrganizationStore
-│  • SessionStore
-│  • OIDC KeyManager
-│  • PrincipalService (RPC, public)
-│  • CredentialService (RPC, authenticated)
-│  • GitHub OAuth handlers
-│  • OIDC endpoints (HTTP)
-└────────┬────────┘
-         │
-         │ Connect RPC (HTTP caching)
-         │
-┌────────▼────────┐
-│ API Server      │  Stateless JWT Verification
-│    (8993)       │
-│                 │
-│  Components:    │
-│  • JWT Middleware (user + worker)
-│  • PublicKeyCache (in-memory)
-│  • RevocationChecker (background)
-│  • PrincipalServiceClient
-└─────────────────┘
+Unified Server (443)
+┌─────────────────────────────────────────────┐
+│ Static Assets & UI Pages                    │
+│ GitHub OAuth (login, callback, logout)      │
+│ OIDC Provider (discovery, JWKS, token)      │
+│                                             │
+│ Dual Auth Middleware (JWT + Session)        │
+│         ↓                                   │
+│ CredentialService  - credential management  │
+│ JobService         - job enqueue/dequeue    │
+│ JobEventsService   - event streaming        │
+│                                             │
+│ Direct DB access for JWT verification       │
+└──────────────────┬──────────────────────────┘
+                   ▼
+              PostgreSQL
+          (identity + jobs DB)
 ```
+
+**Auth flows:**
+- **Web UI (browser)**: Session cookie → all API services
+- **CLI**: JWT (self-signed by worker credential) → all API services
+- **Workers**: JWT (self-signed by worker credential) → JobService/JobEventsService
+
+**Dual Auth Middleware:**
+- Checks for Authorization header first (JWT auth)
+- Falls back to session cookie if no JWT provided
+- If JWT is provided but invalid, returns 401 (no fallback)
 
 ---
 
-## Files Created
+## Files
 
 ```
 internal/models/
@@ -91,17 +99,18 @@ internal/store/
 │   │   ├── 1_initial_schema.sql    # Jobs, job_events tables
 │   │   ├── 2_principal_auth.sql    # Organizations, principals tables
 │   │   └── 3_sessions.sql          # Sessions table, principal profile fields
-│   ├── principal_store.go          # PostgreSQL implementation (493 lines)
-│   ├── organization_store.go       # PostgreSQL implementation (182 lines)
-│   ├── session_store.go            # PostgreSQL implementation (194 lines)
+│   ├── pool.go                     # Shared PostgreSQL pool helper
+│   ├── principal_store.go          # PostgreSQL implementation
+│   ├── organization_store.go       # PostgreSQL implementation
+│   ├── session_store.go            # PostgreSQL implementation
 │   └── errors.go                   # isUniqueViolation helper
 └── memory/
-    ├── principal_store.go          # In-memory for tests (232 lines)
-    ├── organization_store.go       # In-memory for tests (111 lines)
-    └── session_store.go            # In-memory for tests (161 lines)
+    ├── principal_store.go          # In-memory for tests
+    ├── organization_store.go       # In-memory for tests
+    └── session_store.go            # In-memory for tests
 
 api/principal/v1/
-└── principal.proto        # PrincipalService + CredentialService
+└── principal.proto        # CredentialService only (PrincipalService removed)
 
 api/gen/proto/go/principal/v1/
 ├── principal.pb.go        # Generated proto messages
@@ -109,8 +118,8 @@ api/gen/proto/go/principal/v1/
     └── principal.connect.go   # Generated Connect RPC interfaces
 
 internal/server/
-├── principal_service.go   # PrincipalService implementation (complete)
-└── credential_service.go  # CredentialService implementation (stubbed)
+├── server.go              # Server with optional CredentialService
+└── credential_service.go  # CredentialService implementation (complete)
 
 internal/website/oidc/
 ├── key_manager.go         # ECDSA keypair management, JWT signing
@@ -121,17 +130,17 @@ internal/login/
 └── login.go               # GitHub OAuth (login, callback, logout, auto org)
 
 internal/auth/
-├── jwt_middleware.go      # Dual JWT verification (user + worker), context helpers
-├── public_key_cache.go    # JWKS and database key caching
-└── revocation_checker.go  # Periodic revocation list refresh
+├── jwt_middleware.go       # JWT verification (user + worker), context helpers
+├── dual_auth_middleware.go # Combined JWT + session auth middleware
+├── public_key_cache.go     # JWKS and database key caching
+├── revocation_checker.go   # Periodic revocation list refresh (local store)
+└── session_middleware.go   # Session-only auth middleware for Connect RPC
 
 internal/client/
-├── caching_transport.go       # HTTP caching wrapper for Connect RPC
-└── principal_store_adapter.go # RPC-based PrincipalStore for API servers
+└── caching_transport.go   # HTTP caching wrapper for JWKS
 
 cmd/server/internal/commands/
-├── website.go             # Website server wiring (OAuth, OIDC, sessions)
-└── rpc.go                 # RPC server wiring (JWT middleware, revocation)
+└── website.go             # Unified server (UI, OAuth, OIDC, all API services, dual auth)
 ```
 
 ---
@@ -295,19 +304,13 @@ type Session struct {
 
 ## Proto Services
 
-### PrincipalService (Public, No Auth)
+### ~~PrincipalService~~ (Removed)
 
-```protobuf
-service PrincipalService {
-  rpc GetPublicKey(GetPublicKeyRequest) returns (GetPublicKeyResponse);
-  rpc ListRevokedPrincipals(ListRevokedPrincipalsRequest) returns (ListRevokedPrincipalsResponse);
-}
-```
+PrincipalService was removed in favor of direct database access. The unified server uses local PrincipalStore for:
+- Worker public key lookups (cached in PublicKeyCache)
+- Revocation list checks (cached in RevocationChecker)
 
-- `GetPublicKey`: Fetch worker public key by fingerprint (cached 24h)
-- `ListRevokedPrincipals`: List all revoked fingerprints (polled every 5min)
-
-### CredentialService (Authenticated, Session-Based)
+### CredentialService (Authenticated, Dual Auth)
 
 ```protobuf
 service CredentialService {
@@ -323,118 +326,160 @@ service CredentialService {
 
 ---
 
-## Remaining Work
+## CredentialService API
 
-### 1. Register RPC Services on Website
+The CredentialService is registered on the unified server with **dual authentication**:
+- **Browser requests**: Session-based authentication via cookies
+- **CLI/Worker requests**: JWT-based authentication via Authorization header
 
-**Status:** Not wired
+### ImportCredential
+Import a worker credential from a PEM-encoded public key.
 
-The `PrincipalService` and `CredentialService` servers are implemented but not registered on the website's HTTP mux.
-
-**Files to modify:**
-- `cmd/server/internal/commands/website.go` - Register Connect RPC handlers
-
-```go
-// Add to website.go imports
-principalv1connect "github.com/wolfeidau/airunner/api/gen/proto/go/principal/v1/principalv1connect"
-
-// Add after OIDC endpoints registration
-principalService := server.NewPrincipalServiceServer(principalStore)
-credentialService := server.NewCredentialServiceServer(principalStore, organizationStore)
-
-principalPath, principalHandler := principalv1connect.NewPrincipalServiceHandler(principalService)
-mux.Handle(principalPath, principalHandler)
-
-credentialPath, credentialHandler := principalv1connect.NewCredentialServiceHandler(credentialService)
-mux.Handle(credentialPath, credentialHandler)
-```
-
-### 2. CredentialService Implementation
-
-**Status:** Stubbed with TODO comments
-
-**Blocking Issue:** Need to extract authenticated principal from request context.
-
-The handlers need to:
-
-1. Extract the Principal from session/JWT context
-2. Verify the principal has permission (same org, admin role)
-3. Perform the operation
-
-**Files to modify:**
-- `internal/server/credential_service.go` - Implement the 3 RPC methods
-
-**Example pattern (from code comments):**
-
-```go
-func (s *CredentialServiceServer) ListCredentials(
-    ctx context.Context,
-    req *connect.Request[principalv1.ListCredentialsRequest],
-) (*connect.Response[principalv1.ListCredentialsResponse], error) {
-    // Extract current user from context
-    principal, ok := auth.PrincipalFromContext(ctx)
-    if !ok {
-        return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
-    }
-
-    // List credentials for user's org
-    credentials, err := s.principalStore.ListByOrg(ctx, principal.OrgID, req.Msg.PrincipalType)
-    // ... convert to response
+**Request:**
+```protobuf
+message ImportCredentialRequest {
+  string name = 1;           // Display name for the credential
+  string public_key_pem = 2; // PEM-encoded ECDSA P-256 public key
+  string description = 3;    // Optional description
 }
 ```
 
-### 2. Credential Blob Format
-
-**Status:** Not specified
-
-Need to define the base58-encoded blob format for `ImportCredential`:
-
-```
-Proposed format:
-- Version byte (1)
-- Name length (1 byte) + Name (UTF-8)
-- Public key DER (variable)
-- Checksum (4 bytes, SHA256 prefix)
+**Response:**
+```protobuf
+message ImportCredentialResponse {
+  string principal_id = 1;   // UUIDv7 as string
+  string org_id = 2;         // UUIDv7 as string
+  repeated string roles = 3; // ["worker"]
+  string fingerprint = 4;    // Base58-encoded SHA256 of public key DER
+  string name = 5;
+}
 ```
 
-### 3. Additional Integration Tests
+**Authorization:** Requires `admin` role.
+
+### ListCredentials
+List all credentials for the caller's organization.
+
+**Authorization:** Any authenticated user.
+
+### RevokeCredential
+Soft-delete a credential (sets deleted_at timestamp).
+
+**Authorization:** Requires `admin` role. Cannot revoke own credential.
+
+---
+
+## Outstanding Work
+
+### CLI Credential Management (Required for MVP)
+
+The CLI needs commands to generate and manage worker credentials:
+
+**1. Init Command** (`airunner-cli init`)
+```bash
+# Generate new credential
+airunner-cli init --name "my-worker"
+
+# Output:
+# Generated credential: my-worker
+# Fingerprint: 7RpMx9NqK4...
+# Public key saved to: ~/.airunner/credentials/my-worker.pub
+# Private key saved to: ~/.airunner/credentials/my-worker.key
+#
+# Import this credential via the web UI or API:
+#   Public Key PEM: (displayed)
+```
+
+**Implementation:**
+- Generate ECDSA P-256 keypair
+- Save to `~/.airunner/credentials/<name>.key` and `<name>.pub`
+- Display public key PEM for import
+- Store metadata (name, fingerprint, created_at) in `~/.airunner/credentials/config.json`
+
+**2. CLI JWT Signing**
+
+All CLI commands (worker, submit, list, monitor) need to:
+- Load credentials from `~/.airunner/credentials/`
+- Sign JWT with private key before each API request
+- Accept `--credential <name>` flag to select which credential to use
+
+**JWT Claims (Worker):**
+```json
+{
+  "iss": "airunner-cli",
+  "sub": "<fingerprint>",
+  "org": "<org-id>",
+  "roles": ["worker"],
+  "principal_id": "<principal-id>",
+  "iat": 1234567890,
+  "exp": 1234571490
+}
+```
+
+**3. Credential Import Flow**
+
+End-to-end workflow:
+1. `airunner-cli init --name "prod-workers"` → generates keypair
+2. Admin copies public key PEM
+3. Admin imports via web UI (CredentialService.ImportCredential)
+4. Server returns principal_id, org_id, fingerprint
+5. Admin updates CLI config with org_id, principal_id
+6. CLI can now authenticate: `airunner-cli worker --credential prod-workers`
+
+### Files to Create
+
+| File | Purpose |
+|------|---------|
+| `cmd/cli/internal/commands/init.go` | Credential generation command |
+| `cmd/cli/internal/credentials/store.go` | Local credential storage |
+| `cmd/cli/internal/credentials/jwt.go` | JWT signing for API requests |
+
+### Additional Integration Tests
 
 **Current coverage:**
 - OIDC discovery endpoint
 - JWT signing/verification
 
-**Missing:**
-- Worker JWT verification flow
-- Revocation checking
-- CredentialService RPCs (once implemented)
-- Full end-to-end user flow
+**Needed:**
+- Worker JWT verification flow (CLI → Server)
+- Revocation checking end-to-end
+- CredentialService RPCs (import, list, revoke)
+- Full credential workflow (init → import → authenticate)
 
 ---
 
 ## Configuration
 
-### Website Server
+### Unified Server
 
 ```bash
-./bin/airunner-server website \
+./bin/airunner-server server \
+  --listen=0.0.0.0:443 \
+  --cert=certs/server.crt \
+  --key=certs/server.key \
   --store-type=postgres \
   --postgres-conn-string="postgres://user:pass@localhost:5432/airunner" \
-  --github-client-id="<client-id>" \
-  --github-client-secret="<client-secret>" \
-  --github-callback-url="https://website.airunner.dev/github/callback" \
-  --base-url="https://website.airunner.dev" \
-  --api-base-url="https://api.airunner.dev"
+  --postgres-token-secret="<32+ byte secret for HMAC signing>" \
+  --client-id="<github-client-id>" \
+  --client-secret="<github-client-secret>" \
+  --callback-url="https://example.com/github/callback" \
+  --base-url="https://example.com"
 ```
 
-### RPC Server
+### Development Mode
 
 ```bash
-./bin/airunner-server rpc \
-  --store-type=postgres \
-  --postgres-conn-string="postgres://user:pass@localhost:5432/airunner" \
-  --website-base-url="https://website.airunner.dev" \
-  --revocation-refresh-interval="5m"
+./bin/airunner-server server \
+  --development \
+  --no-auth \
+  --cert=certs/server.crt \
+  --key=certs/server.key
 ```
+
+Development mode automatically:
+- Sets up LocalStack infrastructure (SQS queues, DynamoDB tables)
+- Uses AWS store type with local endpoints
+- Provides a default token signing secret
 
 ---
 

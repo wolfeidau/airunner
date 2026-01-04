@@ -21,8 +21,6 @@ import (
 const _ = connect.IsAtLeastVersion1_13_0
 
 const (
-	// PrincipalServiceName is the fully-qualified name of the PrincipalService service.
-	PrincipalServiceName = "principal.v1.PrincipalService"
 	// CredentialServiceName is the fully-qualified name of the CredentialService service.
 	CredentialServiceName = "principal.v1.CredentialService"
 )
@@ -35,12 +33,6 @@ const (
 // reflection-formatted method names, remove the leading slash and convert the remaining slash to a
 // period.
 const (
-	// PrincipalServiceGetPublicKeyProcedure is the fully-qualified name of the PrincipalService's
-	// GetPublicKey RPC.
-	PrincipalServiceGetPublicKeyProcedure = "/principal.v1.PrincipalService/GetPublicKey"
-	// PrincipalServiceListRevokedPrincipalsProcedure is the fully-qualified name of the
-	// PrincipalService's ListRevokedPrincipals RPC.
-	PrincipalServiceListRevokedPrincipalsProcedure = "/principal.v1.PrincipalService/ListRevokedPrincipals"
 	// CredentialServiceImportCredentialProcedure is the fully-qualified name of the CredentialService's
 	// ImportCredential RPC.
 	CredentialServiceImportCredentialProcedure = "/principal.v1.CredentialService/ImportCredential"
@@ -52,128 +44,18 @@ const (
 	CredentialServiceRevokeCredentialProcedure = "/principal.v1.CredentialService/RevokeCredential"
 )
 
-// PrincipalServiceClient is a client for the principal.v1.PrincipalService service.
-type PrincipalServiceClient interface {
-	// GetPublicKey fetches a worker's public key by fingerprint.
-	// Used by API server to verify worker JWTs (cached via HTTP).
-	// This RPC is idempotent and cacheable - uses HTTP GET for better caching.
-	GetPublicKey(context.Context, *connect.Request[v1.GetPublicKeyRequest]) (*connect.Response[v1.GetPublicKeyResponse], error)
-	// ListRevokedPrincipals returns all currently revoked fingerprints.
-	// Used by API server to maintain revocation blocklist (polled every 5 min).
-	// This RPC is idempotent and cacheable - uses HTTP GET for better caching.
-	ListRevokedPrincipals(context.Context, *connect.Request[v1.ListRevokedPrincipalsRequest]) (*connect.Response[v1.ListRevokedPrincipalsResponse], error)
-}
-
-// NewPrincipalServiceClient constructs a client for the principal.v1.PrincipalService service. By
-// default, it uses the Connect protocol with the binary Protobuf Codec, asks for gzipped responses,
-// and sends uncompressed requests. To use the gRPC or gRPC-Web protocols, supply the
-// connect.WithGRPC() or connect.WithGRPCWeb() options.
-//
-// The URL supplied here should be the base URL for the Connect or gRPC server (for example,
-// http://api.acme.com or https://acme.com/grpc).
-func NewPrincipalServiceClient(httpClient connect.HTTPClient, baseURL string, opts ...connect.ClientOption) PrincipalServiceClient {
-	baseURL = strings.TrimRight(baseURL, "/")
-	principalServiceMethods := v1.File_principal_v1_principal_proto.Services().ByName("PrincipalService").Methods()
-	return &principalServiceClient{
-		getPublicKey: connect.NewClient[v1.GetPublicKeyRequest, v1.GetPublicKeyResponse](
-			httpClient,
-			baseURL+PrincipalServiceGetPublicKeyProcedure,
-			connect.WithSchema(principalServiceMethods.ByName("GetPublicKey")),
-			connect.WithIdempotency(connect.IdempotencyNoSideEffects),
-			connect.WithClientOptions(opts...),
-		),
-		listRevokedPrincipals: connect.NewClient[v1.ListRevokedPrincipalsRequest, v1.ListRevokedPrincipalsResponse](
-			httpClient,
-			baseURL+PrincipalServiceListRevokedPrincipalsProcedure,
-			connect.WithSchema(principalServiceMethods.ByName("ListRevokedPrincipals")),
-			connect.WithIdempotency(connect.IdempotencyNoSideEffects),
-			connect.WithClientOptions(opts...),
-		),
-	}
-}
-
-// principalServiceClient implements PrincipalServiceClient.
-type principalServiceClient struct {
-	getPublicKey          *connect.Client[v1.GetPublicKeyRequest, v1.GetPublicKeyResponse]
-	listRevokedPrincipals *connect.Client[v1.ListRevokedPrincipalsRequest, v1.ListRevokedPrincipalsResponse]
-}
-
-// GetPublicKey calls principal.v1.PrincipalService.GetPublicKey.
-func (c *principalServiceClient) GetPublicKey(ctx context.Context, req *connect.Request[v1.GetPublicKeyRequest]) (*connect.Response[v1.GetPublicKeyResponse], error) {
-	return c.getPublicKey.CallUnary(ctx, req)
-}
-
-// ListRevokedPrincipals calls principal.v1.PrincipalService.ListRevokedPrincipals.
-func (c *principalServiceClient) ListRevokedPrincipals(ctx context.Context, req *connect.Request[v1.ListRevokedPrincipalsRequest]) (*connect.Response[v1.ListRevokedPrincipalsResponse], error) {
-	return c.listRevokedPrincipals.CallUnary(ctx, req)
-}
-
-// PrincipalServiceHandler is an implementation of the principal.v1.PrincipalService service.
-type PrincipalServiceHandler interface {
-	// GetPublicKey fetches a worker's public key by fingerprint.
-	// Used by API server to verify worker JWTs (cached via HTTP).
-	// This RPC is idempotent and cacheable - uses HTTP GET for better caching.
-	GetPublicKey(context.Context, *connect.Request[v1.GetPublicKeyRequest]) (*connect.Response[v1.GetPublicKeyResponse], error)
-	// ListRevokedPrincipals returns all currently revoked fingerprints.
-	// Used by API server to maintain revocation blocklist (polled every 5 min).
-	// This RPC is idempotent and cacheable - uses HTTP GET for better caching.
-	ListRevokedPrincipals(context.Context, *connect.Request[v1.ListRevokedPrincipalsRequest]) (*connect.Response[v1.ListRevokedPrincipalsResponse], error)
-}
-
-// NewPrincipalServiceHandler builds an HTTP handler from the service implementation. It returns the
-// path on which to mount the handler and the handler itself.
-//
-// By default, handlers support the Connect, gRPC, and gRPC-Web protocols with the binary Protobuf
-// and JSON codecs. They also support gzip compression.
-func NewPrincipalServiceHandler(svc PrincipalServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
-	principalServiceMethods := v1.File_principal_v1_principal_proto.Services().ByName("PrincipalService").Methods()
-	principalServiceGetPublicKeyHandler := connect.NewUnaryHandler(
-		PrincipalServiceGetPublicKeyProcedure,
-		svc.GetPublicKey,
-		connect.WithSchema(principalServiceMethods.ByName("GetPublicKey")),
-		connect.WithIdempotency(connect.IdempotencyNoSideEffects),
-		connect.WithHandlerOptions(opts...),
-	)
-	principalServiceListRevokedPrincipalsHandler := connect.NewUnaryHandler(
-		PrincipalServiceListRevokedPrincipalsProcedure,
-		svc.ListRevokedPrincipals,
-		connect.WithSchema(principalServiceMethods.ByName("ListRevokedPrincipals")),
-		connect.WithIdempotency(connect.IdempotencyNoSideEffects),
-		connect.WithHandlerOptions(opts...),
-	)
-	return "/principal.v1.PrincipalService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case PrincipalServiceGetPublicKeyProcedure:
-			principalServiceGetPublicKeyHandler.ServeHTTP(w, r)
-		case PrincipalServiceListRevokedPrincipalsProcedure:
-			principalServiceListRevokedPrincipalsHandler.ServeHTTP(w, r)
-		default:
-			http.NotFound(w, r)
-		}
-	})
-}
-
-// UnimplementedPrincipalServiceHandler returns CodeUnimplemented from all methods.
-type UnimplementedPrincipalServiceHandler struct{}
-
-func (UnimplementedPrincipalServiceHandler) GetPublicKey(context.Context, *connect.Request[v1.GetPublicKeyRequest]) (*connect.Response[v1.GetPublicKeyResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("principal.v1.PrincipalService.GetPublicKey is not implemented"))
-}
-
-func (UnimplementedPrincipalServiceHandler) ListRevokedPrincipals(context.Context, *connect.Request[v1.ListRevokedPrincipalsRequest]) (*connect.Response[v1.ListRevokedPrincipalsResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("principal.v1.PrincipalService.ListRevokedPrincipals is not implemented"))
-}
-
 // CredentialServiceClient is a client for the principal.v1.CredentialService service.
 type CredentialServiceClient interface {
-	// ImportCredential imports a worker credential from a base58-encoded blob.
+	// ImportCredential imports a worker credential from a PEM-encoded public key.
 	// Creates a new worker principal and stores the public key.
+	// Requires admin role.
 	ImportCredential(context.Context, *connect.Request[v1.ImportCredentialRequest]) (*connect.Response[v1.ImportCredentialResponse], error)
 	// ListCredentials returns all credentials (principals) for the current user's org.
 	// This RPC is idempotent and cacheable - uses HTTP GET for better caching.
 	ListCredentials(context.Context, *connect.Request[v1.ListCredentialsRequest]) (*connect.Response[v1.ListCredentialsResponse], error)
 	// RevokeCredential revokes a credential by principal ID.
-	// Adds fingerprint to revocation list and soft-deletes principal.
+	// Soft-deletes the principal and adds fingerprint to revocation list.
+	// Requires admin role.
 	RevokeCredential(context.Context, *connect.Request[v1.RevokeCredentialRequest]) (*connect.Response[v1.RevokeCredentialResponse], error)
 }
 
@@ -234,14 +116,16 @@ func (c *credentialServiceClient) RevokeCredential(ctx context.Context, req *con
 
 // CredentialServiceHandler is an implementation of the principal.v1.CredentialService service.
 type CredentialServiceHandler interface {
-	// ImportCredential imports a worker credential from a base58-encoded blob.
+	// ImportCredential imports a worker credential from a PEM-encoded public key.
 	// Creates a new worker principal and stores the public key.
+	// Requires admin role.
 	ImportCredential(context.Context, *connect.Request[v1.ImportCredentialRequest]) (*connect.Response[v1.ImportCredentialResponse], error)
 	// ListCredentials returns all credentials (principals) for the current user's org.
 	// This RPC is idempotent and cacheable - uses HTTP GET for better caching.
 	ListCredentials(context.Context, *connect.Request[v1.ListCredentialsRequest]) (*connect.Response[v1.ListCredentialsResponse], error)
 	// RevokeCredential revokes a credential by principal ID.
-	// Adds fingerprint to revocation list and soft-deletes principal.
+	// Soft-deletes the principal and adds fingerprint to revocation list.
+	// Requires admin role.
 	RevokeCredential(context.Context, *connect.Request[v1.RevokeCredentialRequest]) (*connect.Response[v1.RevokeCredentialResponse], error)
 }
 

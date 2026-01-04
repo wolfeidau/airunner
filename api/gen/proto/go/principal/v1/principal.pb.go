@@ -7,7 +7,6 @@
 package principalv1
 
 import (
-	_ "google.golang.org/genproto/googleapis/api/annotations"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -22,209 +21,22 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// GetPublicKey messages
-type GetPublicKeyRequest struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// Base58-encoded fingerprint of the public key
-	Fingerprint   string `protobuf:"bytes,1,opt,name=fingerprint,proto3" json:"fingerprint,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *GetPublicKeyRequest) Reset() {
-	*x = GetPublicKeyRequest{}
-	mi := &file_principal_v1_principal_proto_msgTypes[0]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *GetPublicKeyRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*GetPublicKeyRequest) ProtoMessage() {}
-
-func (x *GetPublicKeyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_principal_v1_principal_proto_msgTypes[0]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use GetPublicKeyRequest.ProtoReflect.Descriptor instead.
-func (*GetPublicKeyRequest) Descriptor() ([]byte, []int) {
-	return file_principal_v1_principal_proto_rawDescGZIP(), []int{0}
-}
-
-func (x *GetPublicKeyRequest) GetFingerprint() string {
-	if x != nil {
-		return x.Fingerprint
-	}
-	return ""
-}
-
-type GetPublicKeyResponse struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// Base58-encoded fingerprint (echoed from request)
-	Fingerprint string `protobuf:"bytes,1,opt,name=fingerprint,proto3" json:"fingerprint,omitempty"`
-	// PEM-encoded ECDSA P-256 public key
-	PublicKeyPem string `protobuf:"bytes,2,opt,name=public_key_pem,json=publicKeyPem,proto3" json:"public_key_pem,omitempty"`
-	// Organization ID (UUIDv7 as string)
-	OrgId         string `protobuf:"bytes,3,opt,name=org_id,json=orgId,proto3" json:"org_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *GetPublicKeyResponse) Reset() {
-	*x = GetPublicKeyResponse{}
-	mi := &file_principal_v1_principal_proto_msgTypes[1]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *GetPublicKeyResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*GetPublicKeyResponse) ProtoMessage() {}
-
-func (x *GetPublicKeyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_principal_v1_principal_proto_msgTypes[1]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use GetPublicKeyResponse.ProtoReflect.Descriptor instead.
-func (*GetPublicKeyResponse) Descriptor() ([]byte, []int) {
-	return file_principal_v1_principal_proto_rawDescGZIP(), []int{1}
-}
-
-func (x *GetPublicKeyResponse) GetFingerprint() string {
-	if x != nil {
-		return x.Fingerprint
-	}
-	return ""
-}
-
-func (x *GetPublicKeyResponse) GetPublicKeyPem() string {
-	if x != nil {
-		return x.PublicKeyPem
-	}
-	return ""
-}
-
-func (x *GetPublicKeyResponse) GetOrgId() string {
-	if x != nil {
-		return x.OrgId
-	}
-	return ""
-}
-
-// ListRevokedPrincipals messages
-type ListRevokedPrincipalsRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ListRevokedPrincipalsRequest) Reset() {
-	*x = ListRevokedPrincipalsRequest{}
-	mi := &file_principal_v1_principal_proto_msgTypes[2]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ListRevokedPrincipalsRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ListRevokedPrincipalsRequest) ProtoMessage() {}
-
-func (x *ListRevokedPrincipalsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_principal_v1_principal_proto_msgTypes[2]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ListRevokedPrincipalsRequest.ProtoReflect.Descriptor instead.
-func (*ListRevokedPrincipalsRequest) Descriptor() ([]byte, []int) {
-	return file_principal_v1_principal_proto_rawDescGZIP(), []int{2}
-}
-
-type ListRevokedPrincipalsResponse struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// List of revoked fingerprints (base58-encoded)
-	Fingerprints  []string `protobuf:"bytes,1,rep,name=fingerprints,proto3" json:"fingerprints,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ListRevokedPrincipalsResponse) Reset() {
-	*x = ListRevokedPrincipalsResponse{}
-	mi := &file_principal_v1_principal_proto_msgTypes[3]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ListRevokedPrincipalsResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ListRevokedPrincipalsResponse) ProtoMessage() {}
-
-func (x *ListRevokedPrincipalsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_principal_v1_principal_proto_msgTypes[3]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ListRevokedPrincipalsResponse.ProtoReflect.Descriptor instead.
-func (*ListRevokedPrincipalsResponse) Descriptor() ([]byte, []int) {
-	return file_principal_v1_principal_proto_rawDescGZIP(), []int{3}
-}
-
-func (x *ListRevokedPrincipalsResponse) GetFingerprints() []string {
-	if x != nil {
-		return x.Fingerprints
-	}
-	return nil
-}
-
 // ImportCredential messages
 type ImportCredentialRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Base58-encoded credential blob containing public key and metadata
-	Blob          string `protobuf:"bytes,1,opt,name=blob,proto3" json:"blob,omitempty"`
+	// Display name for the credential
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// PEM-encoded ECDSA P-256 public key
+	PublicKeyPem string `protobuf:"bytes,2,opt,name=public_key_pem,json=publicKeyPem,proto3" json:"public_key_pem,omitempty"`
+	// Optional description
+	Description   string `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ImportCredentialRequest) Reset() {
 	*x = ImportCredentialRequest{}
-	mi := &file_principal_v1_principal_proto_msgTypes[4]
+	mi := &file_principal_v1_principal_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -236,7 +48,7 @@ func (x *ImportCredentialRequest) String() string {
 func (*ImportCredentialRequest) ProtoMessage() {}
 
 func (x *ImportCredentialRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_principal_v1_principal_proto_msgTypes[4]
+	mi := &file_principal_v1_principal_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -249,12 +61,26 @@ func (x *ImportCredentialRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImportCredentialRequest.ProtoReflect.Descriptor instead.
 func (*ImportCredentialRequest) Descriptor() ([]byte, []int) {
-	return file_principal_v1_principal_proto_rawDescGZIP(), []int{4}
+	return file_principal_v1_principal_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *ImportCredentialRequest) GetBlob() string {
+func (x *ImportCredentialRequest) GetName() string {
 	if x != nil {
-		return x.Blob
+		return x.Name
+	}
+	return ""
+}
+
+func (x *ImportCredentialRequest) GetPublicKeyPem() string {
+	if x != nil {
+		return x.PublicKeyPem
+	}
+	return ""
+}
+
+func (x *ImportCredentialRequest) GetDescription() string {
+	if x != nil {
+		return x.Description
 	}
 	return ""
 }
@@ -269,7 +95,7 @@ type ImportCredentialResponse struct {
 	Roles []string `protobuf:"bytes,3,rep,name=roles,proto3" json:"roles,omitempty"`
 	// Base58-encoded fingerprint
 	Fingerprint string `protobuf:"bytes,4,opt,name=fingerprint,proto3" json:"fingerprint,omitempty"`
-	// Credential name from blob
+	// Credential name
 	Name          string `protobuf:"bytes,5,opt,name=name,proto3" json:"name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -277,7 +103,7 @@ type ImportCredentialResponse struct {
 
 func (x *ImportCredentialResponse) Reset() {
 	*x = ImportCredentialResponse{}
-	mi := &file_principal_v1_principal_proto_msgTypes[5]
+	mi := &file_principal_v1_principal_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -289,7 +115,7 @@ func (x *ImportCredentialResponse) String() string {
 func (*ImportCredentialResponse) ProtoMessage() {}
 
 func (x *ImportCredentialResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_principal_v1_principal_proto_msgTypes[5]
+	mi := &file_principal_v1_principal_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -302,7 +128,7 @@ func (x *ImportCredentialResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImportCredentialResponse.ProtoReflect.Descriptor instead.
 func (*ImportCredentialResponse) Descriptor() ([]byte, []int) {
-	return file_principal_v1_principal_proto_rawDescGZIP(), []int{5}
+	return file_principal_v1_principal_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *ImportCredentialResponse) GetPrincipalId() string {
@@ -352,7 +178,7 @@ type ListCredentialsRequest struct {
 
 func (x *ListCredentialsRequest) Reset() {
 	*x = ListCredentialsRequest{}
-	mi := &file_principal_v1_principal_proto_msgTypes[6]
+	mi := &file_principal_v1_principal_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -364,7 +190,7 @@ func (x *ListCredentialsRequest) String() string {
 func (*ListCredentialsRequest) ProtoMessage() {}
 
 func (x *ListCredentialsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_principal_v1_principal_proto_msgTypes[6]
+	mi := &file_principal_v1_principal_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -377,7 +203,7 @@ func (x *ListCredentialsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCredentialsRequest.ProtoReflect.Descriptor instead.
 func (*ListCredentialsRequest) Descriptor() ([]byte, []int) {
-	return file_principal_v1_principal_proto_rawDescGZIP(), []int{6}
+	return file_principal_v1_principal_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *ListCredentialsRequest) GetPrincipalType() string {
@@ -411,7 +237,7 @@ type Credential struct {
 
 func (x *Credential) Reset() {
 	*x = Credential{}
-	mi := &file_principal_v1_principal_proto_msgTypes[7]
+	mi := &file_principal_v1_principal_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -423,7 +249,7 @@ func (x *Credential) String() string {
 func (*Credential) ProtoMessage() {}
 
 func (x *Credential) ProtoReflect() protoreflect.Message {
-	mi := &file_principal_v1_principal_proto_msgTypes[7]
+	mi := &file_principal_v1_principal_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -436,7 +262,7 @@ func (x *Credential) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Credential.ProtoReflect.Descriptor instead.
 func (*Credential) Descriptor() ([]byte, []int) {
-	return file_principal_v1_principal_proto_rawDescGZIP(), []int{7}
+	return file_principal_v1_principal_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *Credential) GetPrincipalId() string {
@@ -505,7 +331,7 @@ type ListCredentialsResponse struct {
 
 func (x *ListCredentialsResponse) Reset() {
 	*x = ListCredentialsResponse{}
-	mi := &file_principal_v1_principal_proto_msgTypes[8]
+	mi := &file_principal_v1_principal_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -517,7 +343,7 @@ func (x *ListCredentialsResponse) String() string {
 func (*ListCredentialsResponse) ProtoMessage() {}
 
 func (x *ListCredentialsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_principal_v1_principal_proto_msgTypes[8]
+	mi := &file_principal_v1_principal_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -530,7 +356,7 @@ func (x *ListCredentialsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCredentialsResponse.ProtoReflect.Descriptor instead.
 func (*ListCredentialsResponse) Descriptor() ([]byte, []int) {
-	return file_principal_v1_principal_proto_rawDescGZIP(), []int{8}
+	return file_principal_v1_principal_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ListCredentialsResponse) GetCredentials() []*Credential {
@@ -551,7 +377,7 @@ type RevokeCredentialRequest struct {
 
 func (x *RevokeCredentialRequest) Reset() {
 	*x = RevokeCredentialRequest{}
-	mi := &file_principal_v1_principal_proto_msgTypes[9]
+	mi := &file_principal_v1_principal_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -563,7 +389,7 @@ func (x *RevokeCredentialRequest) String() string {
 func (*RevokeCredentialRequest) ProtoMessage() {}
 
 func (x *RevokeCredentialRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_principal_v1_principal_proto_msgTypes[9]
+	mi := &file_principal_v1_principal_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -576,7 +402,7 @@ func (x *RevokeCredentialRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeCredentialRequest.ProtoReflect.Descriptor instead.
 func (*RevokeCredentialRequest) Descriptor() ([]byte, []int) {
-	return file_principal_v1_principal_proto_rawDescGZIP(), []int{9}
+	return file_principal_v1_principal_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *RevokeCredentialRequest) GetPrincipalId() string {
@@ -594,7 +420,7 @@ type RevokeCredentialResponse struct {
 
 func (x *RevokeCredentialResponse) Reset() {
 	*x = RevokeCredentialResponse{}
-	mi := &file_principal_v1_principal_proto_msgTypes[10]
+	mi := &file_principal_v1_principal_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -606,7 +432,7 @@ func (x *RevokeCredentialResponse) String() string {
 func (*RevokeCredentialResponse) ProtoMessage() {}
 
 func (x *RevokeCredentialResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_principal_v1_principal_proto_msgTypes[10]
+	mi := &file_principal_v1_principal_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -619,25 +445,18 @@ func (x *RevokeCredentialResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeCredentialResponse.ProtoReflect.Descriptor instead.
 func (*RevokeCredentialResponse) Descriptor() ([]byte, []int) {
-	return file_principal_v1_principal_proto_rawDescGZIP(), []int{10}
+	return file_principal_v1_principal_proto_rawDescGZIP(), []int{6}
 }
 
 var File_principal_v1_principal_proto protoreflect.FileDescriptor
 
 const file_principal_v1_principal_proto_rawDesc = "" +
 	"\n" +
-	"\x1cprincipal/v1/principal.proto\x12\fprincipal.v1\x1a\x1cgoogle/api/annotations.proto\"7\n" +
-	"\x13GetPublicKeyRequest\x12 \n" +
-	"\vfingerprint\x18\x01 \x01(\tR\vfingerprint\"u\n" +
-	"\x14GetPublicKeyResponse\x12 \n" +
-	"\vfingerprint\x18\x01 \x01(\tR\vfingerprint\x12$\n" +
-	"\x0epublic_key_pem\x18\x02 \x01(\tR\fpublicKeyPem\x12\x15\n" +
-	"\x06org_id\x18\x03 \x01(\tR\x05orgId\"\x1e\n" +
-	"\x1cListRevokedPrincipalsRequest\"C\n" +
-	"\x1dListRevokedPrincipalsResponse\x12\"\n" +
-	"\ffingerprints\x18\x01 \x03(\tR\ffingerprints\"-\n" +
+	"\x1cprincipal/v1/principal.proto\x12\fprincipal.v1\"u\n" +
 	"\x17ImportCredentialRequest\x12\x12\n" +
-	"\x04blob\x18\x01 \x01(\tR\x04blob\"\xa0\x01\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12$\n" +
+	"\x0epublic_key_pem\x18\x02 \x01(\tR\fpublicKeyPem\x12 \n" +
+	"\vdescription\x18\x03 \x01(\tR\vdescription\"\xa0\x01\n" +
 	"\x18ImportCredentialResponse\x12!\n" +
 	"\fprincipal_id\x18\x01 \x01(\tR\vprincipalId\x12\x15\n" +
 	"\x06org_id\x18\x02 \x01(\tR\x05orgId\x12\x14\n" +
@@ -662,10 +481,7 @@ const file_principal_v1_principal_proto_rawDesc = "" +
 	"\vcredentials\x18\x01 \x03(\v2\x18.principal.v1.CredentialR\vcredentials\"<\n" +
 	"\x17RevokeCredentialRequest\x12!\n" +
 	"\fprincipal_id\x18\x01 \x01(\tR\vprincipalId\"\x1a\n" +
-	"\x18RevokeCredentialResponse2\xe5\x01\n" +
-	"\x10PrincipalService\x12Z\n" +
-	"\fGetPublicKey\x12!.principal.v1.GetPublicKeyRequest\x1a\".principal.v1.GetPublicKeyResponse\"\x03\x90\x02\x01\x12u\n" +
-	"\x15ListRevokedPrincipals\x12*.principal.v1.ListRevokedPrincipalsRequest\x1a+.principal.v1.ListRevokedPrincipalsResponse\"\x03\x90\x02\x012\xc2\x02\n" +
+	"\x18RevokeCredentialResponse2\xc2\x02\n" +
 	"\x11CredentialService\x12c\n" +
 	"\x10ImportCredential\x12%.principal.v1.ImportCredentialRequest\x1a&.principal.v1.ImportCredentialResponse\"\x00\x12c\n" +
 	"\x0fListCredentials\x12$.principal.v1.ListCredentialsRequest\x1a%.principal.v1.ListCredentialsResponse\"\x03\x90\x02\x01\x12c\n" +
@@ -684,37 +500,29 @@ func file_principal_v1_principal_proto_rawDescGZIP() []byte {
 	return file_principal_v1_principal_proto_rawDescData
 }
 
-var file_principal_v1_principal_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_principal_v1_principal_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_principal_v1_principal_proto_goTypes = []any{
-	(*GetPublicKeyRequest)(nil),           // 0: principal.v1.GetPublicKeyRequest
-	(*GetPublicKeyResponse)(nil),          // 1: principal.v1.GetPublicKeyResponse
-	(*ListRevokedPrincipalsRequest)(nil),  // 2: principal.v1.ListRevokedPrincipalsRequest
-	(*ListRevokedPrincipalsResponse)(nil), // 3: principal.v1.ListRevokedPrincipalsResponse
-	(*ImportCredentialRequest)(nil),       // 4: principal.v1.ImportCredentialRequest
-	(*ImportCredentialResponse)(nil),      // 5: principal.v1.ImportCredentialResponse
-	(*ListCredentialsRequest)(nil),        // 6: principal.v1.ListCredentialsRequest
-	(*Credential)(nil),                    // 7: principal.v1.Credential
-	(*ListCredentialsResponse)(nil),       // 8: principal.v1.ListCredentialsResponse
-	(*RevokeCredentialRequest)(nil),       // 9: principal.v1.RevokeCredentialRequest
-	(*RevokeCredentialResponse)(nil),      // 10: principal.v1.RevokeCredentialResponse
+	(*ImportCredentialRequest)(nil),  // 0: principal.v1.ImportCredentialRequest
+	(*ImportCredentialResponse)(nil), // 1: principal.v1.ImportCredentialResponse
+	(*ListCredentialsRequest)(nil),   // 2: principal.v1.ListCredentialsRequest
+	(*Credential)(nil),               // 3: principal.v1.Credential
+	(*ListCredentialsResponse)(nil),  // 4: principal.v1.ListCredentialsResponse
+	(*RevokeCredentialRequest)(nil),  // 5: principal.v1.RevokeCredentialRequest
+	(*RevokeCredentialResponse)(nil), // 6: principal.v1.RevokeCredentialResponse
 }
 var file_principal_v1_principal_proto_depIdxs = []int32{
-	7,  // 0: principal.v1.ListCredentialsResponse.credentials:type_name -> principal.v1.Credential
-	0,  // 1: principal.v1.PrincipalService.GetPublicKey:input_type -> principal.v1.GetPublicKeyRequest
-	2,  // 2: principal.v1.PrincipalService.ListRevokedPrincipals:input_type -> principal.v1.ListRevokedPrincipalsRequest
-	4,  // 3: principal.v1.CredentialService.ImportCredential:input_type -> principal.v1.ImportCredentialRequest
-	6,  // 4: principal.v1.CredentialService.ListCredentials:input_type -> principal.v1.ListCredentialsRequest
-	9,  // 5: principal.v1.CredentialService.RevokeCredential:input_type -> principal.v1.RevokeCredentialRequest
-	1,  // 6: principal.v1.PrincipalService.GetPublicKey:output_type -> principal.v1.GetPublicKeyResponse
-	3,  // 7: principal.v1.PrincipalService.ListRevokedPrincipals:output_type -> principal.v1.ListRevokedPrincipalsResponse
-	5,  // 8: principal.v1.CredentialService.ImportCredential:output_type -> principal.v1.ImportCredentialResponse
-	8,  // 9: principal.v1.CredentialService.ListCredentials:output_type -> principal.v1.ListCredentialsResponse
-	10, // 10: principal.v1.CredentialService.RevokeCredential:output_type -> principal.v1.RevokeCredentialResponse
-	6,  // [6:11] is the sub-list for method output_type
-	1,  // [1:6] is the sub-list for method input_type
-	1,  // [1:1] is the sub-list for extension type_name
-	1,  // [1:1] is the sub-list for extension extendee
-	0,  // [0:1] is the sub-list for field type_name
+	3, // 0: principal.v1.ListCredentialsResponse.credentials:type_name -> principal.v1.Credential
+	0, // 1: principal.v1.CredentialService.ImportCredential:input_type -> principal.v1.ImportCredentialRequest
+	2, // 2: principal.v1.CredentialService.ListCredentials:input_type -> principal.v1.ListCredentialsRequest
+	5, // 3: principal.v1.CredentialService.RevokeCredential:input_type -> principal.v1.RevokeCredentialRequest
+	1, // 4: principal.v1.CredentialService.ImportCredential:output_type -> principal.v1.ImportCredentialResponse
+	4, // 5: principal.v1.CredentialService.ListCredentials:output_type -> principal.v1.ListCredentialsResponse
+	6, // 6: principal.v1.CredentialService.RevokeCredential:output_type -> principal.v1.RevokeCredentialResponse
+	4, // [4:7] is the sub-list for method output_type
+	1, // [1:4] is the sub-list for method input_type
+	1, // [1:1] is the sub-list for extension type_name
+	1, // [1:1] is the sub-list for extension extendee
+	0, // [0:1] is the sub-list for field type_name
 }
 
 func init() { file_principal_v1_principal_proto_init() }
@@ -728,9 +536,9 @@ func file_principal_v1_principal_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_principal_v1_principal_proto_rawDesc), len(file_principal_v1_principal_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   11,
+			NumMessages:   7,
 			NumExtensions: 0,
-			NumServices:   2,
+			NumServices:   1,
 		},
 		GoTypes:           file_principal_v1_principal_proto_goTypes,
 		DependencyIndexes: file_principal_v1_principal_proto_depIdxs,

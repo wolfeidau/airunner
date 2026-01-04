@@ -35,7 +35,7 @@ func addJitter(base time.Duration, jitterFactor float64) time.Duration {
 }
 
 type WorkerCmd struct {
-	Server            string        `help:"Server URL" default:"https://localhost:8993"`
+	Server            string        `help:"Server URL" default:"https://localhost"`
 	Queue             string        `help:"Queue name to process" default:"default"`
 	ClientTimeout     time.Duration `help:"Client timeout in seconds" default:"5m"`
 	VisibilityTimeout int32         `help:"Visibility timeout in seconds" default:"300"`

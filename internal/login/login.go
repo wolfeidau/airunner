@@ -73,9 +73,10 @@ type SessionData struct {
 	SessionID   uuid.UUID
 	PrincipalID uuid.UUID
 	OrgID       uuid.UUID
-	Name        string // Display name from principal
-	Email       string // Email from principal
-	AvatarURL   string // Avatar URL from principal
+	Name        string   // Display name from principal
+	Email       string   // Email from principal
+	AvatarURL   string   // Avatar URL from principal
+	Roles       []string // Roles from principal
 	CreatedAt   time.Time
 	ExpiresAt   time.Time
 }
@@ -121,6 +122,7 @@ func (g *Github) GetSession(r *http.Request) (*SessionData, error) {
 		PrincipalID: session.PrincipalID,
 		OrgID:       session.OrgID,
 		Name:        principal.Name,
+		Roles:       principal.Roles,
 		CreatedAt:   session.CreatedAt,
 		ExpiresAt:   session.ExpiresAt,
 	}
@@ -531,4 +533,30 @@ type UserInfo struct {
 	Email     string `json:"email"`
 	Name      string `json:"name"`
 	AvatarURL string `json:"avatar_url"` // GitHub avatar URL
+}
+
+// GetSessionData implements auth.SessionProvider interface.
+// It extracts and validates the session from a request, returning
+// the data needed for authentication context.
+func (g *Github) GetSessionData(r *http.Request) (*SessionDataForAuth, error) {
+	session, err := g.GetSession(r)
+	if err != nil {
+		return nil, err
+	}
+
+	return &SessionDataForAuth{
+		SessionID:   session.SessionID,
+		PrincipalID: session.PrincipalID,
+		OrgID:       session.OrgID,
+		Roles:       session.Roles,
+	}, nil
+}
+
+// SessionDataForAuth contains only the fields needed for authentication.
+// This is used by the session auth interceptor.
+type SessionDataForAuth struct {
+	SessionID   uuid.UUID
+	PrincipalID uuid.UUID
+	OrgID       uuid.UUID
+	Roles       []string
 }

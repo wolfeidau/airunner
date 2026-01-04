@@ -32,7 +32,7 @@ proto-install: ## Install protoc-gen-go and protoc-gen-connect-go
 
 .PHONY: proto-generate
 proto-generate: ## Generate Go code from proto files
-	cd api && buf generate
+	cd api && bunx @bufbuild/buf generate
 
 .PHONY: proto-lint
 proto-lint: ## Lint protocol buffer files

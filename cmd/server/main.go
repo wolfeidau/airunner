@@ -10,10 +10,9 @@ import (
 var (
 	version = "dev"
 	cli     struct {
-		Debug     bool `help:"Enable debug mode."`
-		Version   kong.VersionFlag
-		RPCServer commands.RPCServerCmd `cmd:"" help:"Start the RPC server"`
-		Website   commands.WebsiteCmd   `cmd:"" help:"Start the website server"`
+		Debug   bool `help:"Enable debug mode."`
+		Version kong.VersionFlag
+		Server  commands.WebsiteCmd `cmd:"" help:"Start the server (website + API)"`
 	}
 )
 

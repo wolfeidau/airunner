@@ -17,9 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
-	principalv1connect "github.com/wolfeidau/airunner/api/gen/proto/go/principal/v1/principalv1connect"
 	"github.com/wolfeidau/airunner/internal/models"
-	"github.com/wolfeidau/airunner/internal/server"
 	"github.com/wolfeidau/airunner/internal/store/postgres"
 	"github.com/wolfeidau/airunner/internal/website/oidc"
 )
@@ -317,15 +315,8 @@ func TestIntegration_JWTVerification(t *testing.T) {
 	httpClient := &http.Client{Timeout: 5 * time.Second}
 	publicKeyCache := NewPublicKeyCache(principalStore, httpClient)
 
-	principalServiceServer := server.NewPrincipalServiceServer(principalStore)
-	principalServiceMux := http.NewServeMux()
-	path, svcHandler := principalv1connect.NewPrincipalServiceHandler(principalServiceServer)
-	principalServiceMux.Handle(path, svcHandler)
-	principalServiceTestServer := httptest.NewServer(principalServiceMux)
-	defer principalServiceTestServer.Close()
-
-	principalClient := principalv1connect.NewPrincipalServiceClient(httpClient, principalServiceTestServer.URL)
-	revocationChecker := NewRevocationChecker(ctx, principalClient, 1*time.Minute)
+	// Create revocation checker using local store (not RPC)
+	revocationChecker := NewRevocationChecker(ctx, principalStore, 1*time.Minute)
 	defer revocationChecker.Stop()
 
 	// Create JWT verifier with test server URL
@@ -446,15 +437,8 @@ func TestIntegration_EndToEndFlow(t *testing.T) {
 	httpClient := &http.Client{Timeout: 5 * time.Second}
 	publicKeyCache := NewPublicKeyCache(principalStore, httpClient)
 
-	principalServiceServer := server.NewPrincipalServiceServer(principalStore)
-	principalServiceMux := http.NewServeMux()
-	path, svcHandler := principalv1connect.NewPrincipalServiceHandler(principalServiceServer)
-	principalServiceMux.Handle(path, svcHandler)
-	principalServiceTestServer := httptest.NewServer(principalServiceMux)
-	defer principalServiceTestServer.Close()
-
-	principalClient := principalv1connect.NewPrincipalServiceClient(httpClient, principalServiceTestServer.URL)
-	revocationChecker := NewRevocationChecker(ctx, principalClient, 1*time.Minute)
+	// Create revocation checker using local store (not RPC)
+	revocationChecker := NewRevocationChecker(ctx, principalStore, 1*time.Minute)
 	defer revocationChecker.Stop()
 
 	// Create JWT verifier and set website URL to match the test server

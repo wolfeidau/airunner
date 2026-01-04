@@ -16,7 +16,7 @@ import (
 )
 
 type MonitorCmd struct {
-	Server        string            `help:"Server URL" default:"https://localhost:8993"`
+	Server        string            `help:"Server URL" default:"https://localhost"`
 	JobID         string            `arg:"" help:"Job ID to monitor"`
 	FromSequence  int64             `help:"Start from sequence number" default:"0"`
 	FromTimestamp int64             `help:"Start from timestamp" default:"0"`

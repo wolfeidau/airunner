@@ -2,32 +2,14 @@ syntax = "proto3";
 
 package principal.v1;
 
-import "google/api/annotations.proto";
-
-// PrincipalService provides public key lookup and revocation info
-// for API servers to verify worker JWTs.
-// These endpoints are PUBLIC (no auth required) for MVP.
-service PrincipalService {
-  // GetPublicKey fetches a worker's public key by fingerprint.
-  // Used by API server to verify worker JWTs (cached via HTTP).
-  // This RPC is idempotent and cacheable - uses HTTP GET for better caching.
-  rpc GetPublicKey(GetPublicKeyRequest) returns (GetPublicKeyResponse) {
-    option idempotency_level = NO_SIDE_EFFECTS;
-  }
-
-  // ListRevokedPrincipals returns all currently revoked fingerprints.
-  // Used by API server to maintain revocation blocklist (polled every 5 min).
-  // This RPC is idempotent and cacheable - uses HTTP GET for better caching.
-  rpc ListRevokedPrincipals(ListRevokedPrincipalsRequest) returns (ListRevokedPrincipalsResponse) {
-    option idempotency_level = NO_SIDE_EFFECTS;
-  }
-}
-
-// CredentialService provides credential management for web UI.
-// These endpoints require authentication (session-based).
+// CredentialService provides credential management for web UI and CLI.
+// Authentication is handled differently per server:
+// - Website: session-based (cookie) authentication
+// - RPC Server: JWT-based authentication
 service CredentialService {
-  // ImportCredential imports a worker credential from a base58-encoded blob.
+  // ImportCredential imports a worker credential from a PEM-encoded public key.
   // Creates a new worker principal and stores the public key.
+  // Requires admin role.
   rpc ImportCredential(ImportCredentialRequest) returns (ImportCredentialResponse) {}
 
   // ListCredentials returns all credentials (principals) for the current user's org.
@@ -37,42 +19,21 @@ service CredentialService {
   }
 
   // RevokeCredential revokes a credential by principal ID.
-  // Adds fingerprint to revocation list and soft-deletes principal.
+  // Soft-deletes the principal and adds fingerprint to revocation list.
+  // Requires admin role.
   rpc RevokeCredential(RevokeCredentialRequest) returns (RevokeCredentialResponse) {}
-}
-
-// GetPublicKey messages
-message GetPublicKeyRequest {
-  // Base58-encoded fingerprint of the public key
-  string fingerprint = 1;
-}
-
-message GetPublicKeyResponse {
-  // Base58-encoded fingerprint (echoed from request)
-  string fingerprint = 1;
-
-  // PEM-encoded ECDSA P-256 public key
-  string public_key_pem = 2;
-
-  // Organization ID (UUIDv7 as string)
-  string org_id = 3;
-}
-
-// ListRevokedPrincipals messages
-message ListRevokedPrincipalsRequest {
-  // Empty for MVP
-  // Future: pagination, since timestamp, etc.
-}
-
-message ListRevokedPrincipalsResponse {
-  // List of revoked fingerprints (base58-encoded)
-  repeated string fingerprints = 1;
 }
 
 // ImportCredential messages
 message ImportCredentialRequest {
-  // Base58-encoded credential blob containing public key and metadata
-  string blob = 1;
+  // Display name for the credential
+  string name = 1;
+
+  // PEM-encoded ECDSA P-256 public key
+  string public_key_pem = 2;
+
+  // Optional description
+  string description = 3;
 }
 
 message ImportCredentialResponse {
@@ -88,7 +49,7 @@ message ImportCredentialResponse {
   // Base58-encoded fingerprint
   string fingerprint = 4;
 
-  // Credential name from blob
+  // Credential name
   string name = 5;
 }
 

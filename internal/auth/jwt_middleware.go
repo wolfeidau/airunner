@@ -38,6 +38,12 @@ func PrincipalFromContext(ctx context.Context) *Principal {
 	return principal
 }
 
+// WithPrincipal adds a principal to the context.
+// This is used by both JWT middleware and session middleware.
+func WithPrincipal(ctx context.Context, principal *Principal) context.Context {
+	return context.WithValue(ctx, principalContextKey, principal)
+}
+
 // PublicKeyCache provides access to public keys for JWT verification.
 // The cache fetches website public keys from JWKS endpoints and worker public keys from the database.
 type PublicKeyCache interface {
@@ -80,6 +86,60 @@ func NewJWTVerifier(
 // This is useful in tests where the URL is only known after creating an httptest.Server.
 func (v *JWTVerifier) SetWebsiteURL(url string) {
 	v.websiteBaseURL = url
+}
+
+// VerifyRequest extracts and verifies a JWT from an HTTP request.
+// Returns the authenticated principal or an error.
+// This is used by DualAuthMiddleware to try JWT auth without taking over the response.
+func (v *JWTVerifier) VerifyRequest(r *http.Request) (*Principal, error) {
+	tokenString := extractBearerToken(r)
+	if tokenString == "" {
+		return nil, errors.New("missing bearer token")
+	}
+
+	ctx := r.Context()
+
+	// Parse JWT header and claims (without verification)
+	token, err := jwt.Parse(tokenString, nil)
+	if err != nil && !errors.Is(err, jwt.ErrTokenUnverifiable) {
+		return nil, fmt.Errorf("failed to parse JWT: %w", err)
+	}
+
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		return nil, errors.New("invalid JWT claims")
+	}
+
+	issuer, ok := claims["iss"].(string)
+	if !ok || issuer == "" {
+		return nil, errors.New("missing JWT issuer")
+	}
+
+	kid, ok := token.Header["kid"].(string)
+	if !ok || kid == "" {
+		return nil, errors.New("missing JWT kid")
+	}
+
+	// Route based on issuer
+	switch issuer {
+	case v.websiteBaseURL:
+		// User JWT (signed by website)
+		return verifyUserJWT(ctx, tokenString, v.websiteBaseURL, kid, v.publicKeyCache)
+
+	case "airunner-cli", "airunner-worker":
+		// Worker JWT (self-signed)
+		fingerprint := kid
+
+		// Check revocation list FIRST
+		if v.revocationChecker.IsRevoked(ctx, fingerprint) {
+			return nil, errors.New("credential revoked")
+		}
+
+		return verifyWorkerJWT(ctx, tokenString, fingerprint, v.publicKeyCache)
+
+	default:
+		return nil, fmt.Errorf("unknown JWT issuer: %s", issuer)
+	}
 }
 
 // Middleware returns an HTTP middleware that verifies JWTs.

@@ -4,46 +4,26 @@
 
 import type { GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
 import { fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
-import { file_google_api_annotations } from "../../google/api/annotations_pb";
 import type { Message } from "@bufbuild/protobuf";
 
 /**
  * Describes the file principal/v1/principal.proto.
  */
 export const file_principal_v1_principal: GenFile = /*@__PURE__*/
-  fileDesc("ChxwcmluY2lwYWwvdjEvcHJpbmNpcGFsLnByb3RvEgxwcmluY2lwYWwudjEiKgoTR2V0UHVibGljS2V5UmVxdWVzdBITCgtmaW5nZXJwcmludBgBIAEoCSJTChRHZXRQdWJsaWNLZXlSZXNwb25zZRITCgtmaW5nZXJwcmludBgBIAEoCRIWCg5wdWJsaWNfa2V5X3BlbRgCIAEoCRIOCgZvcmdfaWQYAyABKAkiHgocTGlzdFJldm9rZWRQcmluY2lwYWxzUmVxdWVzdCI1Ch1MaXN0UmV2b2tlZFByaW5jaXBhbHNSZXNwb25zZRIUCgxmaW5nZXJwcmludHMYASADKAkiJwoXSW1wb3J0Q3JlZGVudGlhbFJlcXVlc3QSDAoEYmxvYhgBIAEoCSJyChhJbXBvcnRDcmVkZW50aWFsUmVzcG9uc2USFAoMcHJpbmNpcGFsX2lkGAEgASgJEg4KBm9yZ19pZBgCIAEoCRINCgVyb2xlcxgDIAMoCRITCgtmaW5nZXJwcmludBgEIAEoCRIMCgRuYW1lGAUgASgJIjAKFkxpc3RDcmVkZW50aWFsc1JlcXVlc3QSFgoOcHJpbmNpcGFsX3R5cGUYASABKAkinAEKCkNyZWRlbnRpYWwSFAoMcHJpbmNpcGFsX2lkGAEgASgJEg4KBm9yZ19pZBgCIAEoCRIMCgR0eXBlGAMgASgJEgwKBG5hbWUYBCABKAkSEwoLZmluZ2VycHJpbnQYBSABKAkSDQoFcm9sZXMYBiADKAkSEgoKY3JlYXRlZF9hdBgHIAEoCRIUCgxsYXN0X3VzZWRfYXQYCCABKAkiSAoXTGlzdENyZWRlbnRpYWxzUmVzcG9uc2USLQoLY3JlZGVudGlhbHMYASADKAsyGC5wcmluY2lwYWwudjEuQ3JlZGVudGlhbCIvChdSZXZva2VDcmVkZW50aWFsUmVxdWVzdBIUCgxwcmluY2lwYWxfaWQYASABKAkiGgoYUmV2b2tlQ3JlZGVudGlhbFJlc3BvbnNlMuUBChBQcmluY2lwYWxTZXJ2aWNlEloKDEdldFB1YmxpY0tleRIhLnByaW5jaXBhbC52MS5HZXRQdWJsaWNLZXlSZXF1ZXN0GiIucHJpbmNpcGFsLnYxLkdldFB1YmxpY0tleVJlc3BvbnNlIgOQAgESdQoVTGlzdFJldm9rZWRQcmluY2lwYWxzEioucHJpbmNpcGFsLnYxLkxpc3RSZXZva2VkUHJpbmNpcGFsc1JlcXVlc3QaKy5wcmluY2lwYWwudjEuTGlzdFJldm9rZWRQcmluY2lwYWxzUmVzcG9uc2UiA5ACATLCAgoRQ3JlZGVudGlhbFNlcnZpY2USYwoQSW1wb3J0Q3JlZGVudGlhbBIlLnByaW5jaXBhbC52MS5JbXBvcnRDcmVkZW50aWFsUmVxdWVzdBomLnByaW5jaXBhbC52MS5JbXBvcnRDcmVkZW50aWFsUmVzcG9uc2UiABJjCg9MaXN0Q3JlZGVudGlhbHMSJC5wcmluY2lwYWwudjEuTGlzdENyZWRlbnRpYWxzUmVxdWVzdBolLnByaW5jaXBhbC52MS5MaXN0Q3JlZGVudGlhbHNSZXNwb25zZSIDkAIBEmMKEFJldm9rZUNyZWRlbnRpYWwSJS5wcmluY2lwYWwudjEuUmV2b2tlQ3JlZGVudGlhbFJlcXVlc3QaJi5wcmluY2lwYWwudjEuUmV2b2tlQ3JlZGVudGlhbFJlc3BvbnNlIgBCvAEKEGNvbS5wcmluY2lwYWwudjFCDlByaW5jaXBhbFByb3RvUAFaR2dpdGh1Yi5jb20vd29sZmVpZGF1L2FpcnVubmVyL2FwaS9nZW4vcHJvdG8vZ28vcHJpbmNpcGFsL3YxO3ByaW5jaXBhbHYxogIDUFhYqgIMUHJpbmNpcGFsLlYxygIMUHJpbmNpcGFsXFYx4gIYUHJpbmNpcGFsXFYxXEdQQk1ldGFkYXRh6gINUHJpbmNpcGFsOjpWMWIGcHJvdG8z", [file_google_api_annotations]);
+  fileDesc("ChxwcmluY2lwYWwvdjEvcHJpbmNpcGFsLnByb3RvEgxwcmluY2lwYWwudjEiVAoXSW1wb3J0Q3JlZGVudGlhbFJlcXVlc3QSDAoEbmFtZRgBIAEoCRIWCg5wdWJsaWNfa2V5X3BlbRgCIAEoCRITCgtkZXNjcmlwdGlvbhgDIAEoCSJyChhJbXBvcnRDcmVkZW50aWFsUmVzcG9uc2USFAoMcHJpbmNpcGFsX2lkGAEgASgJEg4KBm9yZ19pZBgCIAEoCRINCgVyb2xlcxgDIAMoCRITCgtmaW5nZXJwcmludBgEIAEoCRIMCgRuYW1lGAUgASgJIjAKFkxpc3RDcmVkZW50aWFsc1JlcXVlc3QSFgoOcHJpbmNpcGFsX3R5cGUYASABKAkinAEKCkNyZWRlbnRpYWwSFAoMcHJpbmNpcGFsX2lkGAEgASgJEg4KBm9yZ19pZBgCIAEoCRIMCgR0eXBlGAMgASgJEgwKBG5hbWUYBCABKAkSEwoLZmluZ2VycHJpbnQYBSABKAkSDQoFcm9sZXMYBiADKAkSEgoKY3JlYXRlZF9hdBgHIAEoCRIUCgxsYXN0X3VzZWRfYXQYCCABKAkiSAoXTGlzdENyZWRlbnRpYWxzUmVzcG9uc2USLQoLY3JlZGVudGlhbHMYASADKAsyGC5wcmluY2lwYWwudjEuQ3JlZGVudGlhbCIvChdSZXZva2VDcmVkZW50aWFsUmVxdWVzdBIUCgxwcmluY2lwYWxfaWQYASABKAkiGgoYUmV2b2tlQ3JlZGVudGlhbFJlc3BvbnNlMsICChFDcmVkZW50aWFsU2VydmljZRJjChBJbXBvcnRDcmVkZW50aWFsEiUucHJpbmNpcGFsLnYxLkltcG9ydENyZWRlbnRpYWxSZXF1ZXN0GiYucHJpbmNpcGFsLnYxLkltcG9ydENyZWRlbnRpYWxSZXNwb25zZSIAEmMKD0xpc3RDcmVkZW50aWFscxIkLnByaW5jaXBhbC52MS5MaXN0Q3JlZGVudGlhbHNSZXF1ZXN0GiUucHJpbmNpcGFsLnYxLkxpc3RDcmVkZW50aWFsc1Jlc3BvbnNlIgOQAgESYwoQUmV2b2tlQ3JlZGVudGlhbBIlLnByaW5jaXBhbC52MS5SZXZva2VDcmVkZW50aWFsUmVxdWVzdBomLnByaW5jaXBhbC52MS5SZXZva2VDcmVkZW50aWFsUmVzcG9uc2UiAEK8AQoQY29tLnByaW5jaXBhbC52MUIOUHJpbmNpcGFsUHJvdG9QAVpHZ2l0aHViLmNvbS93b2xmZWlkYXUvYWlydW5uZXIvYXBpL2dlbi9wcm90by9nby9wcmluY2lwYWwvdjE7cHJpbmNpcGFsdjGiAgNQWFiqAgxQcmluY2lwYWwuVjHKAgxQcmluY2lwYWxcVjHiAhhQcmluY2lwYWxcVjFcR1BCTWV0YWRhdGHqAg1QcmluY2lwYWw6OlYxYgZwcm90bzM");
 
 /**
- * GetPublicKey messages
+ * ImportCredential messages
  *
- * @generated from message principal.v1.GetPublicKeyRequest
+ * @generated from message principal.v1.ImportCredentialRequest
  */
-export type GetPublicKeyRequest = Message<"principal.v1.GetPublicKeyRequest"> & {
+export type ImportCredentialRequest = Message<"principal.v1.ImportCredentialRequest"> & {
   /**
-   * Base58-encoded fingerprint of the public key
+   * Display name for the credential
    *
-   * @generated from field: string fingerprint = 1;
+   * @generated from field: string name = 1;
    */
-  fingerprint: string;
-};
-
-/**
- * Describes the message principal.v1.GetPublicKeyRequest.
- * Use `create(GetPublicKeyRequestSchema)` to create a new message.
- */
-export const GetPublicKeyRequestSchema: GenMessage<GetPublicKeyRequest> = /*@__PURE__*/
-  messageDesc(file_principal_v1_principal, 0);
-
-/**
- * @generated from message principal.v1.GetPublicKeyResponse
- */
-export type GetPublicKeyResponse = Message<"principal.v1.GetPublicKeyResponse"> & {
-  /**
-   * Base58-encoded fingerprint (echoed from request)
-   *
-   * @generated from field: string fingerprint = 1;
-   */
-  fingerprint: string;
+  name: string;
 
   /**
    * PEM-encoded ECDSA P-256 public key
@@ -53,69 +33,11 @@ export type GetPublicKeyResponse = Message<"principal.v1.GetPublicKeyResponse"> 
   publicKeyPem: string;
 
   /**
-   * Organization ID (UUIDv7 as string)
+   * Optional description
    *
-   * @generated from field: string org_id = 3;
+   * @generated from field: string description = 3;
    */
-  orgId: string;
-};
-
-/**
- * Describes the message principal.v1.GetPublicKeyResponse.
- * Use `create(GetPublicKeyResponseSchema)` to create a new message.
- */
-export const GetPublicKeyResponseSchema: GenMessage<GetPublicKeyResponse> = /*@__PURE__*/
-  messageDesc(file_principal_v1_principal, 1);
-
-/**
- * ListRevokedPrincipals messages
- *
- * Empty for MVP
- * Future: pagination, since timestamp, etc.
- *
- * @generated from message principal.v1.ListRevokedPrincipalsRequest
- */
-export type ListRevokedPrincipalsRequest = Message<"principal.v1.ListRevokedPrincipalsRequest"> & {
-};
-
-/**
- * Describes the message principal.v1.ListRevokedPrincipalsRequest.
- * Use `create(ListRevokedPrincipalsRequestSchema)` to create a new message.
- */
-export const ListRevokedPrincipalsRequestSchema: GenMessage<ListRevokedPrincipalsRequest> = /*@__PURE__*/
-  messageDesc(file_principal_v1_principal, 2);
-
-/**
- * @generated from message principal.v1.ListRevokedPrincipalsResponse
- */
-export type ListRevokedPrincipalsResponse = Message<"principal.v1.ListRevokedPrincipalsResponse"> & {
-  /**
-   * List of revoked fingerprints (base58-encoded)
-   *
-   * @generated from field: repeated string fingerprints = 1;
-   */
-  fingerprints: string[];
-};
-
-/**
- * Describes the message principal.v1.ListRevokedPrincipalsResponse.
- * Use `create(ListRevokedPrincipalsResponseSchema)` to create a new message.
- */
-export const ListRevokedPrincipalsResponseSchema: GenMessage<ListRevokedPrincipalsResponse> = /*@__PURE__*/
-  messageDesc(file_principal_v1_principal, 3);
-
-/**
- * ImportCredential messages
- *
- * @generated from message principal.v1.ImportCredentialRequest
- */
-export type ImportCredentialRequest = Message<"principal.v1.ImportCredentialRequest"> & {
-  /**
-   * Base58-encoded credential blob containing public key and metadata
-   *
-   * @generated from field: string blob = 1;
-   */
-  blob: string;
+  description: string;
 };
 
 /**
@@ -123,7 +45,7 @@ export type ImportCredentialRequest = Message<"principal.v1.ImportCredentialRequ
  * Use `create(ImportCredentialRequestSchema)` to create a new message.
  */
 export const ImportCredentialRequestSchema: GenMessage<ImportCredentialRequest> = /*@__PURE__*/
-  messageDesc(file_principal_v1_principal, 4);
+  messageDesc(file_principal_v1_principal, 0);
 
 /**
  * @generated from message principal.v1.ImportCredentialResponse
@@ -158,7 +80,7 @@ export type ImportCredentialResponse = Message<"principal.v1.ImportCredentialRes
   fingerprint: string;
 
   /**
-   * Credential name from blob
+   * Credential name
    *
    * @generated from field: string name = 5;
    */
@@ -170,7 +92,7 @@ export type ImportCredentialResponse = Message<"principal.v1.ImportCredentialRes
  * Use `create(ImportCredentialResponseSchema)` to create a new message.
  */
 export const ImportCredentialResponseSchema: GenMessage<ImportCredentialResponse> = /*@__PURE__*/
-  messageDesc(file_principal_v1_principal, 5);
+  messageDesc(file_principal_v1_principal, 1);
 
 /**
  * ListCredentials messages
@@ -192,7 +114,7 @@ export type ListCredentialsRequest = Message<"principal.v1.ListCredentialsReques
  * Use `create(ListCredentialsRequestSchema)` to create a new message.
  */
 export const ListCredentialsRequestSchema: GenMessage<ListCredentialsRequest> = /*@__PURE__*/
-  messageDesc(file_principal_v1_principal, 6);
+  messageDesc(file_principal_v1_principal, 2);
 
 /**
  * @generated from message principal.v1.Credential
@@ -260,7 +182,7 @@ export type Credential = Message<"principal.v1.Credential"> & {
  * Use `create(CredentialSchema)` to create a new message.
  */
 export const CredentialSchema: GenMessage<Credential> = /*@__PURE__*/
-  messageDesc(file_principal_v1_principal, 7);
+  messageDesc(file_principal_v1_principal, 3);
 
 /**
  * @generated from message principal.v1.ListCredentialsResponse
@@ -279,7 +201,7 @@ export type ListCredentialsResponse = Message<"principal.v1.ListCredentialsRespo
  * Use `create(ListCredentialsResponseSchema)` to create a new message.
  */
 export const ListCredentialsResponseSchema: GenMessage<ListCredentialsResponse> = /*@__PURE__*/
-  messageDesc(file_principal_v1_principal, 8);
+  messageDesc(file_principal_v1_principal, 4);
 
 /**
  * RevokeCredential messages
@@ -300,7 +222,7 @@ export type RevokeCredentialRequest = Message<"principal.v1.RevokeCredentialRequ
  * Use `create(RevokeCredentialRequestSchema)` to create a new message.
  */
 export const RevokeCredentialRequestSchema: GenMessage<RevokeCredentialRequest> = /*@__PURE__*/
-  messageDesc(file_principal_v1_principal, 9);
+  messageDesc(file_principal_v1_principal, 5);
 
 /**
  * Empty response (success indicated by no error)
@@ -315,53 +237,21 @@ export type RevokeCredentialResponse = Message<"principal.v1.RevokeCredentialRes
  * Use `create(RevokeCredentialResponseSchema)` to create a new message.
  */
 export const RevokeCredentialResponseSchema: GenMessage<RevokeCredentialResponse> = /*@__PURE__*/
-  messageDesc(file_principal_v1_principal, 10);
+  messageDesc(file_principal_v1_principal, 6);
 
 /**
- * PrincipalService provides public key lookup and revocation info
- * for API servers to verify worker JWTs.
- * These endpoints are PUBLIC (no auth required) for MVP.
- *
- * @generated from service principal.v1.PrincipalService
- */
-export const PrincipalService: GenService<{
-  /**
-   * GetPublicKey fetches a worker's public key by fingerprint.
-   * Used by API server to verify worker JWTs (cached via HTTP).
-   * This RPC is idempotent and cacheable - uses HTTP GET for better caching.
-   *
-   * @generated from rpc principal.v1.PrincipalService.GetPublicKey
-   */
-  getPublicKey: {
-    methodKind: "unary";
-    input: typeof GetPublicKeyRequestSchema;
-    output: typeof GetPublicKeyResponseSchema;
-  },
-  /**
-   * ListRevokedPrincipals returns all currently revoked fingerprints.
-   * Used by API server to maintain revocation blocklist (polled every 5 min).
-   * This RPC is idempotent and cacheable - uses HTTP GET for better caching.
-   *
-   * @generated from rpc principal.v1.PrincipalService.ListRevokedPrincipals
-   */
-  listRevokedPrincipals: {
-    methodKind: "unary";
-    input: typeof ListRevokedPrincipalsRequestSchema;
-    output: typeof ListRevokedPrincipalsResponseSchema;
-  },
-}> = /*@__PURE__*/
-  serviceDesc(file_principal_v1_principal, 0);
-
-/**
- * CredentialService provides credential management for web UI.
- * These endpoints require authentication (session-based).
+ * CredentialService provides credential management for web UI and CLI.
+ * Authentication is handled differently per server:
+ * - Website: session-based (cookie) authentication
+ * - RPC Server: JWT-based authentication
  *
  * @generated from service principal.v1.CredentialService
  */
 export const CredentialService: GenService<{
   /**
-   * ImportCredential imports a worker credential from a base58-encoded blob.
+   * ImportCredential imports a worker credential from a PEM-encoded public key.
    * Creates a new worker principal and stores the public key.
+   * Requires admin role.
    *
    * @generated from rpc principal.v1.CredentialService.ImportCredential
    */
@@ -383,7 +273,8 @@ export const CredentialService: GenService<{
   },
   /**
    * RevokeCredential revokes a credential by principal ID.
-   * Adds fingerprint to revocation list and soft-deletes principal.
+   * Soft-deletes the principal and adds fingerprint to revocation list.
+   * Requires admin role.
    *
    * @generated from rpc principal.v1.CredentialService.RevokeCredential
    */
@@ -393,5 +284,5 @@ export const CredentialService: GenService<{
     output: typeof RevokeCredentialResponseSchema;
   },
 }> = /*@__PURE__*/
-  serviceDesc(file_principal_v1_principal, 1);
+  serviceDesc(file_principal_v1_principal, 0);
 

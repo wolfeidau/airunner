@@ -5,14 +5,16 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/wolfeidau/airunner/api/gen/proto/go/job/v1/jobv1connect"
+	"github.com/wolfeidau/airunner/api/gen/proto/go/principal/v1/principalv1connect"
 	"github.com/wolfeidau/airunner/internal/store"
 )
 
 // Server wraps the HTTP server and job services
 type Server struct {
-	store       store.JobStore
-	jobServer   *JobServer
-	eventServer *JobEventServer
+	store            store.JobStore
+	jobServer        *JobServer
+	eventServer      *JobEventServer
+	credentialServer *CredentialServiceServer
 }
 
 // NewServer creates a new server with the given store
@@ -22,6 +24,12 @@ func NewServer(store store.JobStore) *Server {
 		jobServer:   NewJobServer(store),
 		eventServer: NewJobEventServer(store),
 	}
+}
+
+// WithCredentialService adds a credential service to the server.
+func (s *Server) WithCredentialService(credentialServer *CredentialServiceServer) *Server {
+	s.credentialServer = credentialServer
+	return s
 }
 
 // Handler returns the HTTP handler for the server
@@ -52,6 +60,17 @@ func (s *Server) Handler(otelInterceptor ...connect.Interceptor) http.Handler {
 		),
 	)
 	mux.Handle(eventsPath, eventsHandler)
+
+	// Register credential service if available
+	if s.credentialServer != nil {
+		credPath, credHandler := principalv1connect.NewCredentialServiceHandler(
+			s.credentialServer,
+			connect.WithInterceptors(
+				otelInterceptor...,
+			),
+		)
+		mux.Handle(credPath, credHandler)
+	}
 
 	return mux
 }

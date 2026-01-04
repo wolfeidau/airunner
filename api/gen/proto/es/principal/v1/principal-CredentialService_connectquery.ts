@@ -5,8 +5,9 @@
 import { CredentialService } from "./principal_pb";
 
 /**
- * ImportCredential imports a worker credential from a base58-encoded blob.
+ * ImportCredential imports a worker credential from a PEM-encoded public key.
  * Creates a new worker principal and stores the public key.
+ * Requires admin role.
  *
  * @generated from rpc principal.v1.CredentialService.ImportCredential
  */
@@ -22,7 +23,8 @@ export const listCredentials = CredentialService.method.listCredentials;
 
 /**
  * RevokeCredential revokes a credential by principal ID.
- * Adds fingerprint to revocation list and soft-deletes principal.
+ * Soft-deletes the principal and adds fingerprint to revocation list.
+ * Requires admin role.
  *
  * @generated from rpc principal.v1.CredentialService.RevokeCredential
  */

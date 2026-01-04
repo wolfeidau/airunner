@@ -15,9 +15,8 @@ import {
 } from "../../api/gen/proto/es/principal/v1/principal-CredentialService_connectquery";
 import { useMutation } from "@connectrpc/connect-query";
 import type { Credential } from "../../api/gen/proto/es/principal/v1/principal_pb";
+import { createConnectTransport } from "@connectrpc/connect-web";
 import { usePageContext } from "../lib/context";
-import { useToken } from "../lib/useToken";
-import { createAuthTransport } from "../lib/createAuthTransport";
 import {
   JobState,
   EventType,
@@ -995,68 +994,17 @@ function Dashboard() {
 
 const queryClient = new QueryClient();
 
-// App wrapper that manages token and provides authenticated transport
+// App wrapper that provides authenticated transport using session cookies
 function AppWithToken() {
-  const { token, isLoading: isTokenLoading, error: tokenError } = useToken();
-  const user = usePageContext();
-
-  // Create transport with auth token
+  // Create transport with session cookie authentication
   const transport = useMemo(
-    () => createAuthTransport(window.location.origin, token),
-    [token],
+    () =>
+      createConnectTransport({
+        baseUrl: window.location.origin,
+        credentials: "include", // Send session cookie with all requests
+      }),
+    [],
   );
-
-  // Show loading state while token is being fetched
-  if (isTokenLoading) {
-    return (
-      <div className="dashboard-container">
-        <div className="dashboard-topbar">
-          <div className="topbar-left">
-            <h1 className="topbar-title">airunner</h1>
-          </div>
-          <div className="topbar-right">
-            <span className="user-name">{user?.name || "User"}</span>
-            <a href="/logout" className="btn-logout">
-              Logout
-            </a>
-          </div>
-        </div>
-        <div className="dashboard-content">
-          <div className="token-loading">
-            <div className="spinner"></div>
-            <p>Initializing authentication...</p>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // Show error if token fetch failed
-  if (tokenError) {
-    return (
-      <div className="dashboard-container">
-        <div className="dashboard-topbar">
-          <div className="topbar-left">
-            <h1 className="topbar-title">airunner</h1>
-          </div>
-          <div className="topbar-right">
-            <span className="user-name">{user?.name || "User"}</span>
-            <a href="/logout" className="btn-logout">
-              Logout
-            </a>
-          </div>
-        </div>
-        <div className="dashboard-content">
-          <div className="token-error">
-            <p>Failed to authenticate: {tokenError}</p>
-            <a href="/login" className="btn-logout">
-              Back to Login
-            </a>
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <TransportProvider transport={transport}>

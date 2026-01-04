@@ -8,6 +8,13 @@ import {
 } from "@connectrpc/connect-query";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { listJobs } from "../../api/gen/proto/es/job/v1/job-JobService_connectquery";
+import {
+  listCredentials,
+  importCredential,
+  revokeCredential,
+} from "../../api/gen/proto/es/principal/v1/principal-CredentialService_connectquery";
+import { useMutation } from "@connectrpc/connect-query";
+import type { Credential } from "../../api/gen/proto/es/principal/v1/principal_pb";
 import { usePageContext } from "../lib/context";
 import { useToken } from "../lib/useToken";
 import { createAuthTransport } from "../lib/createAuthTransport";
@@ -447,18 +454,360 @@ function JobEventsView({ jobId }: { jobId: string }) {
   );
 }
 
+// Import credential form with inline success message
+function ImportCredentialForm({ onSuccess }: { onSuccess: () => void }) {
+  const [name, setName] = useState("");
+  const [publicKeyPem, setPublicKeyPem] = useState("");
+  const [description, setDescription] = useState("");
+  const [result, setResult] = useState<{
+    principalId: string;
+    orgId: string;
+    name: string;
+  } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // Use Connect RPC mutation
+  const mutation = useMutation(importCredential);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setResult(null);
+
+    try {
+      const response = await mutation.mutateAsync({
+        name,
+        publicKeyPem,
+        description,
+      });
+
+      setResult({
+        principalId: response.principalId,
+        orgId: response.orgId,
+        name: response.name,
+      });
+      setName("");
+      setPublicKeyPem("");
+      setDescription("");
+      onSuccess();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Import failed");
+    }
+  };
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+  };
+
+  return (
+    <div className="import-form">
+      <h3>Import Worker Credential</h3>
+      <p className="import-subtitle">
+        Paste the public key from <code>airunner-cli init</code> output
+      </p>
+
+      <form onSubmit={handleSubmit}>
+        <div className="form-group">
+          <label htmlFor="cred-name">Name</label>
+          <input
+            id="cred-name"
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g., production-workers"
+            required
+          />
+        </div>
+
+        <div className="form-group">
+          <label htmlFor="cred-pubkey">Public Key (PEM)</label>
+          <textarea
+            id="cred-pubkey"
+            value={publicKeyPem}
+            onChange={(e) => setPublicKeyPem(e.target.value)}
+            placeholder="-----BEGIN PUBLIC KEY-----&#10;...&#10;-----END PUBLIC KEY-----"
+            required
+          />
+        </div>
+
+        <div className="form-group">
+          <label htmlFor="cred-desc">Description (optional)</label>
+          <input
+            id="cred-desc"
+            type="text"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="e.g., Workers for production environment"
+          />
+        </div>
+
+        <button
+          type="submit"
+          className="btn-primary"
+          disabled={mutation.isPending}
+        >
+          {mutation.isPending ? "Importing..." : "Import Credential"}
+        </button>
+      </form>
+
+      {error && (
+        <div className="import-error">
+          <p>Error: {error}</p>
+        </div>
+      )}
+
+      {result && (
+        <div className="import-success">
+          <p>
+            <strong>Credential imported successfully!</strong>
+          </p>
+          <div className="result-field">
+            <span>Principal ID:</span>
+            <code>{result.principalId}</code>
+            <button
+              type="button"
+              className="btn-copy"
+              onClick={() => copyToClipboard(result.principalId)}
+            >
+              Copy
+            </button>
+          </div>
+          <div className="result-field">
+            <span>Org ID:</span>
+            <code>{result.orgId}</code>
+            <button
+              type="button"
+              className="btn-copy"
+              onClick={() => copyToClipboard(result.orgId)}
+            >
+              Copy
+            </button>
+          </div>
+          <div className="result-command">
+            <span>Run this command to complete setup:</span>
+            <code>
+              airunner-cli credentials update {result.name} --org-id{" "}
+              {result.orgId} --principal-id {result.principalId}
+            </code>
+            <button
+              type="button"
+              className="btn-copy"
+              onClick={() =>
+                copyToClipboard(
+                  `airunner-cli credentials update ${result.name} --org-id ${result.orgId} --principal-id ${result.principalId}`,
+                )
+              }
+            >
+              Copy
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Credentials table with revoke functionality
+function CredentialsTable({
+  credentials,
+  currentPrincipalId,
+  onRevoke,
+}: {
+  credentials: Credential[];
+  currentPrincipalId: string;
+  onRevoke: (principalId: string, name: string) => void;
+}) {
+  const formatDate = (dateStr: string | undefined): string => {
+    if (!dateStr) return "Never";
+    try {
+      return new Date(dateStr).toLocaleDateString("en-US", {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    } catch {
+      return "-";
+    }
+  };
+
+  const truncateFingerprint = (fp: string | undefined): string => {
+    if (!fp) return "-";
+    return fp.length > 12 ? `${fp.slice(0, 12)}...` : fp;
+  };
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+  };
+
+  const getTypeBadgeClass = (type: string): string => {
+    switch (type) {
+      case "user":
+        return "type-user";
+      case "worker":
+        return "type-worker";
+      case "service":
+        return "type-service";
+      default:
+        return "";
+    }
+  };
+
+  return (
+    <div className="table-wrapper">
+      <table className="credentials-table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Fingerprint</th>
+            <th>Created</th>
+            <th>Last Used</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {credentials.map((cred) => (
+            <tr key={cred.principalId}>
+              <td className="cell-name">{cred.name}</td>
+              <td className="cell-type">
+                <span className={`type-badge ${getTypeBadgeClass(cred.type)}`}>
+                  {cred.type}
+                </span>
+              </td>
+              <td className="cell-fingerprint">
+                {cred.fingerprint ? (
+                  <button
+                    type="button"
+                    className="fingerprint-code"
+                    onClick={() => copyToClipboard(cred.fingerprint)}
+                    title="Click to copy"
+                  >
+                    {truncateFingerprint(cred.fingerprint)}
+                  </button>
+                ) : (
+                  <span className="no-fingerprint">-</span>
+                )}
+              </td>
+              <td className="cell-date">{formatDate(cred.createdAt)}</td>
+              <td className="cell-date">{formatDate(cred.lastUsedAt)}</td>
+              <td className="cell-actions">
+                {cred.type === "worker" &&
+                cred.principalId !== currentPrincipalId ? (
+                  <button
+                    type="button"
+                    className="btn-revoke"
+                    onClick={() => onRevoke(cred.principalId, cred.name)}
+                  >
+                    Revoke
+                  </button>
+                ) : cred.principalId === currentPrincipalId ? (
+                  <span className="self-badge">You</span>
+                ) : null}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// Main credentials view combining form and table
+function CredentialsView() {
+  const user = usePageContext();
+
+  // Use Connect RPC query for listing
+  const { data, isLoading, error, refetch } = useQuery(listCredentials, {
+    principalType: "",
+  });
+
+  // Use Connect RPC mutation for revoke
+  const revokeMutation = useMutation(revokeCredential);
+
+  const handleRevoke = async (principalId: string, name: string) => {
+    if (
+      !confirm(
+        `Revoke credential "${name}"?\n\nThis action cannot be undone. The credential will no longer be able to authenticate.`,
+      )
+    ) {
+      return;
+    }
+
+    try {
+      await revokeMutation.mutateAsync({ principalId });
+      refetch(); // Refresh the list
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Failed to revoke credential");
+    }
+  };
+
+  const credentials = data?.credentials || [];
+
+  return (
+    <div className="credentials-container">
+      <ImportCredentialForm onSuccess={() => refetch()} />
+
+      <div className="credentials-section">
+        <h2 className="section-title">Credentials</h2>
+
+        {isLoading && (
+          <div className="events-loading">
+            <div className="spinner"></div>
+            <p>Loading credentials...</p>
+          </div>
+        )}
+
+        {error && (
+          <div className="events-error">
+            <p>
+              {error instanceof Error
+                ? error.message
+                : "Failed to load credentials"}
+            </p>
+            <button type="button" onClick={() => refetch()}>
+              Retry
+            </button>
+          </div>
+        )}
+
+        {!isLoading && !error && credentials.length === 0 && (
+          <div className="empty-state">
+            <p>No credentials yet. Import one using the form above.</p>
+          </div>
+        )}
+
+        {!isLoading && !error && credentials.length > 0 && (
+          <CredentialsTable
+            credentials={credentials}
+            currentPrincipalId={user?.principal_id || ""}
+            onRevoke={handleRevoke}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
 function Dashboard() {
   const { data } = useQuery(listJobs, {});
   const user = usePageContext();
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<"jobs" | "credentials">("jobs");
 
   // Hash routing: listen for URL hash changes
   useEffect(() => {
     const handleHashChange = () => {
       const hash = window.location.hash;
-      if (hash.startsWith("#job-")) {
+      if (hash === "#credentials") {
+        setActiveTab("credentials");
+        setSelectedJobId(null);
+      } else if (hash.startsWith("#job-")) {
+        setActiveTab("jobs");
         setSelectedJobId(hash.substring(5)); // Remove '#job-' prefix
       } else {
+        setActiveTab("jobs");
         setSelectedJobId(null);
       }
     };
@@ -531,6 +880,23 @@ function Dashboard() {
       <div className="dashboard-topbar">
         <div className="topbar-left">
           <h1 className="topbar-title">airunner</h1>
+          <nav className="topbar-tabs">
+            <button
+              type="button"
+              className={activeTab === "jobs" ? "tab-active" : ""}
+              onClick={() => {
+                window.location.hash = "";
+              }}
+            >
+              Jobs
+            </button>
+            <a
+              href="#credentials"
+              className={activeTab === "credentials" ? "tab-active" : ""}
+            >
+              Credentials
+            </a>
+          </nav>
         </div>
         <div className="topbar-right">
           <span className="user-name">{user?.name || "User"}</span>
@@ -540,9 +906,11 @@ function Dashboard() {
         </div>
       </div>
 
-      {/* Conditional rendering: show event view or job list */}
+      {/* Conditional rendering: show event view, credentials view, or job list */}
       {selectedJobId ? (
         <JobEventsView jobId={selectedJobId} />
+      ) : activeTab === "credentials" ? (
+        <CredentialsView />
       ) : (
         <div className="dashboard-content">
           {/* CLI Section */}
@@ -634,7 +1002,7 @@ function AppWithToken() {
 
   // Create transport with auth token
   const transport = useMemo(
-    () => createAuthTransport("https://localhost:8993", token),
+    () => createAuthTransport(window.location.origin, token),
     [token],
   );
 

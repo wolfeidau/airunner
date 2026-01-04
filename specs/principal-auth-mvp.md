@@ -395,26 +395,26 @@ The CLI credential implementation is documented in a layered specification:
 | `cmd/cli/internal/commands/init.go` | Credential generation command |
 | `cmd/cli/internal/commands/credentials.go` | Credential management (list, update, show, delete, set-default) |
 
-### Web UI Credential Management (Future Work)
+### Web UI Credential Management (Specified)
 
-The web UI currently only displays jobs. Credential management UI is needed but deferred:
+**Full specification:** [specs/ui-credentials/](ui-credentials/README.md)
 
-**Required components:**
-- Credentials page or tab in dashboard
-- Import credential form (name input, public key PEM textarea)
-- Credentials list with name, fingerprint, type, last_used, revoke button
-- Success modal showing principal_id and org_id after import (for CLI update step)
+The UI credential implementation is documented in a layered specification:
 
-**Known issue:** Dashboard has hardcoded server URL at `ui/pages/dashboard.tsx:637`:
-```typescript
-// Current (hardcoded)
-createAuthTransport("https://localhost:8993", token)
+| File | Purpose |
+|------|---------|
+| [ui-credentials/README.md](ui-credentials/README.md) | Overview, workflow, success criteria |
+| [ui-credentials/00-architecture.md](ui-credentials/00-architecture.md) | Component design, API reference |
+| [ui-credentials/01-phase1-implementation.md](ui-credentials/01-phase1-implementation.md) | Step-by-step implementation guide |
 
-// Should be
-createAuthTransport(window.location.origin, token)
-```
+**Files to modify:**
 
-This should be fixed when implementing the credentials UI.
+| File | Changes |
+|------|---------|
+| `ui/pages/dashboard.tsx` | Add tab navigation, credentials components, fix hardcoded URL |
+| `ui/pages/dashboard.css` | Add styles for tabs, import form, credentials table |
+
+**Known issue to fix:** Dashboard has hardcoded server URL at `ui/pages/dashboard.tsx:637` - must change to `window.location.origin`.
 
 ### Additional Integration Tests
 

@@ -2,8 +2,9 @@ import { createConnectTransport } from "@connectrpc/connect-web";
 import type { Transport } from "@connectrpc/connect";
 
 /**
- * Create a Connect RPC transport that injects JWT token in Authorization header.
- * If token is null, requests proceed without Authorization header.
+ * Create a Connect RPC transport with session cookie support.
+ * Uses credentials: 'include' to send session cookie automatically.
+ * JWT token is optional - dual auth middleware supports both.
  */
 export function createAuthTransport(
   baseUrl: string,
@@ -11,9 +12,10 @@ export function createAuthTransport(
 ): Transport {
   return createConnectTransport({
     baseUrl,
+    credentials: "include", // Send session cookie
     interceptors: [
       (next) => async (req) => {
-        // Inject token if available
+        // Inject token if available (optional, session cookie works too)
         if (token) {
           req.header.set("Authorization", `Bearer ${token}`);
         }

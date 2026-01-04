@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
@@ -337,6 +338,7 @@ func verifyWorkerJWT(
 }
 
 // verifyJWT verifies a JWT signature with the given public key and returns the claims.
+// Includes 2 minutes of leeway to account for clock skew between client and server.
 func verifyJWT(tokenString string, publicKey *ecdsa.PublicKey) (jwt.MapClaims, error) {
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (any, error) {
 		// Verify signing method
@@ -344,7 +346,7 @@ func verifyJWT(tokenString string, publicKey *ecdsa.PublicKey) (jwt.MapClaims, e
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
 		return publicKey, nil
-	})
+	}, jwt.WithLeeway(2*time.Minute)) // 2 minutes leeway for clock skew
 
 	if err != nil {
 		return nil, err

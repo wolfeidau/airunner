@@ -293,7 +293,7 @@ func (c *WebsiteCmd) Run(globals *Globals) error {
 		}
 		defer func() {
 			if stoppable, ok := jobStore.(interface{ Stop() error }); ok {
-				if err := stoppable.Stop(); err != nil {
+				if err = stoppable.Stop(); err != nil {
 					log.Error().Err(err).Msg("Failed to stop job store")
 				}
 			}

@@ -4,13 +4,13 @@ This file provides guidance to AI coding agents when working with code in this r
 
 ## Project Overview
 
-This is `airunner`, a Go-based job orchestration platform with production-ready AWS backend support.
+This is `airunner`, a Go-based job orchestration platform with production-ready PostgreSQL backend support.
 
 ### Binaries
 
 - **airunner-server** (`cmd/server/main.go`) - Job queue server
   - Provides gRPC API via Connect RPC for job management
-  - Supports in-memory store (development) or AWS backend (production)
+  - Supports in-memory store (development) or PostgreSQL backend (production)
   - Handles job queuing, visibility timeouts, and event streaming
   - OpenTelemetry integration for metrics and tracing
 
@@ -20,9 +20,6 @@ This is `airunner`, a Go-based job orchestration platform with production-ready 
   - `monitor` - Real-time job event monitoring with TUI
   - `list` - List and filter jobs with watch mode
   - `bootstrap` - Bootstrap mTLS certificates and principals
-
-- **airunner-orchestrator** (`cmd/orchestrator/main.go`) - Cloud backend entry point
-  - Uses AWS backend (SQS + DynamoDB) for production deployments
 
 The system uses Protocol Buffers with Connect RPC for service definitions, with the main job service defined in `api/job/v1/job.proto`.
 
@@ -35,10 +32,8 @@ make help         # Show all available make targets
 
 **Building the project:**
 ```bash
-make build        # Build all binaries (airunner-cli, airunner-orchestrator, airunner-server)
+make build        # Build all binaries (airunner-cli, airunner-server)
 make build-cli    # Build only the CLI binary
-make build-agent  # Alias for build-cli (backwards compatibility)
-make build-orchestrator # Build only the orchestrator binary
 make build-server # Build only the server binary
 ```
 
@@ -90,22 +85,12 @@ make proto-breaking # Check for breaking changes
 make test                       # Run all tests with coverage
 make test-coverage              # Run tests and show coverage report
 make test-integration           # Run all integration tests (uses testcontainers)
-make test-integration-aws       # Run AWS integration tests only
 make test-integration-postgres  # Run PostgreSQL integration tests only
 ```
 
 **Integration Testing with Testcontainers:**
 All integration tests use [testcontainers-go](https://golang.testcontainers.org/) to automatically spin up isolated containers. No manual infrastructure setup required - just run the tests and testcontainers handles everything:
-- DynamoDB Local for AWS tests
-- LocalStack (SQS) for AWS tests
 - PostgreSQL for PostgreSQL tests
-
-**Local Infrastructure (optional, for manual testing):**
-```bash
-make infra-up    # Start local DynamoDB and LocalStack (SQS) via docker-compose
-make infra-down  # Stop local infrastructure
-```
-Note: This is no longer required for integration tests, but available for manual testing or debugging.
 
 **Code Quality:**
 ```bash
@@ -130,7 +115,6 @@ make mkcert        # Generate local TLS certificates
 - **internal/store/** - Job storage backends
   - `JobStore` interface defines the contract for all storage implementations
   - `MemoryJobStore` (`internal/store/memory/`) - In-memory FIFO queues with visibility timeouts for development
-  - `AWSJobStore` (`internal/store/aws/`) - Production backend using AWS SQS for queuing and DynamoDB for persistence
   - `PostgreSQLJobStore` (`internal/store/postgres/`) - Production backend using PostgreSQL with SKIP LOCKED for job queuing
 
 - **internal/worker/** - Job execution engine
@@ -143,7 +127,7 @@ make mkcert        # Generate local TLS certificates
 
 - **internal/telemetry/** - Observability
   - OpenTelemetry initialization with OTLP exporters (Honeycomb-ready)
-  - 20+ custom metrics for event publish/errors, job lifecycle, DynamoDB operations
+  - 20+ custom metrics for event publish/errors, job lifecycle
 
 - **internal/auth/** - Authentication and Authorization
   - mTLS authentication with X.509 client certificates
@@ -151,20 +135,12 @@ make mkcert        # Generate local TLS certificates
 
 ### Key Patterns
 
-- **Interface-Based Design**: `JobStore` interface allows swapping MemoryJobStore, AWSJobStore, or PostgreSQLJobStore
+- **Interface-Based Design**: `JobStore` interface allows swapping MemoryJobStore or PostgreSQLJobStore
 - **Stateless Task Tokens**: HMAC-signed tokens containing job_id, queue, receipt_handle
-- **Event Streaming**: Bi-directional streaming with historical replay from DynamoDB
-- **Visibility Timeout**: SQS-like job invisibility for at-least-once delivery
-- **Idempotent Operations**: Request ID tracking via GSI2 for safe retries
-- **Size-Aware Batching**: Conservative limits (350KB) accounting for DynamoDB 400KB limit
-
-### AWS Backend (AWSJobStore)
-
-The production backend uses:
-- **SQS** - Job queue with visibility timeout management
-- **DynamoDB Jobs Table** - Job metadata with GSI1 (queue) and GSI2 (request_id)
-- **DynamoDB JobEvents Table** - Event persistence with TTL support
-- Task tokens use HMAC-SHA256 signing with constant-time validation
+- **Event Streaming**: Bi-directional streaming with historical replay from database
+- **Visibility Timeout**: Job invisibility for at-least-once delivery
+- **Idempotent Operations**: Request ID tracking for safe retries
+- **Size-Aware Batching**: Conservative limits for efficient event processing
 
 ### PostgreSQL Backend (PostgreSQLJobStore)
 
@@ -192,12 +168,12 @@ var (
     ErrInvalidTaskToken = errors.New("invalid task token")
     ErrQueueMismatch    = errors.New("queue mismatch")
     ErrJobNotFound      = errors.New("job not found")
-    ErrThrottled        = errors.New("AWS request throttled")
+    ErrThrottled        = errors.New("request throttled")
     ErrEventTooLarge    = errors.New("event exceeds maximum size")
 )
 ```
 
-AWS errors are wrapped with `wrapAWSError()` which identifies throttling and size violations. Use `errors.Is()` to check for specific error types.
+Use `errors.Is()` to check for specific error types.
 
 ## Documentation Style
 When creating any documentation (README files, code comments, design docs), write in the style of an Amazon engineer:
@@ -217,7 +193,7 @@ For complex features requiring significant implementation work (multi-package ch
 
 Use this pattern when:
 - Implementation spans 3+ packages or components
-- Requires infrastructure changes (Terraform, AWS resources)
+- Requires infrastructure changes (Terraform, database migrations)
 - Involves architectural decisions with multiple approaches
 - Takes 7+ hours to implement
 - Benefits from phase-by-phase execution
@@ -327,7 +303,7 @@ Organize phases by natural implementation flow:
 
 1. **Phase 1: Core Code** - Interfaces, core logic, no infrastructure
 2. **Phase 2: Integration** - Local testing, docker-compose, integration tests
-3. **Phase 3: Infrastructure** - Terraform, AWS resources
+3. **Phase 3: Infrastructure** - Terraform, database migrations
 4. **Phase 4: Deployment** - Production deployment, verification
 5. **Phase 5: Cleanup** - Remove old code, update docs
 
@@ -417,8 +393,9 @@ Key files:
 - `api/buf.yaml` - Protocol buffer configuration and linting rules
 
 ### Store Implementations
-- `internal/store/store.go` - `JobStore` interface and `MemoryJobStore`
-- `internal/store/aws_store.go` - `AWSJobStore` with SQS/DynamoDB backend
+- `internal/store/store.go` - `JobStore` interface
+- `internal/store/memory/` - In-memory implementation for development
+- `internal/store/postgres/` - PostgreSQL implementation for production
 
 ### Worker & Event Processing
 - `internal/worker/worker.go` - `JobExecutor` for running jobs
@@ -452,9 +429,8 @@ Key files:
   - Reference implementation of layered spec pattern
 
 **Legacy Specifications** (deprecated, archived):
-- `specs/sqs_dynamodb_backend.md` - AWS backend architecture (archived)
 - `specs/event_batching.md` - Event batching design (archived)
 
 ### Infrastructure
-- `infra/` - Terraform configuration for AWS resources
-- `docker-compose.yml` - Local DynamoDB and LocalStack for testing
+- `infra/` - Terraform configuration (currently being refactored)
+- `docker-compose.yml` - Local PostgreSQL for testing

@@ -62,10 +62,6 @@ The system has three main binaries:
    - `monitor` - Stream real-time events for specific jobs
    - `list` - Query and filter jobs with pagination
 
-4. `airunner-orchestrator` ([`cmd/orchestrator/main.go`](cmd/orchestrator/main.go)) - Future cloud backend
-   - Reserved for SQS/DynamoDB/EventBridge implementation
-   - Not currently implemented
-
 ### Job Flow
 
 1. Job Submission
@@ -177,11 +173,9 @@ See `specs/mtls/README.md` for complete documentation.
 - Idempotent job submission
 - **Multiple storage backends:**
   - In-memory (development)
-  - AWS (SQS + DynamoDB for production)
   - PostgreSQL (production with SKIP LOCKED)
 
 **Not Implemented:**
-- `airunner-orchestrator` (EventBridge integration for cloud deployment)
 - Multi-tenancy
 
 This provides a production-ready development environment for testing job workflows, with clear extension points for cloud deployment. The architecture is similar to Buildkite Agent or GitHub Actions runners, but self-hosted.
@@ -199,14 +193,11 @@ make test
 # Run integration tests (automatically spins up containers)
 make test-integration
 
-# Run specific backend integration tests
-make test-integration-aws       # AWS (LocalStack + DynamoDB Local)
+# Run PostgreSQL integration tests
 make test-integration-postgres  # PostgreSQL
 ```
 
 Testcontainers automatically manages:
-- DynamoDB Local containers for AWS backend tests
-- LocalStack containers for SQS tests
 - PostgreSQL containers for PostgreSQL backend tests
 
 All containers are isolated, use dynamic ports, and clean up automatically after tests complete.

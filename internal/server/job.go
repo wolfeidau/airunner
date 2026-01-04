@@ -20,21 +20,6 @@ const (
 	dequeuePollingInterval = 500 * time.Millisecond
 )
 
-// addJitter adds random jitter to a duration to prevent thundering herd.
-// Returns a duration between base*(1-jitterFactor) and base*(1+jitterFactor).
-// For jitterFactor=0.25, returns a value between 75% and 125% of base.
-func addJitter(base time.Duration, jitterFactor float64) time.Duration {
-	if jitterFactor <= 0 {
-		return base
-	}
-	// Calculate jitter range: base * (1 - jitterFactor) to base * (1 + jitterFactor)
-	min := float64(base) * (1.0 - jitterFactor)
-	max := float64(base) * (1.0 + jitterFactor)
-	//nolint:gosec // G404: Using math/rand for timing jitter is safe and appropriate
-	jittered := min + rand.Float64()*(max-min)
-	return time.Duration(jittered)
-}
-
 var _ jobv1connect.JobServiceHandler = &JobServer{}
 
 type JobServer struct {
@@ -138,4 +123,19 @@ func (s *JobServer) ListJobs(ctx context.Context, req *connect.Request[v1.ListJo
 	}
 
 	return connect.NewResponse(resp), nil
+}
+
+// addJitter adds random jitter to a duration to prevent thundering herd.
+// Returns a duration between base*(1-jitterFactor) and base*(1+jitterFactor).
+// For jitterFactor=0.25, returns a value between 75% and 125% of base.
+func addJitter(base time.Duration, jitterFactor float64) time.Duration {
+	if jitterFactor <= 0 {
+		return base
+	}
+	// Calculate jitter range: base * (1 - jitterFactor) to base * (1 + jitterFactor)
+	min := float64(base) * (1.0 - jitterFactor)
+	max := float64(base) * (1.0 + jitterFactor)
+	//nolint:gosec // G404: Using math/rand for timing jitter is safe and appropriate
+	jittered := min + rand.Float64()*(max-min)
+	return time.Duration(jittered)
 }

@@ -63,16 +63,17 @@ func setupPostgresForAuth(t *testing.T, ctx context.Context) (string, func()) {
 
 	connString := fmt.Sprintf("postgres://test:test@%s:%s/testdb?sslmode=disable", host, port.Port())
 
-	// Run migrations using JobStore
-	jobStoreCfg := &postgres.JobStoreConfig{
-		ConnString:         connString,
-		TokenSigningSecret: []byte("test-secret-key-min-32-bytes-long"),
-		AutoMigrate:        true,
+	// Create pool and run migrations
+	poolCfg := &postgres.PoolConfig{
+		ConnString: connString,
 	}
-
-	jobStore, err := postgres.NewJobStore(ctx, jobStoreCfg)
+	pool, err := postgres.NewPool(ctx, poolCfg)
 	require.NoError(t, err)
-	jobStore.Stop()
+
+	err = postgres.RunMigrations(ctx, pool)
+	require.NoError(t, err)
+
+	pool.Close()
 
 	cleanup := func() {
 		_ = container.Terminate(ctx)

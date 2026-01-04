@@ -20,21 +20,6 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// addJitter adds random jitter to a duration to prevent thundering herd.
-// Returns a duration between base*(1-jitterFactor) and base*(1+jitterFactor).
-// For jitterFactor=0.25, returns a value between 75% and 125% of base.
-func addJitter(base time.Duration, jitterFactor float64) time.Duration {
-	if jitterFactor <= 0 {
-		return base
-	}
-	// Calculate jitter range: base * (1 - jitterFactor) to base * (1 + jitterFactor)
-	min := float64(base) * (1.0 - jitterFactor)
-	max := float64(base) * (1.0 + jitterFactor)
-	//nolint:gosec // G404: Using math/rand for timing jitter is safe and appropriate
-	jittered := min + rand.Float64()*(max-min)
-	return time.Duration(jittered)
-}
-
 type WorkerCmd struct {
 	Server            string        `help:"Server URL" default:"https://localhost"`
 	Queue             string        `help:"Queue name to process" default:"default"`
@@ -249,4 +234,19 @@ func isDeadlineExceeded(err error) bool {
 		return connErr.Code() == connect.CodeDeadlineExceeded
 	}
 	return false
+}
+
+// addJitter adds random jitter to a duration to prevent thundering herd.
+// Returns a duration between base*(1-jitterFactor) and base*(1+jitterFactor).
+// For jitterFactor=0.25, returns a value between 75% and 125% of base.
+func addJitter(base time.Duration, jitterFactor float64) time.Duration {
+	if jitterFactor <= 0 {
+		return base
+	}
+	// Calculate jitter range: base * (1 - jitterFactor) to base * (1 + jitterFactor)
+	min := float64(base) * (1.0 - jitterFactor)
+	max := float64(base) * (1.0 + jitterFactor)
+	//nolint:gosec // G404: Using math/rand for timing jitter is safe and appropriate
+	jittered := min + rand.Float64()*(max-min)
+	return time.Duration(jittered)
 }

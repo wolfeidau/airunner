@@ -15,10 +15,11 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
-// runMigrations executes all pending database migrations in order.
+// RunMigrations executes all pending database migrations in order.
 // Migrations are tracked in the schema_migrations table.
 // Returns an error if any migration fails.
-func runMigrations(ctx context.Context, pool *pgxpool.Pool) error {
+// This should be called before creating any stores that use the pool.
+func RunMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 	log.Info().Msg("Running database migrations")
 
 	// Read all migration files

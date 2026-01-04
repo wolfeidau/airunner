@@ -33,53 +33,17 @@ type JobStore struct {
 }
 
 // NewJobStore creates a new PostgreSQL-backed job store.
-// It establishes a connection pool, runs migrations, and initializes the store.
-func NewJobStore(ctx context.Context, cfg *JobStoreConfig) (*JobStore, error) {
+// The pool parameter should be a shared connection pool created via postgres.NewPool().
+// Migrations should be run separately via postgres.RunMigrations() before creating stores.
+func NewJobStore(pool *pgxpool.Pool, cfg *JobStoreConfig) (*JobStore, error) {
 	// Apply defaults and validate config
 	cfg.ApplyDefaults()
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
 
-	// Parse connection string and configure pool
-	poolConfig, err := pgxpool.ParseConfig(cfg.ConnString)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse connection string: %w", err)
-	}
-
-	// Apply pool configuration
-	poolConfig.MaxConns = cfg.MaxConns
-	poolConfig.MinConns = cfg.MinConns
-	poolConfig.MaxConnLifetime = time.Duration(cfg.MaxConnLifetime) * time.Second
-	poolConfig.MaxConnIdleTime = time.Duration(cfg.MaxConnIdleTime) * time.Second
-	poolConfig.HealthCheckPeriod = 1 * time.Minute
-	poolConfig.ConnConfig.ConnectTimeout = 10 * time.Second
-
-	// Create connection pool
-	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create connection pool: %w", err)
-	}
-
-	// Test connection
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("failed to ping database: %w", err)
-	}
-
-	log.Info().
-		Str("database", poolConfig.ConnConfig.Database).
-		Str("host", poolConfig.ConnConfig.Host).
-		Int32("max_conns", cfg.MaxConns).
-		Msg("Connected to PostgreSQL")
-
-	// Run migrations only if explicitly enabled
-	if cfg.AutoMigrate {
-		if err := runMigrations(ctx, pool); err != nil {
-			pool.Close()
-			return nil, fmt.Errorf("failed to run migrations: %w", err)
-		}
-		log.Info().Msg("Database migrations completed")
+	if pool == nil {
+		return nil, fmt.Errorf("pool cannot be nil")
 	}
 
 	return &JobStore{

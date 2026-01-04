@@ -373,66 +373,48 @@ Soft-delete a credential (sets deleted_at timestamp).
 
 ### CLI Credential Management (Required for MVP)
 
-The CLI needs commands to generate and manage worker credentials:
+**Full specification:** [specs/cli-credentials/](cli-credentials/README.md)
 
-**1. Init Command** (`airunner-cli init`)
-```bash
-# Generate new credential
-airunner-cli init --name "my-worker"
-
-# Output:
-# Generated credential: my-worker
-# Fingerprint: 7RpMx9NqK4...
-# Public key saved to: ~/.airunner/credentials/my-worker.pub
-# Private key saved to: ~/.airunner/credentials/my-worker.key
-#
-# Import this credential via the web UI or API:
-#   Public Key PEM: (displayed)
-```
-
-**Implementation:**
-- Generate ECDSA P-256 keypair
-- Save to `~/.airunner/credentials/<name>.key` and `<name>.pub`
-- Display public key PEM for import
-- Store metadata (name, fingerprint, created_at) in `~/.airunner/credentials/config.json`
-
-**2. CLI JWT Signing**
-
-All CLI commands (worker, submit, list, monitor) need to:
-- Load credentials from `~/.airunner/credentials/`
-- Sign JWT with private key before each API request
-- Accept `--credential <name>` flag to select which credential to use
-
-**JWT Claims (Worker):**
-```json
-{
-  "iss": "airunner-cli",
-  "sub": "<fingerprint>",
-  "org": "<org-id>",
-  "roles": ["worker"],
-  "principal_id": "<principal-id>",
-  "iat": 1234567890,
-  "exp": 1234571490
-}
-```
-
-**3. Credential Import Flow**
-
-End-to-end workflow:
-1. `airunner-cli init --name "prod-workers"` → generates keypair
-2. Admin copies public key PEM
-3. Admin imports via web UI (CredentialService.ImportCredential)
-4. Server returns principal_id, org_id, fingerprint
-5. Admin updates CLI config with org_id, principal_id
-6. CLI can now authenticate: `airunner-cli worker --credential prod-workers`
-
-### Files to Create
+The CLI credential implementation is documented in a layered specification:
 
 | File | Purpose |
 |------|---------|
-| `cmd/cli/internal/commands/init.go` | Credential generation command |
-| `cmd/cli/internal/credentials/store.go` | Local credential storage |
+| [cli-credentials/README.md](cli-credentials/README.md) | Overview, workflow, success criteria |
+| [cli-credentials/00-architecture.md](cli-credentials/00-architecture.md) | Config schema, JWT structure, error handling |
+| [cli-credentials/01-phase1-local-storage.md](cli-credentials/01-phase1-local-storage.md) | Credential store implementation |
+| [cli-credentials/02-phase2-cli-commands.md](cli-credentials/02-phase2-cli-commands.md) | Init and credentials commands |
+| [cli-credentials/03-phase3-jwt-signing.md](cli-credentials/03-phase3-jwt-signing.md) | JWT signing and interceptor |
+
+**Files to create:**
+
+| File | Purpose |
+|------|---------|
+| `cmd/cli/internal/credentials/store.go` | Local credential storage (~/.airunner/credentials/) |
 | `cmd/cli/internal/credentials/jwt.go` | JWT signing for API requests |
+| `cmd/cli/internal/credentials/interceptor.go` | Connect RPC interceptor for Authorization headers |
+| `cmd/cli/internal/commands/init.go` | Credential generation command |
+| `cmd/cli/internal/commands/credentials.go` | Credential management (list, update, show, delete, set-default) |
+
+### Web UI Credential Management (Future Work)
+
+The web UI currently only displays jobs. Credential management UI is needed but deferred:
+
+**Required components:**
+- Credentials page or tab in dashboard
+- Import credential form (name input, public key PEM textarea)
+- Credentials list with name, fingerprint, type, last_used, revoke button
+- Success modal showing principal_id and org_id after import (for CLI update step)
+
+**Known issue:** Dashboard has hardcoded server URL at `ui/pages/dashboard.tsx:637`:
+```typescript
+// Current (hardcoded)
+createAuthTransport("https://localhost:8993", token)
+
+// Should be
+createAuthTransport(window.location.origin, token)
+```
+
+This should be fixed when implementing the credentials UI.
 
 ### Additional Integration Tests
 
@@ -444,7 +426,7 @@ End-to-end workflow:
 - Worker JWT verification flow (CLI → Server)
 - Revocation checking end-to-end
 - CredentialService RPCs (import, list, revoke)
-- Full credential workflow (init → import → authenticate)
+- Full credential workflow (init → web import → update → authenticate)
 
 ---
 

@@ -13,24 +13,17 @@ import (
 	connectcors "connectrpc.com/cors"
 	"connectrpc.com/otelconnect"
 	"filippo.io/csrf"
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
-	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/rs/cors"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 	"github.com/wolfeidau/airunner/api/gen/proto/go/principal/v1/principalv1connect"
 	"github.com/wolfeidau/airunner/internal/assets"
 	"github.com/wolfeidau/airunner/internal/auth"
-	"github.com/wolfeidau/airunner/internal/bootstrap"
 	"github.com/wolfeidau/airunner/internal/client"
 	httpmiddleware "github.com/wolfeidau/airunner/internal/http"
 	"github.com/wolfeidau/airunner/internal/logger"
 	"github.com/wolfeidau/airunner/internal/login"
 	"github.com/wolfeidau/airunner/internal/server"
 	"github.com/wolfeidau/airunner/internal/store"
-	awsstore "github.com/wolfeidau/airunner/internal/store/aws"
 	memorystore "github.com/wolfeidau/airunner/internal/store/memory"
 	postgresstore "github.com/wolfeidau/airunner/internal/store/postgres"
 	"github.com/wolfeidau/airunner/internal/telemetry"
@@ -56,57 +49,13 @@ type WebsiteCmd struct {
 	BaseURL string `help:"website base URL for OIDC issuer" default:"https://localhost" env:"AIRUNNER_WEBSITE_BASE_URL"`
 
 	// Development and operational modes
-	NoAuth           bool `help:"disable authentication for API endpoints (development only)" default:"false" env:"AIRUNNER_NO_AUTH"`
-	Development      bool `help:"development mode - auto-setup LocalStack infrastructure" default:"false" env:"AIRUNNER_DEVELOPMENT"`
-	DevelopmentClean bool `help:"clean resources on startup in development mode (deletes all data)" default:"false" env:"AIRUNNER_DEVELOPMENT_CLEAN"`
-	Tracing          bool `help:"enable tracing" default:"false" env:"AIRUNNER_TRACING"`
+	NoAuth  bool `help:"disable authentication for API endpoints (development only)" default:"false" env:"AIRUNNER_NO_AUTH"`
+	Tracing bool `help:"enable tracing" default:"false" env:"AIRUNNER_TRACING"`
 
 	// Store configuration
-	StoreType     string             `help:"store type (memory, aws, or postgres)" default:"memory" env:"AIRUNNER_STORE_TYPE" enum:"memory,aws,postgres"`
-	AWSStore      AWSStoreFlags      `embed:"" prefix:"aws-"`
+	StoreType     string             `help:"store type (memory or postgres)" default:"memory" env:"AIRUNNER_STORE_TYPE" enum:"memory,postgres"`
 	PostgresStore PostgresStoreFlags `embed:"" prefix:"postgres-"`
 	Execution     ExecutionFlags     `embed:"" prefix:"execution-"`
-}
-
-type AWSStoreFlags struct {
-	// SQS Configuration
-	QueueDefault  string `help:"SQS queue URL for default priority jobs" env:"AIRUNNER_AWS_QUEUE_DEFAULT"`
-	QueuePriority string `help:"SQS queue URL for priority jobs" env:"AIRUNNER_AWS_QUEUE_PRIORITY"`
-
-	// DynamoDB Configuration
-	DynamoDBJobsTable   string `help:"DynamoDB table name for jobs" env:"AIRUNNER_AWS_JOBS_TABLE"`
-	DynamoDBEventsTable string `help:"DynamoDB table name for events" env:"AIRUNNER_AWS_EVENTS_TABLE"`
-
-	// Store Configuration
-	DefaultVisibilityTimeout int32  `help:"default visibility timeout in seconds" default:"300"`
-	EventsTTLDays            int32  `help:"TTL in days for job events" default:"30"`
-	TokenSigningSecret       string `help:"secret key for HMAC signing of task tokens" env:"AIRUNNER_AWS_TOKEN_SECRET"`
-
-	// Endpoint overrides for local development
-	SQSEndpointURL      string `help:"SQS endpoint URL override (for LocalStack)" default:"" env:"AIRUNNER_AWS_SQS_ENDPOINT_URL"`
-	DynamoDBEndpointURL string `help:"DynamoDB endpoint URL override (for DynamoDB Local)" default:"" env:"AIRUNNER_AWS_DYNAMODB_ENDPOINT_URL"`
-}
-
-func (s *AWSStoreFlags) Validate() error {
-	if s.QueueDefault == "" {
-		return errors.New("SQS queue default URL is required (--aws-queue-default or AIRUNNER_AWS_QUEUE_DEFAULT)")
-	}
-	if s.QueuePriority == "" {
-		return errors.New("SQS queue priority URL is required (--aws-queue-priority or AIRUNNER_AWS_QUEUE_PRIORITY)")
-	}
-	if s.DynamoDBJobsTable == "" {
-		return errors.New("DynamoDB jobs table name is required (--aws-jobs-table or AIRUNNER_AWS_JOBS_TABLE)")
-	}
-	if s.DynamoDBEventsTable == "" {
-		return errors.New("DynamoDB events table name is required (--aws-events-table or AIRUNNER_AWS_EVENTS_TABLE)")
-	}
-	if s.TokenSigningSecret == "" {
-		return errors.New("token signing secret is required (--aws-token-secret or AIRUNNER_AWS_TOKEN_SECRET)")
-	}
-	if len(s.TokenSigningSecret) < 32 {
-		return errors.New("token signing secret must be at least 32 bytes (256 bits) for HMAC-SHA256")
-	}
-	return nil
 }
 
 type PostgresStoreFlags struct {
@@ -178,55 +127,6 @@ func (c *WebsiteCmd) Run(globals *Globals) error {
 		interceptors = append(interceptors, otelInterceptor)
 	}
 
-	// Development mode: auto-setup LocalStack infrastructure
-	if c.Development {
-		log.Info().Msg("Development mode enabled - setting up LocalStack infrastructure")
-
-		if c.StoreType == "" || c.StoreType == "memory" {
-			c.StoreType = "aws"
-		}
-
-		localConfig, err := config.LoadDefaultConfig(ctx,
-			config.WithRegion("us-east-1"),
-			config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("test", "test", "test")),
-		)
-		if err != nil {
-			return fmt.Errorf("failed to create local AWS config: %w", err)
-		}
-
-		sqsClient := sqs.NewFromConfig(localConfig, func(o *sqs.Options) {
-			o.BaseEndpoint = aws.String("http://localhost:4566")
-		})
-		dynamoClient := dynamodb.NewFromConfig(localConfig, func(o *dynamodb.Options) {
-			o.BaseEndpoint = aws.String("http://localhost:4101")
-		})
-
-		resources, err := bootstrap.Bootstrap(ctx, bootstrap.Config{
-			SQSClient:      sqsClient,
-			DynamoClient:   dynamoClient,
-			Environment:    "dev",
-			CleanResources: c.DevelopmentClean,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to bootstrap development infrastructure: %w", err)
-		}
-
-		c.AWSStore.QueueDefault = resources.QueueURLs["default"]
-		c.AWSStore.QueuePriority = resources.QueueURLs["priority"]
-		c.AWSStore.DynamoDBJobsTable = resources.TableNames.Jobs
-		c.AWSStore.DynamoDBEventsTable = resources.TableNames.Events
-		c.AWSStore.SQSEndpointURL = "http://localhost:4566"
-		c.AWSStore.DynamoDBEndpointURL = "http://localhost:4101"
-		c.AWSStore.TokenSigningSecret = "dev-mode-secret-key-minimum-32-characters-long"
-
-		log.Info().
-			Str("jobs_table", resources.TableNames.Jobs).
-			Str("events_table", resources.TableNames.Events).
-			Str("default_queue", resources.QueueURLs["default"]).
-			Str("priority_queue", resources.QueueURLs["priority"]).
-			Msg("Development infrastructure ready")
-	}
-
 	// Create stores based on store type
 	var (
 		jobStore          store.JobStore
@@ -237,18 +137,6 @@ func (c *WebsiteCmd) Run(globals *Globals) error {
 	)
 
 	switch c.StoreType {
-	case "aws":
-		jobStore, err = c.createAWSJobStore(ctx)
-		if err != nil {
-			return err
-		}
-		// AWS mode uses memory stores for identity
-		principalStore = memorystore.NewPrincipalStore()
-		organizationStore = memorystore.NewOrganizationStore()
-		sessionStore = memorystore.NewSessionStore()
-		log.Info().Msg("Using AWS job store (SQS + DynamoDB)")
-		log.Info().Msg("Using in-memory identity stores")
-
 	case "postgres":
 		jobStore, err = c.createPostgresJobStore(ctx)
 		if err != nil {
@@ -461,57 +349,6 @@ func (a *sessionProviderAdapter) GetSessionData(r *http.Request) (*auth.SessionD
 		OrgID:       data.OrgID,
 		Roles:       data.Roles,
 	}, nil
-}
-
-// createAWSJobStore creates and configures an AWS-backed job store (SQS + DynamoDB)
-func (c *WebsiteCmd) createAWSJobStore(ctx context.Context) (store.JobStore, error) {
-	if err := c.AWSStore.Validate(); err != nil {
-		return nil, fmt.Errorf("failed to validate aws flags: %w", err)
-	}
-
-	awsConfig, err := config.LoadDefaultConfig(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load AWS config: %w", err)
-	}
-
-	sqsClientOpts := []func(*sqs.Options){}
-	if c.AWSStore.SQSEndpointURL != "" {
-		sqsClientOpts = append(sqsClientOpts, func(o *sqs.Options) {
-			o.BaseEndpoint = aws.String(c.AWSStore.SQSEndpointURL)
-		})
-	}
-	sqsClient := sqs.NewFromConfig(awsConfig, sqsClientOpts...)
-
-	dynamoClientOpts := []func(*dynamodb.Options){}
-	if c.AWSStore.DynamoDBEndpointURL != "" {
-		dynamoClientOpts = append(dynamoClientOpts, func(o *dynamodb.Options) {
-			o.BaseEndpoint = aws.String(c.AWSStore.DynamoDBEndpointURL)
-		})
-	}
-	dynamoClient := dynamodb.NewFromConfig(awsConfig, dynamoClientOpts...)
-
-	storeCfg := awsstore.JobStoreConfig{
-		QueueURLs: map[string]string{
-			"default":  c.AWSStore.QueueDefault,
-			"priority": c.AWSStore.QueuePriority,
-		},
-		JobsTableName:                   c.AWSStore.DynamoDBJobsTable,
-		JobEventsTableName:              c.AWSStore.DynamoDBEventsTable,
-		DefaultVisibilityTimeoutSeconds: c.AWSStore.DefaultVisibilityTimeout,
-		EventsTTLDays:                   c.AWSStore.EventsTTLDays,
-		TokenSigningSecret:              []byte(c.AWSStore.TokenSigningSecret),
-		DefaultExecutionConfig: &jobv1.ExecutionConfig{
-			Batching: &jobv1.BatchingConfig{
-				FlushIntervalSeconds:   c.Execution.BatchFlushInterval,
-				MaxBatchSize:           c.Execution.BatchMaxSize,
-				MaxBatchBytes:          c.Execution.BatchMaxBytes,
-				PlaybackIntervalMillis: c.Execution.PlaybackInterval,
-			},
-			HeartbeatIntervalSeconds: c.Execution.HeartbeatInterval,
-		},
-	}
-
-	return awsstore.NewJobStore(sqsClient, dynamoClient, storeCfg), nil
 }
 
 // createPostgresJobStore creates and configures a PostgreSQL-backed job store

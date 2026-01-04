@@ -9,19 +9,32 @@ import (
 	"connectrpc.com/connect"
 	"connectrpc.com/otelconnect"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
+	"github.com/wolfeidau/airunner/cmd/cli/internal/credentials"
 	"github.com/wolfeidau/airunner/internal/client"
 )
 
 type ListCmd struct {
-	Server   string `help:"Server URL" default:"https://localhost:8993"`
-	Queue    string `help:"Queue name to filter by" default:""`
-	State    string `help:"Job state to filter by (scheduled, running, completed, failed, cancelled)" default:""`
-	Page     int32  `help:"Page number" default:"1"`
-	PageSize int32  `help:"Number of jobs per page" default:"20"`
-	Watch    bool   `help:"Watch for changes (refresh every 5 seconds)" default:"false"`
+	Server     string `help:"Server URL" default:"https://localhost"`
+	Credential string `help:"Credential name (uses default if not specified)"`
+	Queue      string `help:"Queue name to filter by" default:""`
+	State      string `help:"Job state to filter by (scheduled, running, completed, failed, cancelled)" default:""`
+	Page       int32  `help:"Page number" default:"1"`
+	PageSize   int32  `help:"Number of jobs per page" default:"20"`
+	Watch      bool   `help:"Watch for changes (refresh every 5 seconds)" default:"false"`
 }
 
 func (l *ListCmd) Run(ctx context.Context, globals *Globals) error {
+	// Initialize credential store and auth interceptor
+	store, err := credentials.NewStore("")
+	if err != nil {
+		return fmt.Errorf("failed to initialize credentials: %w", err)
+	}
+
+	authInterceptor, err := credentials.NewAuthInterceptor(store, l.Credential, l.Server)
+	if err != nil {
+		return err
+	}
+
 	otelInterceptor, err := otelconnect.NewInterceptor()
 	if err != nil {
 		return fmt.Errorf("failed to create interceptor: %w", err)
@@ -33,7 +46,10 @@ func (l *ListCmd) Run(ctx context.Context, globals *Globals) error {
 		Timeout:   30 * time.Second,
 		Debug:     globals.Debug,
 	}
-	clients, err := client.NewClients(config, connect.WithInterceptors(otelInterceptor))
+	clients, err := client.NewClients(config,
+		connect.WithInterceptors(authInterceptor),
+		connect.WithInterceptors(otelInterceptor),
+	)
 	if err != nil {
 		return fmt.Errorf("failed to create clients: %w", err)
 	}

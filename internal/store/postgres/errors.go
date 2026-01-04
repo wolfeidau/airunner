@@ -74,3 +74,9 @@ func mapPostgresError(err error) error {
 			pgErr.Code, pgErr.Message, pgErr.Detail, pgErr.Hint, err)
 	}
 }
+
+// isUniqueViolation checks if an error is a unique constraint violation.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == pgerrcode.UniqueViolation
+}

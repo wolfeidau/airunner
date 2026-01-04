@@ -519,3 +519,333 @@
   word-wrap: break-word;
   flex: 1;
 }
+
+/* ========================================
+   Tab Navigation
+   ======================================== */
+
+.topbar-tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin-left: 2rem;
+}
+
+.topbar-tabs a,
+.topbar-tabs button {
+  color: var(--nord4);
+  text-decoration: none;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  transition:
+    background-color 0.2s,
+    color 0.2s;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: inherit;
+  font-family: inherit;
+}
+
+.topbar-tabs a:hover,
+.topbar-tabs button:hover {
+  background: var(--nord2);
+  color: var(--nord6);
+}
+
+.topbar-tabs a.tab-active,
+.topbar-tabs button.tab-active {
+  background: var(--nord3);
+  color: var(--nord6);
+}
+
+/* ========================================
+   Credentials Container
+   ======================================== */
+
+.credentials-container {
+  padding: 2rem;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.credentials-section {
+  margin-top: 2rem;
+}
+
+/* ========================================
+   Import Form
+   ======================================== */
+
+.import-form {
+  background: var(--nord1);
+  padding: 1.5rem;
+  border-radius: 8px;
+}
+
+.import-form h3 {
+  margin-top: 0;
+  margin-bottom: 0.25rem;
+  color: var(--nord6);
+}
+
+.import-subtitle {
+  color: var(--nord4);
+  margin-bottom: 1.5rem;
+  font-size: 0.9rem;
+}
+
+.import-subtitle code {
+  background: var(--nord0);
+  padding: 0.125rem 0.375rem;
+  border-radius: 3px;
+}
+
+.form-group {
+  margin-bottom: 1rem;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 0.5rem;
+  color: var(--nord4);
+  font-size: 0.9rem;
+}
+
+.form-group input,
+.form-group textarea {
+  width: 100%;
+  padding: 0.625rem;
+  background: var(--nord0);
+  border: 1px solid var(--nord3);
+  border-radius: 4px;
+  color: var(--nord6);
+  font-size: 0.95rem;
+  box-sizing: border-box;
+}
+
+.form-group input:focus,
+.form-group textarea:focus {
+  outline: none;
+  border-color: var(--nord8);
+}
+
+.form-group textarea {
+  font-family: "SF Mono", "Fira Code", monospace;
+  min-height: 120px;
+  resize: vertical;
+}
+
+.btn-primary {
+  background: var(--nord10);
+  color: var(--nord6);
+  border: none;
+  padding: 0.625rem 1.25rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.95rem;
+  transition: background-color 0.2s;
+}
+
+.btn-primary:hover {
+  background: var(--nord9);
+}
+
+.btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ========================================
+   Import Success/Error Messages
+   ======================================== */
+
+.import-success {
+  background: rgba(163, 190, 140, 0.15);
+  border: 1px solid var(--nord14);
+  color: var(--nord6);
+  padding: 1rem;
+  border-radius: 4px;
+  margin-top: 1rem;
+}
+
+.import-success p {
+  margin: 0 0 0.75rem 0;
+}
+
+.import-success strong {
+  color: var(--nord14);
+}
+
+.result-field,
+.result-command {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.result-field span,
+.result-command span {
+  color: var(--nord4);
+  min-width: 100px;
+}
+
+.result-field code,
+.result-command code {
+  background: var(--nord0);
+  padding: 0.375rem 0.625rem;
+  border-radius: 4px;
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 0.85rem;
+  word-break: break-all;
+  flex: 1;
+}
+
+.result-command {
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.result-command code {
+  width: 100%;
+  margin: 0.5rem 0;
+}
+
+.btn-copy {
+  background: var(--nord3);
+  color: var(--nord6);
+  border: none;
+  padding: 0.25rem 0.5rem;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  transition: background-color 0.2s;
+}
+
+.btn-copy:hover {
+  background: var(--nord2);
+}
+
+.import-error {
+  background: rgba(191, 97, 106, 0.15);
+  border: 1px solid var(--nord11);
+  color: var(--nord11);
+  padding: 1rem;
+  border-radius: 4px;
+  margin-top: 1rem;
+}
+
+.import-error p {
+  margin: 0;
+}
+
+/* ========================================
+   Credentials Table
+   ======================================== */
+
+.credentials-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--nord1);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.credentials-table th,
+.credentials-table td {
+  padding: 0.875rem 1rem;
+  text-align: left;
+  border-bottom: 1px solid var(--nord3);
+}
+
+.credentials-table th {
+  background: var(--nord2);
+  color: var(--nord4);
+  font-weight: 500;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.credentials-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.credentials-table tbody tr:hover {
+  background: var(--nord2);
+}
+
+.cell-name {
+  font-weight: 500;
+  color: var(--nord6);
+}
+
+.cell-fingerprint .fingerprint-code {
+  cursor: pointer;
+  padding: 0.25rem 0.5rem;
+  background: var(--nord0);
+  border-radius: 3px;
+  font-size: 0.85rem;
+  transition: background-color 0.2s;
+  border: none;
+  color: inherit;
+  font-family: "Monaco", "Menlo", "Ubuntu Mono", "Courier New", monospace;
+}
+
+.cell-fingerprint .fingerprint-code:hover {
+  background: var(--nord3);
+}
+
+.no-fingerprint {
+  color: var(--nord4);
+}
+
+.cell-date {
+  color: var(--nord4);
+  font-size: 0.9rem;
+}
+
+.type-badge {
+  display: inline-block;
+  padding: 0.25rem 0.625rem;
+  border-radius: 12px;
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+.type-badge.type-user {
+  background: rgba(136, 192, 208, 0.2);
+  color: var(--nord8);
+}
+
+.type-badge.type-worker {
+  background: rgba(163, 190, 140, 0.2);
+  color: var(--nord14);
+}
+
+.type-badge.type-service {
+  background: rgba(180, 142, 173, 0.2);
+  color: var(--nord15);
+}
+
+.btn-revoke {
+  background: var(--nord11);
+  color: var(--nord6);
+  border: none;
+  padding: 0.375rem 0.75rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: background-color 0.2s;
+}
+
+.btn-revoke:hover {
+  background: #c9545d;
+}
+
+.self-badge {
+  color: var(--nord4);
+  font-size: 0.85rem;
+  font-style: italic;
+}

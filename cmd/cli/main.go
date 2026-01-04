@@ -10,13 +10,15 @@ import (
 var (
 	version = "dev"
 	cli     struct {
-		Worker     commands.WorkerCmd     `cmd:"" help:"Run job worker"`
-		Submit     commands.SubmitCmd     `cmd:"" help:"Submit a job"`
-		Monitor    commands.MonitorCmd    `cmd:"" help:"Monitor job events"`
-		List       commands.ListCmd       `cmd:"" help:"List jobs"`
-		TestOutput commands.TestOutputCmd `cmd:"" help:"Generate test output with known timing patterns"`
-		Debug      bool                   `help:"Enable debug mode."`
-		Version    kong.VersionFlag
+		Worker      commands.WorkerCmd      `cmd:"" help:"Run job worker"`
+		Submit      commands.SubmitCmd      `cmd:"" help:"Submit a job"`
+		Monitor     commands.MonitorCmd     `cmd:"" help:"Monitor job events"`
+		List        commands.ListCmd        `cmd:"" help:"List jobs"`
+		Init        commands.InitCmd        `cmd:"" help:"Initialize a new credential"`
+		Credentials commands.CredentialsCmd `cmd:"" help:"Manage credentials"`
+		TestOutput  commands.TestOutputCmd  `cmd:"" help:"Generate test output with known timing patterns"`
+		Debug       bool                    `help:"Enable debug mode."`
+		Version     kong.VersionFlag
 	}
 )
 

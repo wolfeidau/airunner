@@ -1,0 +1,102 @@
+syntax = "proto3";
+
+package principal.v1;
+
+// CredentialService provides credential management for web UI and CLI.
+// Authentication is handled differently per server:
+// - Website: session-based (cookie) authentication
+// - RPC Server: JWT-based authentication
+service CredentialService {
+  // ImportCredential imports a worker credential from a PEM-encoded public key.
+  // Creates a new worker principal and stores the public key.
+  // Requires admin role.
+  rpc ImportCredential(ImportCredentialRequest) returns (ImportCredentialResponse) {}
+
+  // ListCredentials returns all credentials (principals) for the current user's org.
+  // This RPC is idempotent and cacheable - uses HTTP GET for better caching.
+  rpc ListCredentials(ListCredentialsRequest) returns (ListCredentialsResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+
+  // RevokeCredential revokes a credential by principal ID.
+  // Soft-deletes the principal and adds fingerprint to revocation list.
+  // Requires admin role.
+  rpc RevokeCredential(RevokeCredentialRequest) returns (RevokeCredentialResponse) {}
+}
+
+// ImportCredential messages
+message ImportCredentialRequest {
+  // Display name for the credential
+  string name = 1;
+
+  // PEM-encoded ECDSA P-256 public key
+  string public_key_pem = 2;
+
+  // Optional description
+  string description = 3;
+}
+
+message ImportCredentialResponse {
+  // UUIDv7 as string
+  string principal_id = 1;
+
+  // UUIDv7 as string
+  string org_id = 2;
+
+  // Roles assigned to this credential
+  repeated string roles = 3;
+
+  // Base58-encoded fingerprint
+  string fingerprint = 4;
+
+  // Credential name
+  string name = 5;
+}
+
+// ListCredentials messages
+message ListCredentialsRequest {
+  // Optional filter by principal type: "user", "worker", "service"
+  // Empty string means all types
+  string principal_type = 1;
+}
+
+message Credential {
+  // UUIDv7 as string
+  string principal_id = 1;
+
+  // UUIDv7 as string
+  string org_id = 2;
+
+  // Principal type: "user", "worker", "service"
+  string type = 3;
+
+  // Display name
+  string name = 4;
+
+  // Base58-encoded fingerprint (empty for user principals)
+  string fingerprint = 5;
+
+  // Roles assigned to this principal
+  repeated string roles = 6;
+
+  // RFC3339 timestamp
+  string created_at = 7;
+
+  // RFC3339 timestamp (optional)
+  string last_used_at = 8;
+}
+
+message ListCredentialsResponse {
+  // List of credentials
+  repeated Credential credentials = 1;
+}
+
+// RevokeCredential messages
+message RevokeCredentialRequest {
+  // UUIDv7 as string
+  string principal_id = 1;
+}
+
+message RevokeCredentialResponse {
+  // Empty response (success indicated by no error)
+}

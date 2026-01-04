@@ -7,13 +7,160 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+	"github.com/wolfeidau/airunner/internal/models"
+	"github.com/wolfeidau/airunner/internal/store/memory"
 )
 
-var testSessionSecret = []byte("test-secret-key-min-32bytes-long")
+// createTestStores creates memory stores for testing
+func createTestStores() Stores {
+	return Stores{
+		Sessions:      memory.NewSessionStore(),
+		Principals:    memory.NewPrincipalStore(),
+		Organizations: memory.NewOrganizationStore(),
+	}
+}
+
+// createTestSession creates a test session in the stores and returns the session ID
+func createTestSession(t *testing.T, stores Stores, principalName, email string) uuid.UUID {
+	ctx := context.Background()
+	now := time.Now()
+
+	// Create org
+	orgID, err := uuid.NewV7()
+	require.NoError(t, err)
+
+	principalID, err := uuid.NewV7()
+	require.NoError(t, err)
+
+	org := &models.Organization{
+		OrgID:            orgID,
+		Name:             "test-org",
+		OwnerPrincipalID: principalID,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	err = stores.Organizations.Create(ctx, org)
+	require.NoError(t, err)
+
+	// Create principal
+	principal := &models.Principal{
+		PrincipalID: principalID,
+		OrgID:       orgID,
+		Type:        models.PrincipalTypeUser,
+		Name:        principalName,
+		Email:       &email,
+		Roles:       []string{"user"},
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	err = stores.Principals.Create(ctx, principal)
+	require.NoError(t, err)
+
+	// Create session
+	sessionID, err := uuid.NewV7()
+	require.NoError(t, err)
+
+	session := &models.Session{
+		SessionID:   sessionID,
+		PrincipalID: principalID,
+		OrgID:       orgID,
+		CreatedAt:   now,
+		ExpiresAt:   now.Add(1 * time.Hour),
+		LastUsedAt:  now,
+	}
+	err = stores.Sessions.Create(ctx, session)
+	require.NoError(t, err)
+
+	return sessionID
+}
+
+// createExpiredTestSession creates an expired session for testing
+func createExpiredTestSession(t *testing.T, stores Stores) uuid.UUID {
+	ctx := context.Background()
+	now := time.Now()
+
+	// Create org
+	orgID, err := uuid.NewV7()
+	require.NoError(t, err)
+
+	principalID, err := uuid.NewV7()
+	require.NoError(t, err)
+
+	org := &models.Organization{
+		OrgID:            orgID,
+		Name:             "test-org",
+		OwnerPrincipalID: principalID,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	err = stores.Organizations.Create(ctx, org)
+	require.NoError(t, err)
+
+	// Create principal
+	principal := &models.Principal{
+		PrincipalID: principalID,
+		OrgID:       orgID,
+		Type:        models.PrincipalTypeUser,
+		Name:        "Test User",
+		Roles:       []string{"user"},
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	err = stores.Principals.Create(ctx, principal)
+	require.NoError(t, err)
+
+	// Create expired session
+	sessionID, err := uuid.NewV7()
+	require.NoError(t, err)
+
+	session := &models.Session{
+		SessionID:   sessionID,
+		PrincipalID: principalID,
+		OrgID:       orgID,
+		CreatedAt:   now.Add(-2 * time.Hour),
+		ExpiresAt:   now.Add(-1 * time.Hour), // Expired
+		LastUsedAt:  now.Add(-2 * time.Hour),
+	}
+	err = stores.Sessions.Create(ctx, session)
+	require.NoError(t, err)
+
+	return sessionID
+}
+
+func TestNewGithub(t *testing.T) {
+	stores := createTestStores()
+
+	gh, err := NewGithub("test-client-id", "test-secret", "http://localhost/callback", stores, 24*time.Hour)
+	require.NoError(t, err)
+
+	require.NotNil(t, gh)
+	require.NotNil(t, gh.config)
+	require.Equal(t, "test-client-id", gh.config.ClientID)
+	require.Equal(t, "test-secret", gh.config.ClientSecret)
+	require.Equal(t, "http://localhost/callback", gh.config.RedirectURL)
+	require.Equal(t, []string{"user:email"}, gh.config.Scopes)
+	require.Equal(t, 24*time.Hour, gh.sessionTTL)
+}
+
+func TestNewGithub_MissingStores(t *testing.T) {
+	_, err := NewGithub("test-client-id", "test-secret", "http://localhost/callback", Stores{}, 24*time.Hour)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "all stores")
+}
+
+func TestNewGithub_MissingCredentials(t *testing.T) {
+	stores := createTestStores()
+
+	_, err := NewGithub("", "test-secret", "http://localhost/callback", stores, 24*time.Hour)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "client ID")
+}
 
 func TestGithub_saveState(t *testing.T) {
-	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
+	stores := createTestStores()
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", stores, 24*time.Hour)
 	require.NoError(t, err)
 
 	w := httptest.NewRecorder()
@@ -22,24 +169,23 @@ func TestGithub_saveState(t *testing.T) {
 	state := gh.saveState(w, r)
 
 	// Verify state is not empty
-	require.NotEmpty(t, state, "state should not be empty")
-
-	// Verify state has reasonable length (crypto/rand.Text() should generate a reasonably long string)
-	require.Greater(t, len(state), 10, "state should be a reasonably long random string")
+	require.NotEmpty(t, state)
+	require.Greater(t, len(state), 10)
 
 	// Verify cookie was set
 	cookies := w.Result().Cookies()
-	require.Len(t, cookies, 1, "should set exactly one cookie")
+	require.Len(t, cookies, 1)
 
 	cookie := cookies[0]
 	require.Equal(t, "state", cookie.Name)
 	require.Equal(t, state, cookie.Value)
-	require.True(t, cookie.HttpOnly, "cookie should be HttpOnly")
-	require.True(t, cookie.Secure, "cookie should be Secure")
+	require.True(t, cookie.HttpOnly)
+	require.True(t, cookie.Secure)
 }
 
 func TestGithub_saveState_randomness(t *testing.T) {
-	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
+	stores := createTestStores()
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", stores, 24*time.Hour)
 	require.NoError(t, err)
 
 	// Generate multiple states and verify they're different
@@ -52,11 +198,12 @@ func TestGithub_saveState_randomness(t *testing.T) {
 	}
 
 	// All states should be unique
-	require.Len(t, states, 10, "all generated states should be unique")
+	require.Len(t, states, 10)
 }
 
 func TestGithub_LoginHandler(t *testing.T) {
-	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
+	stores := createTestStores()
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", stores, 24*time.Hour)
 	require.NoError(t, err)
 
 	w := httptest.NewRecorder()
@@ -78,8 +225,38 @@ func TestGithub_LoginHandler(t *testing.T) {
 	require.Equal(t, "state", cookies[0].Name)
 }
 
+func TestGithub_LoginHandler_withExistingSession(t *testing.T) {
+	stores := createTestStores()
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", stores, 24*time.Hour)
+	require.NoError(t, err)
+
+	// Create a valid session
+	sessionID := createTestSession(t, stores, "Test User", "test@example.com")
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/login", nil)
+	r.AddCookie(&http.Cookie{
+		Name:  "_session",
+		Value: sessionID.String(),
+	})
+
+	gh.LoginHandler(w, r)
+
+	// Should redirect to dashboard, not GitHub
+	require.Equal(t, http.StatusFound, w.Code)
+
+	location := w.Header().Get("Location")
+	require.Equal(t, "/dashboard", location)
+	require.NotContains(t, location, "github.com")
+
+	// Should NOT set state cookie (no OAuth flow)
+	cookies := w.Result().Cookies()
+	require.Empty(t, cookies)
+}
+
 func TestGithub_CallbackHandler_invalidRequest(t *testing.T) {
-	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
+	stores := createTestStores()
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", stores, 24*time.Hour)
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -106,7 +283,8 @@ func TestGithub_CallbackHandler_invalidRequest(t *testing.T) {
 }
 
 func TestGithub_CallbackHandler_missingStateCookie(t *testing.T) {
-	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
+	stores := createTestStores()
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", stores, 24*time.Hour)
 	require.NoError(t, err)
 
 	w := httptest.NewRecorder()
@@ -119,7 +297,8 @@ func TestGithub_CallbackHandler_missingStateCookie(t *testing.T) {
 }
 
 func TestGithub_CallbackHandler_stateMismatch(t *testing.T) {
-	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
+	stores := createTestStores()
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", stores, 24*time.Hour)
 	require.NoError(t, err)
 
 	w := httptest.NewRecorder()
@@ -135,174 +314,105 @@ func TestGithub_CallbackHandler_stateMismatch(t *testing.T) {
 	require.Contains(t, w.Body.String(), "Authentication failed")
 }
 
-func TestNewGithub(t *testing.T) {
-	clientID := "test-client-id"
-	clientSecret := "test-secret"
-	callbackURL := "http://localhost/callback"
-
-	sessionTTL := 24 * time.Hour
-	gh, err := NewGithub(clientID, clientSecret, callbackURL, testSessionSecret, sessionTTL)
-	require.NoError(t, err)
-
-	require.NotNil(t, gh)
-	require.NotNil(t, gh.config)
-	require.Equal(t, clientID, gh.config.ClientID)
-	require.Equal(t, clientSecret, gh.config.ClientSecret)
-	require.Equal(t, callbackURL, gh.config.RedirectURL)
-	require.Equal(t, []string{"user:email"}, gh.config.Scopes)
-	require.Equal(t, testSessionSecret, gh.sessionSecret)
-	require.Equal(t, sessionTTL, gh.sessionTTL)
-}
-
-func TestGithub_createSessionToken(t *testing.T) {
-	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
-	require.NoError(t, err)
-
-	email := "test@example.com"
-	name := "Test User"
-	ttl := 1 * time.Hour
-
-	token, err := gh.createSessionToken(email, name, ttl)
-	require.NoError(t, err)
-	require.NotEmpty(t, token)
-
-	// Token should contain two parts separated by a dot
-	parts := len(token) > 0
-	require.True(t, parts)
-	require.Contains(t, token, ".")
-}
-
-func TestGithub_validateSessionToken(t *testing.T) {
-	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
-	require.NoError(t, err)
-
-	email := "test@example.com"
-	name := "Test User"
-	ttl := 1 * time.Hour
-
-	// Create a valid token
-	token, err := gh.createSessionToken(email, name, ttl)
-	require.NoError(t, err)
-
-	// Validate it
-	session, err := gh.validateSessionToken(token)
-	require.NoError(t, err)
-	require.NotNil(t, session)
-	require.Equal(t, email, session.Email)
-	require.Equal(t, name, session.Name)
-	require.False(t, session.IssuedAt.IsZero())
-	require.False(t, session.ExpiresAt.IsZero())
-}
-
-func TestGithub_validateSessionToken_tampered(t *testing.T) {
-	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
-	require.NoError(t, err)
-
-	email := "test@example.com"
-	name := "Test User"
-	ttl := 1 * time.Hour
-
-	token, err := gh.createSessionToken(email, name, ttl)
-	require.NoError(t, err)
-
-	// Tamper with the token
-	tamperedToken := token + "x"
-
-	// Should fail validation
-	session, err := gh.validateSessionToken(tamperedToken)
-	require.Error(t, err)
-	require.Nil(t, session)
-	require.Equal(t, ErrInvalidSession, err)
-}
-
-func TestGithub_validateSessionToken_wrongSecret(t *testing.T) {
-	gh1, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
-	require.NoError(t, err)
-	gh2, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", []byte("different-secret-key-min-32bytes"), 24*time.Hour)
-	require.NoError(t, err)
-
-	email := "test@example.com"
-	name := "Test User"
-	ttl := 1 * time.Hour
-
-	// Create token with gh1
-	token, err := gh1.createSessionToken(email, name, ttl)
-	require.NoError(t, err)
-
-	// Try to validate with gh2 (different secret)
-	session, err := gh2.validateSessionToken(token)
-	require.Error(t, err)
-	require.Nil(t, session)
-	require.Equal(t, ErrInvalidSession, err)
-}
-
-func TestGithub_validateSessionToken_expired(t *testing.T) {
-	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
-	require.NoError(t, err)
-
-	email := "test@example.com"
-	name := "Test User"
-	ttl := -1 * time.Hour // Already expired
-
-	token, err := gh.createSessionToken(email, name, ttl)
-	require.NoError(t, err)
-
-	// Should fail due to expiration
-	session, err := gh.validateSessionToken(token)
-	require.Error(t, err)
-	require.Nil(t, session)
-	require.Equal(t, ErrExpiredSession, err)
-}
-
 func TestGithub_GetSession(t *testing.T) {
-	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
+	stores := createTestStores()
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", stores, 24*time.Hour)
 	require.NoError(t, err)
 
-	email := "test@example.com"
-	name := "Test User"
-	ttl := 1 * time.Hour
+	// Create a test session
+	sessionID := createTestSession(t, stores, "Test User", "test@example.com")
 
-	token, err := gh.createSessionToken(email, name, ttl)
-	require.NoError(t, err)
-
-	// Create a request with the session cookie
+	// Create request with session cookie
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.AddCookie(&http.Cookie{
 		Name:  "_session",
-		Value: token,
+		Value: sessionID.String(),
 	})
 
 	// Get session from request
 	session, err := gh.GetSession(r)
 	require.NoError(t, err)
 	require.NotNil(t, session)
-	require.Equal(t, email, session.Email)
-	require.Equal(t, name, session.Name)
+	require.Equal(t, sessionID, session.SessionID)
+	require.Equal(t, "Test User", session.Name)
+	require.Equal(t, "test@example.com", session.Email)
 }
 
 func TestGithub_GetSession_noCookie(t *testing.T) {
-	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
+	stores := createTestStores()
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", stores, 24*time.Hour)
 	require.NoError(t, err)
 
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 
-	// Should fail when no cookie present
 	session, err := gh.GetSession(r)
 	require.Error(t, err)
 	require.Nil(t, session)
 	require.Equal(t, ErrInvalidSession, err)
 }
 
+func TestGithub_GetSession_invalidSessionID(t *testing.T) {
+	stores := createTestStores()
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", stores, 24*time.Hour)
+	require.NoError(t, err)
+
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.AddCookie(&http.Cookie{
+		Name:  "_session",
+		Value: "not-a-uuid",
+	})
+
+	session, err := gh.GetSession(r)
+	require.Error(t, err)
+	require.Nil(t, session)
+	require.Equal(t, ErrInvalidSession, err)
+}
+
+func TestGithub_GetSession_sessionNotFound(t *testing.T) {
+	stores := createTestStores()
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", stores, 24*time.Hour)
+	require.NoError(t, err)
+
+	// Use a valid UUID that doesn't exist in the store
+	nonExistentID, _ := uuid.NewV7()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.AddCookie(&http.Cookie{
+		Name:  "_session",
+		Value: nonExistentID.String(),
+	})
+
+	session, err := gh.GetSession(r)
+	require.Error(t, err)
+	require.Nil(t, session)
+	require.Equal(t, ErrInvalidSession, err)
+}
+
+func TestGithub_GetSession_expired(t *testing.T) {
+	stores := createTestStores()
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", stores, 24*time.Hour)
+	require.NoError(t, err)
+
+	// Create an expired session
+	sessionID := createExpiredTestSession(t, stores)
+
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.AddCookie(&http.Cookie{
+		Name:  "_session",
+		Value: sessionID.String(),
+	})
+
+	session, err := gh.GetSession(r)
+	require.Error(t, err)
+	require.Nil(t, session)
+	require.Equal(t, ErrExpiredSession, err)
+}
+
 func TestGithub_RequireAuth_validSession(t *testing.T) {
-	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
+	stores := createTestStores()
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", stores, 24*time.Hour)
 	require.NoError(t, err)
 
-	email := "test@example.com"
-	name := "Test User"
-	ttl := 1 * time.Hour
-
-	token, err := gh.createSessionToken(email, name, ttl)
-	require.NoError(t, err)
+	sessionID := createTestSession(t, stores, "Test User", "test@example.com")
 
 	// Create a protected handler
 	var handlerCalled bool
@@ -310,7 +420,6 @@ func TestGithub_RequireAuth_validSession(t *testing.T) {
 	protectedHandler := func(w http.ResponseWriter, r *http.Request) {
 		handlerCalled = true
 
-		// Capture session from context for verification
 		session, ok := SessionFromContext(r.Context())
 		if !ok {
 			http.Error(w, "no session in context", http.StatusInternalServerError)
@@ -331,24 +440,25 @@ func TestGithub_RequireAuth_validSession(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/protected", nil)
 	r.AddCookie(&http.Cookie{
 		Name:  "_session",
-		Value: token,
+		Value: sessionID.String(),
 	})
 
 	handler(w, r)
 
 	// Should call the handler
-	require.True(t, handlerCalled, "protected handler should be called")
+	require.True(t, handlerCalled)
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Equal(t, "success", w.Body.String())
 
 	// Verify session was in context
 	require.NotNil(t, sessionInContext)
-	require.Equal(t, email, sessionInContext.Email)
-	require.Equal(t, name, sessionInContext.Name)
+	require.Equal(t, sessionID, sessionInContext.SessionID)
+	require.Equal(t, "Test User", sessionInContext.Name)
 }
 
 func TestGithub_RequireAuth_invalidSession(t *testing.T) {
-	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
+	stores := createTestStores()
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", stores, 24*time.Hour)
 	require.NoError(t, err)
 
 	handlerCalled := false
@@ -365,19 +475,20 @@ func TestGithub_RequireAuth_invalidSession(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/protected", nil)
 	r.AddCookie(&http.Cookie{
 		Name:  "_session",
-		Value: "invalid-token",
+		Value: "invalid-session-id",
 	})
 
 	handler(w, r)
 
 	// Should redirect and not call handler
-	require.False(t, handlerCalled, "protected handler should not be called")
+	require.False(t, handlerCalled)
 	require.Equal(t, http.StatusFound, w.Code)
 	require.Equal(t, "/?error_code=invalid", w.Header().Get("Location"))
 }
 
 func TestGithub_RequireAuth_noSession(t *testing.T) {
-	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
+	stores := createTestStores()
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", stores, 24*time.Hour)
 	require.NoError(t, err)
 
 	handlerCalled := false
@@ -396,21 +507,17 @@ func TestGithub_RequireAuth_noSession(t *testing.T) {
 	handler(w, r)
 
 	// Should redirect and not call handler
-	require.False(t, handlerCalled, "protected handler should not be called")
+	require.False(t, handlerCalled)
 	require.Equal(t, http.StatusFound, w.Code)
 	require.Equal(t, "/login?error_code=invalid", w.Header().Get("Location"))
 }
 
 func TestGithub_RequireAuth_expiredSession(t *testing.T) {
-	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
+	stores := createTestStores()
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", stores, 24*time.Hour)
 	require.NoError(t, err)
 
-	email := "test@example.com"
-	name := "Test User"
-	ttl := -1 * time.Hour // Already expired
-
-	token, err := gh.createSessionToken(email, name, ttl)
-	require.NoError(t, err)
+	sessionID := createExpiredTestSession(t, stores)
 
 	handlerCalled := false
 	protectedHandler := func(w http.ResponseWriter, r *http.Request) {
@@ -426,13 +533,13 @@ func TestGithub_RequireAuth_expiredSession(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/protected", nil)
 	r.AddCookie(&http.Cookie{
 		Name:  "_session",
-		Value: token,
+		Value: sessionID.String(),
 	})
 
 	handler(w, r)
 
 	// Should redirect with expired error code
-	require.False(t, handlerCalled, "protected handler should not be called")
+	require.False(t, handlerCalled)
 	require.Equal(t, http.StatusFound, w.Code)
 	require.Equal(t, "/?error_code=expired", w.Header().Get("Location"))
 }
@@ -441,26 +548,24 @@ func TestSessionFromContext_notPresent(t *testing.T) {
 	ctx := context.Background()
 
 	session, ok := SessionFromContext(ctx)
-	require.False(t, ok, "session should not be present")
+	require.False(t, ok)
 	require.Nil(t, session)
 }
 
 func TestGithub_LogoutHandler(t *testing.T) {
-	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
+	stores := createTestStores()
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", stores, 24*time.Hour)
 	require.NoError(t, err)
 
-	// Create a valid session token
-	email := "test@example.com"
-	name := "Test User"
-	token, err := gh.createSessionToken(email, name, 1*time.Hour)
-	require.NoError(t, err)
+	// Create a valid session
+	sessionID := createTestSession(t, stores, "Test User", "test@example.com")
 
 	// Create request with session cookie
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/logout", nil)
 	r.AddCookie(&http.Cookie{
 		Name:  "_session",
-		Value: token,
+		Value: sessionID.String(),
 	})
 
 	// Call logout handler
@@ -476,10 +581,15 @@ func TestGithub_LogoutHandler(t *testing.T) {
 	require.Equal(t, "_session", cookies[0].Name)
 	require.Empty(t, cookies[0].Value)
 	require.Equal(t, -1, cookies[0].MaxAge)
+
+	// Session should be deleted from store
+	_, err = stores.Sessions.Get(context.Background(), sessionID)
+	require.Error(t, err)
 }
 
 func TestGithub_LogoutHandler_noSession(t *testing.T) {
-	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", testSessionSecret, 24*time.Hour)
+	stores := createTestStores()
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", stores, 24*time.Hour)
 	require.NoError(t, err)
 
 	// Create request without session cookie
@@ -498,4 +608,74 @@ func TestGithub_LogoutHandler_noSession(t *testing.T) {
 	require.Len(t, cookies, 1)
 	require.Equal(t, "_session", cookies[0].Name)
 	require.Equal(t, -1, cookies[0].MaxAge)
+}
+
+func TestGithub_getOrCreatePrincipal_newUser(t *testing.T) {
+	stores := createTestStores()
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", stores, 24*time.Hour)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	githubID := "12345"
+	userInfo := &UserInfo{
+		ID:        12345,
+		Login:     "testuser",
+		Email:     "test@example.com",
+		Name:      "Test User",
+		AvatarURL: "https://github.com/avatars/12345",
+	}
+
+	principal, orgID, err := gh.getOrCreatePrincipal(ctx, githubID, userInfo)
+	require.NoError(t, err)
+	require.NotNil(t, principal)
+	require.NotEqual(t, uuid.Nil, orgID)
+
+	// Verify principal was created correctly
+	require.Equal(t, "Test User", principal.Name)
+	require.Equal(t, &githubID, principal.GitHubID)
+	require.Equal(t, &userInfo.Login, principal.GitHubLogin)
+	require.Equal(t, &userInfo.Email, principal.Email)
+	require.Contains(t, principal.Roles, "admin") // First user is admin
+
+	// Verify org was created with GitHub username
+	org, err := stores.Organizations.Get(ctx, orgID)
+	require.NoError(t, err)
+	require.Equal(t, "testuser", org.Name)
+	require.Equal(t, principal.PrincipalID, org.OwnerPrincipalID)
+}
+
+func TestGithub_getOrCreatePrincipal_existingUser(t *testing.T) {
+	stores := createTestStores()
+	gh, err := NewGithub("test-client-id", "test-client-secret", "http://localhost/callback", stores, 24*time.Hour)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	githubID := "12345"
+	userInfo := &UserInfo{
+		ID:        12345,
+		Login:     "testuser",
+		Email:     "test@example.com",
+		Name:      "Test User",
+		AvatarURL: "https://github.com/avatars/12345",
+	}
+
+	// First call creates the principal
+	principal1, orgID1, err := gh.getOrCreatePrincipal(ctx, githubID, userInfo)
+	require.NoError(t, err)
+
+	// Update user info
+	userInfo.Name = "Updated Name"
+	userInfo.Email = "updated@example.com"
+
+	// Second call should find existing principal and update it
+	principal2, orgID2, err := gh.getOrCreatePrincipal(ctx, githubID, userInfo)
+	require.NoError(t, err)
+
+	// Should be the same principal
+	require.Equal(t, principal1.PrincipalID, principal2.PrincipalID)
+	require.Equal(t, orgID1, orgID2)
+
+	// Should have updated info
+	require.Equal(t, "Updated Name", principal2.Name)
+	require.Equal(t, "updated@example.com", *principal2.Email)
 }

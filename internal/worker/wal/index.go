@@ -5,14 +5,16 @@ import "sync"
 // walIndex tracks record metadata for the WAL
 // Provides fast lookups for unsent/sent/failed records
 type walIndex struct {
-	mu      sync.RWMutex
-	records []walRecord
+	mu         sync.RWMutex
+	records    []walRecord
+	seqToIndex map[int64]int // Maps sequence number to index in records slice
 }
 
 // newWALIndex creates a new index
 func newWALIndex() *walIndex {
 	return &walIndex{
-		records: make([]walRecord, 0, 1000),
+		records:    make([]walRecord, 0, 1000),
+		seqToIndex: make(map[int64]int, 1000),
 	}
 }
 
@@ -20,6 +22,7 @@ func newWALIndex() *walIndex {
 func (idx *walIndex) Add(rec walRecord) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
+	idx.seqToIndex[rec.sequence] = len(idx.records)
 	idx.records = append(idx.records, rec)
 }
 
@@ -42,15 +45,9 @@ func (idx *walIndex) MarkSent(recs []walRecord) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
-	// Build lookup map for efficiency
-	toMark := make(map[int64]bool)
+	// Use sequence-to-index map for O(1) lookups
 	for _, rec := range recs {
-		toMark[rec.sequence] = true
-	}
-
-	// Update status
-	for i := range idx.records {
-		if toMark[idx.records[i].sequence] {
+		if i, ok := idx.seqToIndex[rec.sequence]; ok {
 			idx.records[i].status = RecordSent
 		}
 	}
@@ -61,15 +58,9 @@ func (idx *walIndex) MarkFailed(recs []walRecord) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
-	// Build lookup map for efficiency
-	toMark := make(map[int64]bool)
+	// Use sequence-to-index map for O(1) lookups
 	for _, rec := range recs {
-		toMark[rec.sequence] = true
-	}
-
-	// Update status
-	for i := range idx.records {
-		if toMark[idx.records[i].sequence] {
+		if i, ok := idx.seqToIndex[rec.sequence]; ok {
 			idx.records[i].status = RecordFailed
 		}
 	}
@@ -139,10 +130,8 @@ func (idx *walIndex) GetBySequence(sequence int64) (walRecord, bool) {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
-	for _, rec := range idx.records {
-		if rec.sequence == sequence {
-			return rec, true
-		}
+	if i, ok := idx.seqToIndex[sequence]; ok {
+		return idx.records[i], true
 	}
 	return walRecord{}, false
 }

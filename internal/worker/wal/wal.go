@@ -59,6 +59,9 @@ type WALConfig struct {
 	// FlushInterval is how often the async sender checks for unsent events
 	FlushInterval time.Duration
 
+	// FlushPollInterval is how often the Flush method checks if all events are sent
+	FlushPollInterval time.Duration
+
 	// RetryBackoff configures exponential backoff for failed sends
 	RetryBackoff BackoffConfig
 
@@ -86,6 +89,7 @@ func DefaultConfig() *WALConfig {
 		ArchiveDir:        filepath.Join(homeDir, ".airunner", "archive"),
 		RetentionDays:     30,
 		FlushInterval:     100 * time.Millisecond,
+		FlushPollInterval: 100 * time.Millisecond,
 		ArchiveOnComplete: true,
 		RetryBackoff: BackoffConfig{
 			InitialInterval: 1 * time.Second,
@@ -113,6 +117,11 @@ type walImpl struct {
 func NewWAL(cfg *WALConfig, jobID string) (WAL, error) {
 	if cfg == nil {
 		cfg = DefaultConfig()
+	}
+
+	// Set defaults for zero-valued fields
+	if cfg.FlushPollInterval == 0 {
+		cfg.FlushPollInterval = 100 * time.Millisecond
 	}
 
 	// Ensure directories exist
@@ -270,8 +279,8 @@ func (w *walImpl) Flush(ctx context.Context) error {
 	}
 	w.mu.RUnlock()
 
-	// Poll every 100ms to check if all events are sent
-	ticker := time.NewTicker(100 * time.Millisecond)
+	// Poll to check if all events are sent
+	ticker := time.NewTicker(w.cfg.FlushPollInterval)
 	defer ticker.Stop()
 
 	for {

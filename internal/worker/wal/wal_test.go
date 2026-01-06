@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -391,10 +392,13 @@ func TestWAL_NetworkFailureRecovery(t *testing.T) {
 	}()
 
 	// Mock sender that fails first 3 times, then succeeds
+	var mu sync.Mutex
 	attemptCount := 0
 	var sentEvents []*jobv1.JobEvent
 	sender := &mockEventSender{
 		sendFunc: func(ctx context.Context, events []*jobv1.JobEvent) error {
+			mu.Lock()
+			defer mu.Unlock()
 			attemptCount++
 			if attemptCount <= 3 {
 				return assert.AnError // Simulate network error
@@ -421,8 +425,12 @@ func TestWAL_NetworkFailureRecovery(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	// Verify all events eventually sent
-	assert.Len(t, sentEvents, 10, "All events should be sent after retries")
-	assert.Greater(t, attemptCount, 3, "Should have retried at least 3 times")
+	mu.Lock()
+	eventsCount := len(sentEvents)
+	attempts := attemptCount
+	mu.Unlock()
+	assert.Equal(t, 10, eventsCount, "All events should be sent after retries")
+	assert.Greater(t, attempts, 3, "Should have retried at least 3 times")
 }
 
 // TestWAL_WorkerCrashRecovery tests that events survive worker crashes
@@ -477,9 +485,12 @@ func TestWAL_WorkerCrashRecovery(t *testing.T) {
 	assert.Equal(t, 10, impl2.index.CountPending(), "All events should be pending")
 
 	// Start sender and verify events are sent
+	var mu sync.Mutex
 	var sentEvents []*jobv1.JobEvent
 	sender := &mockEventSender{
 		sendFunc: func(ctx context.Context, events []*jobv1.JobEvent) error {
+			mu.Lock()
+			defer mu.Unlock()
 			sentEvents = append(sentEvents, events...)
 			return nil
 		},
@@ -492,7 +503,10 @@ func TestWAL_WorkerCrashRecovery(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 
 	// Verify events replayed
-	assert.Len(t, sentEvents, 10, "All events should be replayed after crash")
+	mu.Lock()
+	eventsCount := len(sentEvents)
+	mu.Unlock()
+	assert.Equal(t, 10, eventsCount, "All events should be replayed after crash")
 }
 
 // TestWAL_CRC64Corruption tests that corrupted records are detected

@@ -306,6 +306,10 @@ func (s *grpcEventSender) Send(ctx context.Context, events []*jobv1.JobEvent) er
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.stream == nil {
+		return fmt.Errorf("event stream is not initialized")
+	}
+
 	err := s.stream.Send(&jobv1.PublishJobEventsRequest{
 		TaskToken: s.taskToken,
 		Events:    events,

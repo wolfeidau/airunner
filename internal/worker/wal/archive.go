@@ -11,6 +11,22 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// ArchiveCleanupError indicates the archive was created successfully but cleanup failed
+type ArchiveCleanupError struct {
+	ArchivePath string
+	WALPath     string
+	CleanupErr  error
+}
+
+func (e *ArchiveCleanupError) Error() string {
+	return fmt.Sprintf("archive created at %s but failed to cleanup WAL file %s: %v",
+		e.ArchivePath, e.WALPath, e.CleanupErr)
+}
+
+func (e *ArchiveCleanupError) Unwrap() error {
+	return e.CleanupErr
+}
+
 // archiveWAL compresses a WAL file using zstd and moves it to the archive directory
 func archiveWAL(walPath, archiveDir, jobID string) error {
 	// Open source WAL file
@@ -45,15 +61,22 @@ func archiveWAL(walPath, archiveDir, jobID string) error {
 	// Stream compress
 	written, err := io.Copy(enc, src)
 	if err != nil {
-		enc.Close()
-		dst.Close()
+		// Ensure proper cleanup order
+		if closeErr := enc.Close(); closeErr != nil {
+			log.Warn().Err(closeErr).Msg("Failed to close encoder during error cleanup")
+		}
+		if closeErr := dst.Close(); closeErr != nil {
+			log.Warn().Err(closeErr).Msg("Failed to close destination during error cleanup")
+		}
 		os.Remove(archivePath) // Clean up partial file
 		return fmt.Errorf("failed to compress: %w", err)
 	}
 
 	// Close encoder to flush
 	if err := enc.Close(); err != nil {
-		dst.Close()
+		if closeErr := dst.Close(); closeErr != nil {
+			log.Warn().Err(closeErr).Msg("Failed to close destination during encoder close error cleanup")
+		}
 		os.Remove(archivePath)
 		return fmt.Errorf("failed to close encoder: %w", err)
 	}
@@ -91,8 +114,14 @@ func archiveWAL(walPath, archiveDir, jobID string) error {
 		log.Warn().
 			Err(err).
 			Str("wal_path", walPath).
+			Str("archive_path", archivePath).
 			Msg("Failed to delete original WAL after archiving")
-		// Don't return error - archive was successful
+		// Return custom error to indicate partial success
+		return &ArchiveCleanupError{
+			ArchivePath: archivePath,
+			WALPath:     walPath,
+			CleanupErr:  err,
+		}
 	}
 
 	return nil

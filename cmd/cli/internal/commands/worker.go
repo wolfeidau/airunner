@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand/v2"
 	"os"
+	"strings"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -17,6 +20,7 @@ import (
 	"github.com/wolfeidau/airunner/cmd/cli/internal/credentials"
 	"github.com/wolfeidau/airunner/internal/client"
 	"github.com/wolfeidau/airunner/internal/worker"
+	"github.com/wolfeidau/airunner/internal/worker/wal"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -138,12 +142,34 @@ func (w *WorkerCmd) processJob(ctx context.Context, clients *client.Clients) (bo
 
 	eventStream := clients.Events.PublishJobEvents(ctx)
 
-	// Create event batcher with job's ExecutionConfig
+	// Create WAL for durable event persistence
+	jobWAL, err := wal.NewWAL(wal.DefaultConfig(), job.JobId)
+	if err != nil {
+		return true, fmt.Errorf("failed to create WAL: %w", err)
+	}
+	defer func() {
+		if err := jobWAL.Stop(ctx); err != nil {
+			log.Error().Err(err).Msg("Failed to stop WAL")
+		}
+	}()
+
+	// Wrap gRPC stream as EventSender for WAL with reconnection support
+	sender := &grpcEventSender{
+		clients:   clients,
+		stream:    eventStream,
+		taskToken: taskToken,
+	}
+
+	// Start async sender for WAL
+	if err := jobWAL.Start(ctx, sender); err != nil {
+		return true, fmt.Errorf("failed to start WAL sender: %w", err)
+	}
+
+	// Create event batcher with WAL callback
+	// EventBatcher writes to WAL with fsync (synchronous)
+	// Async sender will retry sending to server until success
 	batcher := worker.NewEventBatcher(job.ExecutionConfig, func(event *jobv1.JobEvent) error {
-		return eventStream.Send(&jobv1.PublishJobEventsRequest{
-			TaskToken: taskToken,
-			Events:    []*jobv1.JobEvent{event},
-		})
+		return jobWAL.Append(ctx, event)
 	})
 
 	executor := worker.NewJobExecutor(eventStream, taskToken, batcher)
@@ -161,6 +187,20 @@ func (w *WorkerCmd) processJob(ctx context.Context, clients *client.Clients) (bo
 	// Close event stream first
 	if _, err := eventStream.CloseAndReceive(); err != nil {
 		log.Error().Err(err).Msg("Failed to close event stream")
+	}
+
+	// CRITICAL: Flush WAL before completing job to ensure zero data loss
+	// This blocks until all events are sent or context times out
+	// Create a context with timeout for the flush (use remaining visibility timeout)
+	flushCtx, flushCancel := context.WithTimeout(ctx, time.Duration(w.VisibilityTimeout)*time.Second)
+	defer flushCancel()
+
+	flushErr := jobWAL.Flush(flushCtx)
+	if flushErr != nil {
+		log.Error().Err(flushErr).Str("job_id", job.JobId).Msg("Failed to flush WAL events")
+		// If we can't flush events, the job must FAIL
+		// This ensures we don't lose events by marking job as completed
+		executeErr = fmt.Errorf("failed to flush WAL events: %w", flushErr)
 	}
 
 	// Build job result based on execution outcome
@@ -249,4 +289,63 @@ func addJitter(base time.Duration, jitterFactor float64) time.Duration {
 	//nolint:gosec // G404: Using math/rand for timing jitter is safe and appropriate
 	jittered := min + rand.Float64()*(max-min)
 	return time.Duration(jittered)
+}
+
+// grpcEventSender wraps a Connect RPC stream as an EventSender for the WAL
+// It handles automatic reconnection when the stream is closed
+type grpcEventSender struct {
+	clients   *client.Clients
+	stream    *connect.ClientStreamForClient[jobv1.PublishJobEventsRequest, jobv1.PublishJobEventsResponse]
+	taskToken string
+	mu        sync.Mutex
+}
+
+// Send implements wal.EventSender
+// If the stream is closed (EOF), it will recreate the stream and retry
+func (s *grpcEventSender) Send(ctx context.Context, events []*jobv1.JobEvent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	err := s.stream.Send(&jobv1.PublishJobEventsRequest{
+		TaskToken: s.taskToken,
+		Events:    events,
+	})
+
+	// If we get EOF, the stream is dead - recreate it and retry
+	if err != nil && (errors.Is(err, io.EOF) || isStreamClosed(err)) {
+		log.Warn().Err(err).Msg("Event stream closed, reconnecting...")
+
+		// Recreate the stream
+		newStream := s.clients.Events.PublishJobEvents(ctx)
+		s.stream = newStream
+
+		// Retry send on new stream
+		err = s.stream.Send(&jobv1.PublishJobEventsRequest{
+			TaskToken: s.taskToken,
+			Events:    events,
+		})
+
+		if err == nil {
+			log.Info().Msg("Successfully reconnected event stream")
+		}
+	}
+
+	return err
+}
+
+// isStreamClosed checks if error indicates a closed stream
+func isStreamClosed(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		// Check for common gRPC stream closed errors
+		(errStr != "" && (errors.Is(err, io.EOF) ||
+			errors.Is(err, io.ErrUnexpectedEOF) ||
+			// Connect RPC errors
+			strings.Contains(errStr, "EOF") ||
+			strings.Contains(errStr, "stream") && strings.Contains(errStr, "closed") ||
+			strings.Contains(errStr, "connection") && strings.Contains(errStr, "closed")))
 }

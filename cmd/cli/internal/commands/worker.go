@@ -17,6 +17,7 @@ import (
 	"github.com/wolfeidau/airunner/cmd/cli/internal/credentials"
 	"github.com/wolfeidau/airunner/internal/client"
 	"github.com/wolfeidau/airunner/internal/worker"
+	"github.com/wolfeidau/airunner/internal/worker/wal"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -138,13 +139,41 @@ func (w *WorkerCmd) processJob(ctx context.Context, clients *client.Clients) (bo
 
 	eventStream := clients.Events.PublishJobEvents(ctx)
 
+	// ============================================================
+	// WAL INTEGRATION START
+	// ============================================================
+
+	// Create WAL for this job
+	jobWAL, err := wal.NewWAL(wal.DefaultConfig(), job.JobId)
+	if err != nil {
+		return true, fmt.Errorf("failed to create WAL: %w", err)
+	}
+	defer func() {
+		if err := jobWAL.Stop(ctx); err != nil {
+			log.Error().Err(err).Str("job_id", job.JobId).Msg("Failed to stop WAL")
+		}
+	}()
+
+	// Wrap gRPC stream as EventSender for WAL
+	sender := &grpcEventSender{
+		stream:    eventStream,
+		taskToken: taskToken,
+	}
+
+	// Start async sender for WAL
+	if err := jobWAL.Start(ctx, sender); err != nil {
+		return true, fmt.Errorf("failed to start WAL sender: %w", err)
+	}
+
 	// Create event batcher with job's ExecutionConfig
+	// Events are written to WAL first, then async sender retries until sent
 	batcher := worker.NewEventBatcher(job.ExecutionConfig, func(event *jobv1.JobEvent) error {
-		return eventStream.Send(&jobv1.PublishJobEventsRequest{
-			TaskToken: taskToken,
-			Events:    []*jobv1.JobEvent{event},
-		})
+		return jobWAL.Append(ctx, event)
 	})
+
+	// ============================================================
+	// WAL INTEGRATION END
+	// ============================================================
 
 	executor := worker.NewJobExecutor(eventStream, taskToken, batcher)
 
@@ -249,4 +278,18 @@ func addJitter(base time.Duration, jitterFactor float64) time.Duration {
 	//nolint:gosec // G404: Using math/rand for timing jitter is safe and appropriate
 	jittered := min + rand.Float64()*(max-min)
 	return time.Duration(jittered)
+}
+
+// grpcEventSender wraps a Connect RPC stream as an EventSender for the WAL
+type grpcEventSender struct {
+	stream    *connect.ClientStreamForClient[jobv1.PublishJobEventsRequest, jobv1.PublishJobEventsResponse]
+	taskToken string
+}
+
+// Send implements wal.EventSender
+func (s *grpcEventSender) Send(ctx context.Context, events []*jobv1.JobEvent) error {
+	return s.stream.Send(&jobv1.PublishJobEventsRequest{
+		TaskToken: s.taskToken,
+		Events:    events,
+	})
 }

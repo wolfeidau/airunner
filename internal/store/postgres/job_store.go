@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -535,11 +536,13 @@ func (s *JobStore) ListJobs(ctx context.Context, req *jobv1.ListJobsRequest) (*j
 	}
 
 	// Build final query
-	query := baseQuery
+	var queryBuilder strings.Builder
+	queryBuilder.WriteString(baseQuery)
 	for _, cond := range conditions {
-		query += " " + cond
+		queryBuilder.WriteString(" ")
+		queryBuilder.WriteString(cond)
 	}
-	query += " ORDER BY created_at DESC"
+	queryBuilder.WriteString(" ORDER BY created_at DESC")
 
 	// Add pagination
 	pageSize := int32(50) // Default page size
@@ -547,8 +550,9 @@ func (s *JobStore) ListJobs(ctx context.Context, req *jobv1.ListJobsRequest) (*j
 		pageSize = req.PageSize
 	}
 
-	query += fmt.Sprintf(" LIMIT $%d", argIdx)
+	fmt.Fprintf(&queryBuilder, " LIMIT $%d", argIdx)
 	args = append(args, pageSize+1) // Fetch one extra to check if there are more
+	query := queryBuilder.String()
 
 	// Execute query
 	rows, err := s.pool.Query(ctx, query, args...)
@@ -674,7 +678,7 @@ func (s *JobStore) PublishEvents(ctx context.Context, taskToken string, events [
 	defer batchResults.Close()
 
 	// Check for errors
-	for i := 0; i < len(events); i++ {
+	for i := range len(events) {
 		_, err := batchResults.Exec()
 		if err != nil {
 			return mapPostgresError(fmt.Errorf("failed to insert event %d: %w", i, err))
@@ -747,10 +751,14 @@ func (s *JobStore) StreamEvents(ctx context.Context, jobID string, fromSequence 
 			args = append(args, fromTimestamp)
 		}
 
+		var queryBuilder strings.Builder
+		queryBuilder.WriteString(query)
 		for _, cond := range conditions {
-			query += " " + cond
+			queryBuilder.WriteString(" ")
+			queryBuilder.WriteString(cond)
 		}
-		query += " ORDER BY sequence ASC"
+		queryBuilder.WriteString(" ORDER BY sequence ASC")
+		query = queryBuilder.String()
 
 		rows, err := s.pool.Query(ctx, query, args...)
 		if err != nil {

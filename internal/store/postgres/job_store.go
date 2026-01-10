@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -190,7 +191,7 @@ func (s *JobStore) EnqueueJob(ctx context.Context, req *jobv1.EnqueueJobRequest)
 	).Scan(&returnedJobID)
 
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			// Conflict occurred, fetch the existing job
 			existing, err := s.getJobByRequestID(queryCtx, req.RequestId)
 			if err != nil {
@@ -341,6 +342,10 @@ func (s *JobStore) DequeueJobs(ctx context.Context, queue string, maxJobs int, t
 // UpdateJobVisibility extends the visibility timeout for a job.
 // The receipt handle does NOT change (matches AWS SQS behavior).
 func (s *JobStore) UpdateJobVisibility(ctx context.Context, queue string, taskToken string, timeoutSeconds int) error {
+	// Apply query timeout
+	queryCtx, cancel := s.withQueryTimeout(ctx)
+	defer cancel()
+
 	// Decode and verify task token
 	tt, err := s.decodeTaskToken(taskToken)
 	if err != nil {
@@ -365,7 +370,7 @@ func (s *JobStore) UpdateJobVisibility(ctx context.Context, queue string, taskTo
 		  AND queue = $4
 	`
 
-	result, err := s.pool.Exec(ctx, query,
+	result, err := s.pool.Exec(queryCtx, query,
 		timeoutSeconds,
 		tt.JobID,
 		tt.ReceiptHandle,
@@ -458,6 +463,10 @@ func (s *JobStore) CompleteJob(ctx context.Context, taskToken string, result *jo
 // ReleaseJob returns a job back to the queue in SCHEDULED state.
 // Clears the receipt_handle and visibility_until fields.
 func (s *JobStore) ReleaseJob(ctx context.Context, taskToken string) error {
+	// Apply query timeout
+	queryCtx, cancel := s.withQueryTimeout(ctx)
+	defer cancel()
+
 	// Decode and verify task token
 	tt, err := s.decodeTaskToken(taskToken)
 	if err != nil {
@@ -477,7 +486,7 @@ func (s *JobStore) ReleaseJob(ctx context.Context, taskToken string) error {
 		  AND receipt_handle = $3::UUID
 	`
 
-	result, err := s.pool.Exec(ctx, query,
+	result, err := s.pool.Exec(queryCtx, query,
 		jobv1.JobState_JOB_STATE_SCHEDULED,
 		tt.JobID,
 		tt.ReceiptHandle,
@@ -501,7 +510,7 @@ func (s *JobStore) ReleaseJob(ctx context.Context, taskToken string) error {
 func (s *JobStore) ListJobs(ctx context.Context, req *jobv1.ListJobsRequest) (*jobv1.ListJobsResponse, error) {
 	// Build query with filters
 	baseQuery := `
-		SELECT job_id, queue, state, request_id, created_at, updated_at,
+		SELECT job_id, state, created_at, updated_at,
 		       job_params, execution_config
 		FROM jobs
 		WHERE 1=1
@@ -550,44 +559,13 @@ func (s *JobStore) ListJobs(ctx context.Context, req *jobv1.ListJobsRequest) (*j
 
 	var jobs []*jobv1.Job
 	for rows.Next() {
-		var jobProto jobv1.Job
-		var jobParamsJSON, execConfigJSON []byte
-		var createdAt, updatedAt time.Time
-		var queue, requestID string // Read but not returned in Job proto
-
-		err := rows.Scan(
-			&jobProto.JobId,
-			&queue, // Read but not used (not in Job proto)
-			&jobProto.State,
-			&requestID, // Read but not used (not in Job proto)
-			&createdAt,
-			&updatedAt,
-			&jobParamsJSON,
-			&execConfigJSON,
-		)
+		job, err := scanJob(rows)
 		if err != nil {
-			return nil, mapPostgresError(err)
+			return nil, err
 		}
-
-		// Convert timestamps
-		jobProto.CreatedAt = timestamppb.New(createdAt)
-		jobProto.UpdatedAt = timestamppb.New(updatedAt)
-
-		// Unmarshal job params from JSON
-		jobProto.JobParams = &jobv1.JobParams{}
-		if err := util.UnmarshalProtoJSON(jobParamsJSON, jobProto.JobParams); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal job_params: %w", err)
+		if job != nil {
+			jobs = append(jobs, job)
 		}
-
-		// Unmarshal execution config from JSON
-		if execConfigJSON != nil {
-			jobProto.ExecutionConfig = &jobv1.ExecutionConfig{}
-			if err := util.UnmarshalProtoJSON(execConfigJSON, jobProto.ExecutionConfig); err != nil {
-				return nil, fmt.Errorf("failed to unmarshal execution_config: %w", err)
-			}
-		}
-
-		jobs = append(jobs, &jobProto)
 	}
 
 	if err := rows.Err(); err != nil {
@@ -827,6 +805,52 @@ func (s *JobStore) StreamEvents(ctx context.Context, jobID string, fromSequence 
 
 // Helper methods
 
+// rowScanner is an interface for scanning database rows.
+// Both pgx.Row and pgx.Rows implement this interface.
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+// scanJob scans a job row and unmarshals its JSON fields.
+// Expected columns: job_id, state, created_at, updated_at, job_params, execution_config
+func scanJob(scanner rowScanner) (*jobv1.Job, error) {
+	var jobProto jobv1.Job
+	var jobParamsJSON, execConfigJSON []byte
+	var createdAt, updatedAt time.Time
+
+	err := scanner.Scan(
+		&jobProto.JobId,
+		&jobProto.State,
+		&createdAt,
+		&updatedAt,
+		&jobParamsJSON,
+		&execConfigJSON,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, mapPostgresError(err)
+	}
+
+	jobProto.CreatedAt = timestamppb.New(createdAt)
+	jobProto.UpdatedAt = timestamppb.New(updatedAt)
+
+	jobProto.JobParams = &jobv1.JobParams{}
+	if err := util.UnmarshalProtoJSON(jobParamsJSON, jobProto.JobParams); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal job_params: %w", err)
+	}
+
+	if execConfigJSON != nil {
+		jobProto.ExecutionConfig = &jobv1.ExecutionConfig{}
+		if err := util.UnmarshalProtoJSON(execConfigJSON, jobProto.ExecutionConfig); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal execution_config: %w", err)
+		}
+	}
+
+	return &jobProto, nil
+}
+
 // withQueryTimeout creates a context with a query timeout.
 // If a parent context already has a deadline, it uses the earlier deadline.
 func (s *JobStore) withQueryTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -846,45 +870,15 @@ func (s *JobStore) getJobByID(ctx context.Context, jobID string) (*jobv1.Job, er
 		WHERE job_id = $1
 	`
 
-	var jobProto jobv1.Job
-	var jobParamsJSON, execConfigJSON []byte
-	var createdAt, updatedAt time.Time
-
-	err := s.pool.QueryRow(ctx, query, jobID).Scan(
-		&jobProto.JobId,
-		&jobProto.State,
-		&createdAt,
-		&updatedAt,
-		&jobParamsJSON,
-		&execConfigJSON,
-	)
-
+	job, err := scanJob(s.pool.QueryRow(ctx, query, jobID))
 	if err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, store.ErrJobNotFound
-		}
-		return nil, mapPostgresError(err)
+		return nil, err
+	}
+	if job == nil {
+		return nil, store.ErrJobNotFound
 	}
 
-	// Convert timestamps
-	jobProto.CreatedAt = timestamppb.New(createdAt)
-	jobProto.UpdatedAt = timestamppb.New(updatedAt)
-
-	// Unmarshal job params from JSON
-	jobProto.JobParams = &jobv1.JobParams{}
-	if err := util.UnmarshalProtoJSON(jobParamsJSON, jobProto.JobParams); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal job_params: %w", err)
-	}
-
-	// Unmarshal execution config from JSON
-	if execConfigJSON != nil {
-		jobProto.ExecutionConfig = &jobv1.ExecutionConfig{}
-		if err := util.UnmarshalProtoJSON(execConfigJSON, jobProto.ExecutionConfig); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal execution_config: %w", err)
-		}
-	}
-
-	return &jobProto, nil
+	return job, nil
 }
 
 // getJobByRequestID retrieves a job by its request_id (for idempotency checks).
@@ -896,45 +890,12 @@ func (s *JobStore) getJobByRequestID(ctx context.Context, requestID string) (*jo
 		WHERE request_id = $1
 	`
 
-	var jobProto jobv1.Job
-	var jobParamsJSON, execConfigJSON []byte
-	var createdAt, updatedAt time.Time
-
-	err := s.pool.QueryRow(ctx, query, requestID).Scan(
-		&jobProto.JobId,
-		&jobProto.State,
-		&createdAt,
-		&updatedAt,
-		&jobParamsJSON,
-		&execConfigJSON,
-	)
-
+	job, err := scanJob(s.pool.QueryRow(ctx, query, requestID))
 	if err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, nil // Not an error - just not found
-		}
-		return nil, mapPostgresError(err)
+		return nil, err
 	}
-
-	// Convert timestamps
-	jobProto.CreatedAt = timestamppb.New(createdAt)
-	jobProto.UpdatedAt = timestamppb.New(updatedAt)
-
-	// Unmarshal job params from JSON
-	jobProto.JobParams = &jobv1.JobParams{}
-	if err := util.UnmarshalProtoJSON(jobParamsJSON, jobProto.JobParams); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal job_params: %w", err)
-	}
-
-	// Unmarshal execution config from JSON
-	if execConfigJSON != nil {
-		jobProto.ExecutionConfig = &jobv1.ExecutionConfig{}
-		if err := util.UnmarshalProtoJSON(execConfigJSON, jobProto.ExecutionConfig); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal execution_config: %w", err)
-		}
-	}
-
-	return &jobProto, nil
+	// Return nil without error if not found (idempotency check)
+	return job, nil
 }
 
 // fanoutEvent sends an event to all active stream channels for a job.

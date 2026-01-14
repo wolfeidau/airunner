@@ -27,6 +27,55 @@ func NewPrincipalStore(pool *pgxpool.Pool) *PrincipalStore {
 	}
 }
 
+// scanPrincipal scans a principal row and handles NULL value conversion.
+// Expected columns: principal_id, org_id, type, name, github_id, github_login, email, avatar_url,
+//
+//	public_key, public_key_der, fingerprint, roles, created_at, updated_at, last_used_at, deleted_at
+//
+// Uses the rowScanner interface defined in job_store.go (shared in the postgres package).
+func scanPrincipal(scanner rowScanner) (*models.Principal, error) {
+	var p models.Principal
+	var publicKey, publicKeyDER, fingerprint any
+
+	err := scanner.Scan(
+		&p.PrincipalID,
+		&p.OrgID,
+		&p.Type,
+		&p.Name,
+		&p.GitHubID,
+		&p.GitHubLogin,
+		&p.Email,
+		&p.AvatarURL,
+		&publicKey,
+		&publicKeyDER,
+		&fingerprint,
+		&p.Roles,
+		&p.CreatedAt,
+		&p.UpdatedAt,
+		&p.LastUsedAt,
+		&p.DeletedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	// Convert NULL values from database to Go zero values
+	if publicKey != nil {
+		p.PublicKey = publicKey.(string)
+	}
+	if publicKeyDER != nil {
+		p.PublicKeyDER = publicKeyDER.([]byte)
+	}
+	if fingerprint != nil {
+		p.Fingerprint = fingerprint.(string)
+	}
+
+	return &p, nil
+}
+
 // Create creates a new principal in the database.
 func (s *PrincipalStore) Create(ctx context.Context, principal *models.Principal) error {
 	query := `
@@ -105,46 +154,15 @@ func (s *PrincipalStore) Get(ctx context.Context, principalID uuid.UUID) (*model
 		WHERE principal_id = $1
 	`
 
-	var p models.Principal
-	var publicKey, publicKeyDER, fingerprint any
-	err := s.pool.QueryRow(ctx, query, principalID).Scan(
-		&p.PrincipalID,
-		&p.OrgID,
-		&p.Type,
-		&p.Name,
-		&p.GitHubID,
-		&p.GitHubLogin,
-		&p.Email,
-		&p.AvatarURL,
-		&publicKey,
-		&publicKeyDER,
-		&fingerprint,
-		&p.Roles,
-		&p.CreatedAt,
-		&p.UpdatedAt,
-		&p.LastUsedAt,
-		&p.DeletedAt,
-	)
-
+	principal, err := scanPrincipal(s.pool.QueryRow(ctx, query, principalID))
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, store.ErrPrincipalNotFound
-		}
 		return nil, fmt.Errorf("failed to get principal: %w", err)
 	}
-
-	// Convert NULL values from database to Go zero values
-	if publicKey != nil {
-		p.PublicKey = publicKey.(string)
-	}
-	if publicKeyDER != nil {
-		p.PublicKeyDER = publicKeyDER.([]byte)
-	}
-	if fingerprint != nil {
-		p.Fingerprint = fingerprint.(string)
+	if principal == nil {
+		return nil, store.ErrPrincipalNotFound
 	}
 
-	return &p, nil
+	return principal, nil
 }
 
 // GetByFingerprint retrieves a non-revoked worker/service principal by fingerprint.
@@ -159,46 +177,15 @@ func (s *PrincipalStore) GetByFingerprint(ctx context.Context, fingerprint strin
 		WHERE fingerprint = $1 AND deleted_at IS NULL
 	`
 
-	var p models.Principal
-	var publicKey, publicKeyDER, fingerprint_val any
-	err := s.pool.QueryRow(ctx, query, fingerprint).Scan(
-		&p.PrincipalID,
-		&p.OrgID,
-		&p.Type,
-		&p.Name,
-		&p.GitHubID,
-		&p.GitHubLogin,
-		&p.Email,
-		&p.AvatarURL,
-		&publicKey,
-		&publicKeyDER,
-		&fingerprint_val,
-		&p.Roles,
-		&p.CreatedAt,
-		&p.UpdatedAt,
-		&p.LastUsedAt,
-		&p.DeletedAt,
-	)
-
+	principal, err := scanPrincipal(s.pool.QueryRow(ctx, query, fingerprint))
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, store.ErrPrincipalNotFound
-		}
 		return nil, fmt.Errorf("failed to get principal by fingerprint: %w", err)
 	}
-
-	// Convert NULL values from database to Go zero values
-	if publicKey != nil {
-		p.PublicKey = publicKey.(string)
-	}
-	if publicKeyDER != nil {
-		p.PublicKeyDER = publicKeyDER.([]byte)
-	}
-	if fingerprint_val != nil {
-		p.Fingerprint = fingerprint_val.(string)
+	if principal == nil {
+		return nil, store.ErrPrincipalNotFound
 	}
 
-	return &p, nil
+	return principal, nil
 }
 
 // GetByGitHubID retrieves a non-revoked user principal by GitHub ID.
@@ -213,46 +200,15 @@ func (s *PrincipalStore) GetByGitHubID(ctx context.Context, githubID string) (*m
 		WHERE github_id = $1 AND deleted_at IS NULL
 	`
 
-	var p models.Principal
-	var publicKey, publicKeyDER, fingerprint any
-	err := s.pool.QueryRow(ctx, query, githubID).Scan(
-		&p.PrincipalID,
-		&p.OrgID,
-		&p.Type,
-		&p.Name,
-		&p.GitHubID,
-		&p.GitHubLogin,
-		&p.Email,
-		&p.AvatarURL,
-		&publicKey,
-		&publicKeyDER,
-		&fingerprint,
-		&p.Roles,
-		&p.CreatedAt,
-		&p.UpdatedAt,
-		&p.LastUsedAt,
-		&p.DeletedAt,
-	)
-
+	principal, err := scanPrincipal(s.pool.QueryRow(ctx, query, githubID))
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, store.ErrPrincipalNotFound
-		}
 		return nil, fmt.Errorf("failed to get principal by GitHub ID: %w", err)
 	}
-
-	// Convert NULL values from database to Go zero values
-	if publicKey != nil {
-		p.PublicKey = publicKey.(string)
-	}
-	if publicKeyDER != nil {
-		p.PublicKeyDER = publicKeyDER.([]byte)
-	}
-	if fingerprint != nil {
-		p.Fingerprint = fingerprint.(string)
+	if principal == nil {
+		return nil, store.ErrPrincipalNotFound
 	}
 
-	return &p, nil
+	return principal, nil
 }
 
 // Update updates an existing principal.
@@ -385,42 +341,13 @@ func (s *PrincipalStore) ListByOrg(ctx context.Context, orgID uuid.UUID, princip
 
 	var principals []*models.Principal
 	for rows.Next() {
-		var p models.Principal
-		var publicKey, publicKeyDER, fingerprint any
-		err := rows.Scan(
-			&p.PrincipalID,
-			&p.OrgID,
-			&p.Type,
-			&p.Name,
-			&p.GitHubID,
-			&p.GitHubLogin,
-			&p.Email,
-			&p.AvatarURL,
-			&publicKey,
-			&publicKeyDER,
-			&fingerprint,
-			&p.Roles,
-			&p.CreatedAt,
-			&p.UpdatedAt,
-			&p.LastUsedAt,
-			&p.DeletedAt,
-		)
+		principal, err := scanPrincipal(rows)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan principal: %w", err)
 		}
-
-		// Convert NULL values from database to Go zero values
-		if publicKey != nil {
-			p.PublicKey = publicKey.(string)
+		if principal != nil {
+			principals = append(principals, principal)
 		}
-		if publicKeyDER != nil {
-			p.PublicKeyDER = publicKeyDER.([]byte)
-		}
-		if fingerprint != nil {
-			p.Fingerprint = fingerprint.(string)
-		}
-
-		principals = append(principals, &p)
 	}
 
 	if err := rows.Err(); err != nil {
@@ -451,42 +378,13 @@ func (s *PrincipalStore) ListRevoked(ctx context.Context) ([]*models.Principal, 
 
 	var principals []*models.Principal
 	for rows.Next() {
-		var p models.Principal
-		var publicKey, publicKeyDER, fingerprint any
-		err := rows.Scan(
-			&p.PrincipalID,
-			&p.OrgID,
-			&p.Type,
-			&p.Name,
-			&p.GitHubID,
-			&p.GitHubLogin,
-			&p.Email,
-			&p.AvatarURL,
-			&publicKey,
-			&publicKeyDER,
-			&fingerprint,
-			&p.Roles,
-			&p.CreatedAt,
-			&p.UpdatedAt,
-			&p.LastUsedAt,
-			&p.DeletedAt,
-		)
+		principal, err := scanPrincipal(rows)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan revoked principal: %w", err)
 		}
-
-		// Convert NULL values from database to Go zero values
-		if publicKey != nil {
-			p.PublicKey = publicKey.(string)
+		if principal != nil {
+			principals = append(principals, principal)
 		}
-		if publicKeyDER != nil {
-			p.PublicKeyDER = publicKeyDER.([]byte)
-		}
-		if fingerprint != nil {
-			p.Fingerprint = fingerprint.(string)
-		}
-
-		principals = append(principals, &p)
 	}
 
 	if err := rows.Err(); err != nil {

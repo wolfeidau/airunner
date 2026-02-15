@@ -57,8 +57,13 @@ func TestValidateGitURL(t *testing.T) {
 			errType: ErrInvalidGitURL,
 		},
 		{
-			name:    "invalid http protocol",
+			name:    "valid http protocol",
 			url:     "http://github.com/user/repo.git",
+			wantErr: false,
+		},
+		{
+			name:    "invalid ssh protocol",
+			url:     "ssh://github.com/user/repo.git",
 			wantErr: true,
 			errType: ErrInvalidGitURL,
 		},

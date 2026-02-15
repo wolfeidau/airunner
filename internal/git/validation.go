@@ -23,9 +23,17 @@ func validateGitURL(repoURL string) error {
 		return fmt.Errorf("%w: empty URL", ErrInvalidGitURL)
 	}
 
-	// Only allow https:// and git:// protocols (no file://, ssh:// with potential command injection)
-	if !strings.HasPrefix(repoURL, "https://") && !strings.HasPrefix(repoURL, "git://") {
-		return fmt.Errorf("%w: must use https:// or git:// protocol", ErrInvalidGitURL)
+	// Only allow http://, https:// and git:// protocols (no file://, ssh:// with potential command injection)
+	allowedProtocols := []string{"http://", "https://", "git://"}
+	hasValidProtocol := false
+	for _, proto := range allowedProtocols {
+		if strings.HasPrefix(repoURL, proto) {
+			hasValidProtocol = true
+			break
+		}
+	}
+	if !hasValidProtocol {
+		return fmt.Errorf("%w: must use http://, https:// or git:// protocol", ErrInvalidGitURL)
 	}
 
 	// Reject URLs with shell metacharacters or git-specific command injection patterns

@@ -15,7 +15,7 @@ require (
 	github.com/alecthomas/kong v1.14.0
 	github.com/cenkalti/backoff/v5 v5.0.3
 	github.com/evanw/esbuild v0.27.2
-	github.com/golang-jwt/jwt/v5 v5.3.0
+	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/gregjones/httpcache v0.0.0-20190611155906-901d90724c79
 	github.com/jackc/pgerrcode v0.0.0-20250907135507-afb5586c32a6

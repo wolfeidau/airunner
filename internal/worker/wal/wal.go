@@ -201,8 +201,9 @@ func (w *walImpl) Append(ctx context.Context, event *jobv1.JobEvent) error {
 		return fmt.Errorf("WAL is closed")
 	}
 
-	// Get current file position (before write)
-	offset, err := w.file.Seek(0, io.SeekCurrent)
+	// Seek to end of file to ensure we always append after the last record,
+	// even if the async sender has moved the file pointer via readRecordAt.
+	offset, err := w.file.Seek(0, io.SeekEnd)
 	if err != nil {
 		return fmt.Errorf("failed to get file position: %w", err)
 	}
@@ -387,8 +388,8 @@ func (w *walImpl) Archive(ctx context.Context, archiveDir string) error {
 
 // readRecordAt reads a record from the file at the given offset
 func (w *walImpl) readRecordAt(offset int64) (*jobv1.JobEvent, error) {
-	w.mu.RLock()
-	defer w.mu.RUnlock()
+	w.mu.Lock()
+	defer w.mu.Unlock()
 
 	if w.file == nil {
 		return nil, fmt.Errorf("WAL is closed")

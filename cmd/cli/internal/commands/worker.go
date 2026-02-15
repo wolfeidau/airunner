@@ -192,7 +192,7 @@ func (w *WorkerCmd) processJob(ctx context.Context, clients *client.Clients) (bo
 	// CRITICAL: Flush WAL before completing job to ensure zero data loss
 	// This blocks until all events are sent or context times out
 	// Create a context with timeout for the flush (use remaining visibility timeout)
-	flushCtx, flushCancel := context.WithTimeout(ctx, time.Duration(w.VisibilityTimeout)*time.Second)
+	flushCtx, flushCancel := context.WithTimeout(ctx, max(time.Duration(w.VisibilityTimeout)*time.Second, 30*time.Second))
 	defer flushCancel()
 
 	flushErr := jobWAL.Flush(flushCtx)

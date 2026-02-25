@@ -4,7 +4,7 @@
   flex-direction: column;
   width: 100%;
   height: 100%;
-  background-color: var(--nord0);
+  background-color: var(--bg-base);
 }
 
 /* Top Bar */
@@ -13,9 +13,9 @@
   align-items: center;
   justify-content: space-between;
   padding: 16px 32px;
-  background-color: var(--nord1);
-  border-bottom: 1px solid var(--nord2);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  background-color: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
 .topbar-left {
@@ -25,7 +25,7 @@
 .topbar-title {
   font-size: 20px;
   font-weight: 700;
-  color: var(--nord6);
+  color: var(--text-primary);
   margin: 0;
 }
 
@@ -37,25 +37,25 @@
 
 .user-name {
   font-size: 14px;
-  color: var(--nord4);
+  color: var(--text-secondary);
 }
 
 .btn-logout {
   padding: 8px 16px;
   font-size: 14px;
   font-weight: 600;
-  border: 1px solid var(--nord9);
+  border: 1px solid var(--accent-light);
   border-radius: 4px;
   background-color: transparent;
-  color: var(--nord9);
+  color: var(--accent-light);
   cursor: pointer;
   transition: all 0.2s ease;
   text-decoration: none;
 }
 
 .btn-logout:hover {
-  background-color: var(--nord9);
-  color: var(--nord0);
+  background-color: var(--accent-light);
+  color: var(--bg-base);
 }
 
 /* Main Content */
@@ -69,8 +69,8 @@
 .cli-section {
   margin-bottom: 48px;
   padding: 24px;
-  background-color: var(--nord1);
-  border: 1px solid var(--nord2);
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border);
   border-radius: 4px;
 }
 
@@ -81,20 +81,20 @@
 .cli-header h2 {
   font-size: 20px;
   font-weight: 700;
-  color: var(--nord6);
+  color: var(--text-primary);
   margin: 0 0 8px 0;
 }
 
 .cli-subtitle {
   font-size: 14px;
-  color: var(--nord4);
+  color: var(--text-secondary);
   margin: 0;
 }
 
 .cli-command {
   padding: 12px 16px;
-  background-color: var(--nord0);
-  border: 1px solid var(--nord3);
+  background-color: var(--bg-base);
+  border: 1px solid var(--border-strong);
   border-radius: 4px;
   overflow-x: auto;
 }
@@ -102,7 +102,7 @@
 .cli-command code {
   font-family: "Monaco", "Menlo", "Ubuntu Mono", "Courier New", monospace;
   font-size: 13px;
-  color: var(--nord8);
+  color: var(--accent);
   white-space: pre-wrap;
   word-wrap: break-word;
 }
@@ -115,7 +115,7 @@
 .section-title {
   font-size: 20px;
   font-weight: 700;
-  color: var(--nord6);
+  color: var(--text-primary);
   margin: 0 0 16px 0;
 }
 
@@ -123,13 +123,13 @@
 .empty-state {
   padding: 48px 24px;
   text-align: center;
-  background-color: var(--nord1);
-  border: 1px solid var(--nord2);
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border);
   border-radius: 4px;
 }
 
 .empty-state p {
-  color: var(--nord4);
+  color: var(--text-secondary);
   margin: 0;
   font-size: 16px;
 }
@@ -137,9 +137,9 @@
 /* Table */
 .table-wrapper {
   overflow-x: auto;
-  border: 1px solid var(--nord2);
+  border: 1px solid var(--border);
   border-radius: 4px;
-  background-color: var(--nord1);
+  background-color: var(--bg-surface);
 }
 
 .jobs-table {
@@ -149,56 +149,56 @@
 }
 
 .jobs-table thead {
-  background-color: var(--nord2);
-  border-bottom: 1px solid var(--nord3);
+  background-color: var(--bg-elevated);
+  border-bottom: 1px solid var(--border-strong);
 }
 
 .jobs-table th {
   padding: 12px 16px;
   text-align: left;
   font-weight: 600;
-  color: var(--nord6);
+  color: var(--text-primary);
   white-space: nowrap;
 }
 
 .job-row {
-  border-bottom: 1px solid var(--nord2);
+  border-bottom: 1px solid var(--border);
   transition: background-color 0.2s ease;
 }
 
 .job-row:hover {
-  background-color: var(--nord2);
+  background-color: var(--bg-elevated);
 }
 
 .job-row:last-child {
   border-bottom: none;
 }
 
-/* Clickable Job Rows (Phase 2) */
+/* Clickable Job Rows */
 .job-row-clickable {
   cursor: pointer;
 }
 
 .job-row-clickable:focus {
-  outline: 2px solid var(--nord8);
+  outline: 2px solid var(--accent);
   outline-offset: -2px;
-  background-color: var(--nord2);
+  background-color: var(--bg-elevated);
 }
 
 .job-row-clickable:active {
-  background-color: var(--nord3);
+  background-color: var(--border);
 }
 
 .jobs-table td {
   padding: 12px 16px;
-  color: var(--nord4);
+  color: var(--text-secondary);
 }
 
 .cell-job-id code {
   font-family: "Monaco", "Menlo", "Ubuntu Mono", "Courier New", monospace;
   font-size: 12px;
-  color: var(--nord8);
-  background-color: var(--nord0);
+  color: var(--accent);
+  background-color: var(--bg-base);
   padding: 4px 8px;
   border-radius: 3px;
 }
@@ -206,7 +206,7 @@
 .cell-repo {
   font-family: "Monaco", "Menlo", "Ubuntu Mono", "Courier New", monospace;
   font-size: 13px;
-  color: var(--nord9);
+  color: var(--accent-light);
   max-width: 300px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -219,7 +219,7 @@
 
 .cell-date {
   font-size: 13px;
-  color: var(--nord3);
+  color: var(--text-muted);
   white-space: nowrap;
 }
 
@@ -235,40 +235,40 @@
 }
 
 .state-scheduled {
-  background-color: rgba(129, 161, 193, 0.15);
-  color: var(--nord9);
-  border: 1px solid rgba(129, 161, 193, 0.3);
+  background-color: rgba(0, 112, 243, 0.1);
+  color: var(--accent-light);
+  border: 1px solid rgba(0, 112, 243, 0.3);
 }
 
 .state-running {
-  background-color: rgba(136, 192, 208, 0.15);
-  color: var(--nord8);
-  border: 1px solid rgba(136, 192, 208, 0.3);
+  background-color: rgba(0, 112, 243, 0.1);
+  color: var(--accent);
+  border: 1px solid rgba(0, 112, 243, 0.3);
   animation: pulse 2s infinite;
 }
 
 .state-completed {
-  background-color: rgba(163, 190, 140, 0.15);
-  color: var(--nord14);
-  border: 1px solid rgba(163, 190, 140, 0.3);
+  background-color: rgba(0, 184, 148, 0.1);
+  color: var(--success);
+  border: 1px solid rgba(0, 184, 148, 0.3);
 }
 
 .state-failed {
-  background-color: rgba(191, 97, 106, 0.15);
-  color: var(--nord11);
-  border: 1px solid rgba(191, 97, 106, 0.3);
+  background-color: rgba(229, 72, 77, 0.1);
+  color: var(--error);
+  border: 1px solid rgba(229, 72, 77, 0.3);
 }
 
 .state-cancelled {
-  background-color: rgba(180, 142, 173, 0.15);
-  color: var(--nord15);
-  border: 1px solid rgba(180, 142, 173, 0.3);
+  background-color: rgba(155, 138, 239, 0.1);
+  color: var(--purple);
+  border: 1px solid rgba(155, 138, 239, 0.3);
 }
 
 .state-unspecified {
-  background-color: rgba(76, 86, 106, 0.15);
-  color: var(--nord3);
-  border: 1px solid rgba(76, 86, 106, 0.3);
+  background-color: rgba(85, 85, 85, 0.1);
+  color: var(--text-muted);
+  border: 1px solid rgba(85, 85, 85, 0.3);
 }
 
 @keyframes pulse {
@@ -307,12 +307,12 @@
   }
 }
 
-/* Events Container (Phase 1 - Hash Routing) */
+/* Events Container */
 .events-container {
   display: flex;
   flex-direction: column;
   flex: 1;
-  background-color: var(--nord0);
+  background-color: var(--bg-base);
 }
 
 .events-header {
@@ -320,30 +320,30 @@
   align-items: center;
   gap: 16px;
   padding: 16px 32px;
-  background-color: var(--nord1);
-  border-bottom: 1px solid var(--nord2);
+  background-color: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
 }
 
 .btn-back {
   padding: 8px 16px;
   font-size: 14px;
   background-color: transparent;
-  color: var(--nord8);
-  border: 1px solid var(--nord8);
+  color: var(--accent);
+  border: 1px solid var(--accent);
   border-radius: 4px;
   cursor: pointer;
   transition: all 0.2s ease;
 }
 
 .btn-back:hover {
-  background-color: var(--nord8);
-  color: var(--nord0);
+  background-color: var(--accent);
+  color: var(--bg-base);
 }
 
 .events-title {
   font-size: 18px;
   font-weight: 600;
-  color: var(--nord6);
+  color: var(--text-primary);
   margin: 0;
   font-family: "Monaco", "Menlo", "Ubuntu Mono", "Courier New", monospace;
 }
@@ -355,11 +355,11 @@
   justify-content: center;
   flex: 1;
   gap: 16px;
-  color: var(--nord4);
+  color: var(--text-secondary);
   font-size: 16px;
 }
 
-/* Event States (Phase 3) */
+/* Event States */
 .events-loading {
   display: flex;
   flex-direction: column;
@@ -367,14 +367,14 @@
   justify-content: center;
   flex: 1;
   gap: 16px;
-  color: var(--nord4);
+  color: var(--text-secondary);
 }
 
 .spinner {
   width: 40px;
   height: 40px;
-  border: 3px solid var(--nord2);
-  border-top-color: var(--nord8);
+  border: 3px solid var(--bg-elevated);
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 1s linear infinite;
 }
@@ -390,7 +390,7 @@
   align-items: center;
   justify-content: center;
   flex: 1;
-  color: var(--nord4);
+  color: var(--text-secondary);
   font-size: 16px;
 }
 
@@ -401,15 +401,15 @@
   justify-content: center;
   flex: 1;
   gap: 16px;
-  color: var(--nord11);
+  color: var(--error);
   font-size: 16px;
 }
 
 .events-error button {
   padding: 8px 16px;
   font-size: 14px;
-  background-color: var(--nord11);
-  color: var(--nord0);
+  background-color: var(--error);
+  color: var(--bg-base);
   border: none;
   border-radius: 4px;
   cursor: pointer;
@@ -417,7 +417,7 @@
 }
 
 .events-error button:hover {
-  background-color: var(--nord12);
+  background-color: var(--warning);
 }
 
 .events-banner {
@@ -430,17 +430,17 @@
 }
 
 .events-banner-completed {
-  background-color: rgba(163, 190, 140, 0.15);
-  color: var(--nord14);
-  border-bottom: 1px solid rgba(163, 190, 140, 0.3);
+  background-color: rgba(0, 184, 148, 0.1);
+  color: var(--success);
+  border-bottom: 1px solid rgba(0, 184, 148, 0.3);
 }
 
-/* Events Console (Phase 4) */
+/* Events Console */
 .events-console {
   flex: 1;
   overflow-y: auto;
   padding: 16px 32px;
-  background-color: var(--nord0);
+  background-color: var(--bg-base);
   font-family: "Monaco", "Menlo", "Ubuntu Mono", "Courier New", monospace;
   font-size: 13px;
 }
@@ -449,8 +449,8 @@
 .event-lifecycle {
   margin-bottom: 8px;
   padding: 8px 12px;
-  border-left: 3px solid var(--nord3);
-  background-color: var(--nord1);
+  border-left: 3px solid var(--border-strong);
+  background-color: var(--bg-surface);
   display: flex;
   align-items: center;
 }
@@ -460,24 +460,24 @@
 }
 
 .event-start {
-  border-left-color: var(--nord8);
-  color: var(--nord8);
+  border-left-color: var(--accent);
+  color: var(--accent);
 }
 
 .event-success {
-  border-left-color: var(--nord14);
-  color: var(--nord14);
+  border-left-color: var(--success);
+  color: var(--success);
 }
 
 .event-failed {
-  border-left-color: var(--nord11);
-  color: var(--nord11);
+  border-left-color: var(--error);
+  color: var(--error);
 }
 
 .event-error {
-  border-left-color: var(--nord11);
-  color: var(--nord11);
-  background-color: rgba(191, 97, 106, 0.1);
+  border-left-color: var(--error);
+  color: var(--error);
+  background-color: rgba(229, 72, 77, 0.08);
 }
 
 /* Console Output */
@@ -489,7 +489,7 @@
 }
 
 .output-offset {
-  color: var(--nord9);
+  color: var(--accent-light);
   font-size: 12px;
   min-width: 60px;
   text-align: right;
@@ -500,15 +500,15 @@
 }
 
 .output-stdout {
-  color: var(--nord4);
+  color: var(--text-secondary);
 }
 
 .output-stderr {
-  color: var(--nord11);
+  color: var(--error);
 }
 
 .output-timestamp {
-  color: var(--nord3);
+  color: var(--text-muted);
   margin-right: 8px;
   font-size: 12px;
   flex-shrink: 0;
@@ -532,7 +532,7 @@
 
 .topbar-tabs a,
 .topbar-tabs button {
-  color: var(--nord4);
+  color: var(--text-secondary);
   text-decoration: none;
   padding: 0.5rem 1rem;
   border-radius: 4px;
@@ -548,14 +548,14 @@
 
 .topbar-tabs a:hover,
 .topbar-tabs button:hover {
-  background: var(--nord2);
-  color: var(--nord6);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
 }
 
 .topbar-tabs a.tab-active,
 .topbar-tabs button.tab-active {
-  background: var(--nord3);
-  color: var(--nord6);
+  background: var(--border-strong);
+  color: var(--text-primary);
 }
 
 /* ========================================
@@ -577,7 +577,7 @@
    ======================================== */
 
 .import-form {
-  background: var(--nord1);
+  background: var(--bg-surface);
   padding: 1.5rem;
   border-radius: 8px;
 }
@@ -585,17 +585,17 @@
 .import-form h3 {
   margin-top: 0;
   margin-bottom: 0.25rem;
-  color: var(--nord6);
+  color: var(--text-primary);
 }
 
 .import-subtitle {
-  color: var(--nord4);
+  color: var(--text-secondary);
   margin-bottom: 1.5rem;
   font-size: 0.9rem;
 }
 
 .import-subtitle code {
-  background: var(--nord0);
+  background: var(--bg-base);
   padding: 0.125rem 0.375rem;
   border-radius: 3px;
 }
@@ -607,7 +607,7 @@
 .form-group label {
   display: block;
   margin-bottom: 0.5rem;
-  color: var(--nord4);
+  color: var(--text-secondary);
   font-size: 0.9rem;
 }
 
@@ -615,10 +615,10 @@
 .form-group textarea {
   width: 100%;
   padding: 0.625rem;
-  background: var(--nord0);
-  border: 1px solid var(--nord3);
+  background: var(--bg-base);
+  border: 1px solid var(--border-strong);
   border-radius: 4px;
-  color: var(--nord6);
+  color: var(--text-primary);
   font-size: 0.95rem;
   box-sizing: border-box;
 }
@@ -626,7 +626,7 @@
 .form-group input:focus,
 .form-group textarea:focus {
   outline: none;
-  border-color: var(--nord8);
+  border-color: var(--accent);
 }
 
 .form-group textarea {
@@ -636,8 +636,8 @@
 }
 
 .btn-primary {
-  background: var(--nord10);
-  color: var(--nord6);
+  background: var(--accent-dark);
+  color: var(--text-primary);
   border: none;
   padding: 0.625rem 1.25rem;
   border-radius: 4px;
@@ -647,7 +647,7 @@
 }
 
 .btn-primary:hover {
-  background: var(--nord9);
+  background: var(--accent);
 }
 
 .btn-primary:disabled {
@@ -660,9 +660,9 @@
    ======================================== */
 
 .import-success {
-  background: rgba(163, 190, 140, 0.15);
-  border: 1px solid var(--nord14);
-  color: var(--nord6);
+  background: rgba(0, 184, 148, 0.08);
+  border: 1px solid var(--success);
+  color: var(--text-primary);
   padding: 1rem;
   border-radius: 4px;
   margin-top: 1rem;
@@ -673,7 +673,7 @@
 }
 
 .import-success strong {
-  color: var(--nord14);
+  color: var(--success);
 }
 
 .result-field,
@@ -687,13 +687,13 @@
 
 .result-field span,
 .result-command span {
-  color: var(--nord4);
+  color: var(--text-secondary);
   min-width: 100px;
 }
 
 .result-field code,
 .result-command code {
-  background: var(--nord0);
+  background: var(--bg-base);
   padding: 0.375rem 0.625rem;
   border-radius: 4px;
   font-family: "SF Mono", "Fira Code", monospace;
@@ -713,8 +713,8 @@
 }
 
 .btn-copy {
-  background: var(--nord3);
-  color: var(--nord6);
+  background: var(--border-strong);
+  color: var(--text-primary);
   border: none;
   padding: 0.25rem 0.5rem;
   border-radius: 3px;
@@ -724,13 +724,13 @@
 }
 
 .btn-copy:hover {
-  background: var(--nord2);
+  background: #444444;
 }
 
 .import-error {
-  background: rgba(191, 97, 106, 0.15);
-  border: 1px solid var(--nord11);
-  color: var(--nord11);
+  background: rgba(229, 72, 77, 0.08);
+  border: 1px solid var(--error);
+  color: var(--error);
   padding: 1rem;
   border-radius: 4px;
   margin-top: 1rem;
@@ -747,7 +747,7 @@
 .credentials-table {
   width: 100%;
   border-collapse: collapse;
-  background: var(--nord1);
+  background: var(--bg-surface);
   border-radius: 8px;
   overflow: hidden;
 }
@@ -756,12 +756,12 @@
 .credentials-table td {
   padding: 0.875rem 1rem;
   text-align: left;
-  border-bottom: 1px solid var(--nord3);
+  border-bottom: 1px solid var(--border);
 }
 
 .credentials-table th {
-  background: var(--nord2);
-  color: var(--nord4);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
   font-weight: 500;
   font-size: 0.85rem;
   text-transform: uppercase;
@@ -773,18 +773,18 @@
 }
 
 .credentials-table tbody tr:hover {
-  background: var(--nord2);
+  background: var(--bg-elevated);
 }
 
 .cell-name {
   font-weight: 500;
-  color: var(--nord6);
+  color: var(--text-primary);
 }
 
 .cell-fingerprint .fingerprint-code {
   cursor: pointer;
   padding: 0.25rem 0.5rem;
-  background: var(--nord0);
+  background: var(--bg-base);
   border-radius: 3px;
   font-size: 0.85rem;
   transition: background-color 0.2s;
@@ -794,15 +794,15 @@
 }
 
 .cell-fingerprint .fingerprint-code:hover {
-  background: var(--nord3);
+  background: var(--border-strong);
 }
 
 .no-fingerprint {
-  color: var(--nord4);
+  color: var(--text-secondary);
 }
 
 .cell-date {
-  color: var(--nord4);
+  color: var(--text-secondary);
   font-size: 0.9rem;
 }
 
@@ -815,23 +815,23 @@
 }
 
 .type-badge.type-user {
-  background: rgba(136, 192, 208, 0.2);
-  color: var(--nord8);
+  background: rgba(0, 112, 243, 0.15);
+  color: var(--accent);
 }
 
 .type-badge.type-worker {
-  background: rgba(163, 190, 140, 0.2);
-  color: var(--nord14);
+  background: rgba(0, 184, 148, 0.15);
+  color: var(--success);
 }
 
 .type-badge.type-service {
-  background: rgba(180, 142, 173, 0.2);
-  color: var(--nord15);
+  background: rgba(155, 138, 239, 0.15);
+  color: var(--purple);
 }
 
 .btn-revoke {
-  background: var(--nord11);
-  color: var(--nord6);
+  background: var(--error);
+  color: var(--text-primary);
   border: none;
   padding: 0.375rem 0.75rem;
   border-radius: 4px;
@@ -841,11 +841,11 @@
 }
 
 .btn-revoke:hover {
-  background: #c9545d;
+  background: #c9303a;
 }
 
 .self-badge {
-  color: var(--nord4);
+  color: var(--text-secondary);
   font-size: 0.85rem;
   font-style: italic;
 }

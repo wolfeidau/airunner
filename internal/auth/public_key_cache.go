@@ -80,16 +80,16 @@ func (c *PublicKeyCacheImpl) GetWebsiteKey(ctx context.Context, jwksURL, kid str
 	if err != nil {
 		return nil, fmt.Errorf("invalid JWKS URL: %w", err)
 	}
-	if parsedURL.Scheme != "https" {
-		return nil, fmt.Errorf("JWKS URL must use HTTPS, got %q", parsedURL.Scheme)
+	if parsedURL.Scheme != "https" && parsedURL.Scheme != "http" {
+		return nil, fmt.Errorf("JWKS URL must use HTTP or HTTPS, got %q", parsedURL.Scheme)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsedURL.String(), nil) //nolint:gosec // URL scheme validated as HTTPS above
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsedURL.String(), nil) //nolint:gosec // URL scheme validated as http/https above; websiteBaseURL is server configuration, not user input
 	if err != nil {
 		return nil, fmt.Errorf("failed to create JWKS request: %w", err)
 	}
 
-	resp, err := c.httpClient.Do(req) //nolint:gosec // URL scheme validated as HTTPS above
+	resp, err := c.httpClient.Do(req) //nolint:gosec // URL scheme validated as http/https above; websiteBaseURL is server configuration, not user input
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch JWKS: %w", err)
 	}

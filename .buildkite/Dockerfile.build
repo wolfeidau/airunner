@@ -1,9 +1,9 @@
-FROM golang:1.26.0@sha256:c83e68f3ebb6943a2904fa66348867d108119890a2c6a2e6f07b38d0eb6c25c5
+FROM golang:1.26.1@sha256:e2ddb153f786ee6210bf8c40f7f35490b3ff7d38be70d1a0d358ba64225f6428
 
-COPY --from=goreleaser/goreleaser:v2.12.7@sha256:a2a47c0dda85f8d40eaaa5b9765bf76c69addb6060666f8a51441410d9b008e9 /usr/bin/goreleaser /usr/local/bin/goreleaser
-COPY --from=golangci/golangci-lint:v2.5.0@sha256:0c8e590120a98ada5d0d9423e65dd957067e70c87efd692e83d5a311ddfc3151 /usr/bin/golangci-lint /usr/local/bin/golangci-lint
+COPY --from=goreleaser/goreleaser:v2.14.3@sha256:848430a900a83ca0e18f2f149fb4ddcdaea74a667aa07224268b97d448833591 /usr/bin/goreleaser /usr/local/bin/goreleaser
+COPY --from=golangci/golangci-lint:v2.11.3@sha256:e838e8ab68aaefe83e2408691510867ade9329c0e0b895a3fb35eb93d1c2a4ba /usr/bin/golangci-lint /usr/local/bin/golangci-lint
 COPY --from=ghcr.io/ko-build/ko@sha256:8eb215f04a34eac96d7b8560d471827c5bd7d005b139d65a60c66d6862b0971f /ko-app/ko /usr/local/bin/ko
-COPY --from=oven/bun:1.3.5@sha256:e90cdbaf9ccdb3d4bd693aa335c3310a6004286a880f62f79b18f9b1312a8ec3 /usr/local/bin/bun /usr/local/bin/bun
+COPY --from=oven/bun:1.3.10@sha256:b86c67b531d87b4db11470d9b2bd0c519b1976eee6fcd71634e73abfa6230d2e /usr/local/bin/bun /usr/local/bin/bun
 
 # install aws-cli
 RUN --mount=type=cache,target=/var/cache/apt \

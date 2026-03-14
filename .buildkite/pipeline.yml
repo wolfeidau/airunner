@@ -1,8 +1,8 @@
 image: "${BUILDKITE_HOSTED_REGISTRY_URL}/airunner_base:latest"
 
 steps:
-  - if: build.branch == "main"
-    if_changed: ".buildkite/Dockerfile.build"
+  - #if: build.branch == "main"
+    #if_changed: ".buildkite/Dockerfile.build"
     key: base_image
     image: "buildkite/hosted-agent-base-images:ubuntu-jammy"
     label: ":docker: Create base image"

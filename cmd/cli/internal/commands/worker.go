@@ -88,7 +88,11 @@ func (w *WorkerCmd) Run(ctx context.Context, globals *Globals) error {
 			}
 			log.Error().Err(err).Stack().Msg("Error processing job")
 			// Sleep with jitter after error to prevent thundering herd on retry
-			time.Sleep(addJitter(5*time.Second, 0.25))
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(addJitter(5*time.Second, 0.25)):
+			}
 			continue
 		}
 
@@ -96,10 +100,18 @@ func (w *WorkerCmd) Run(ctx context.Context, globals *Globals) error {
 			// Reset backoff when we found and processed a job
 			bkoffStrategy.Reset()
 			// Brief pause with jitter before next poll to prevent thundering herd
-			time.Sleep(addJitter(1*time.Second, 0.25))
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(addJitter(1*time.Second, 0.25)):
+			}
 		} else {
 			// No job found, use exponential backoff (already has randomization)
-			time.Sleep(bkoffStrategy.NextBackOff())
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(bkoffStrategy.NextBackOff()):
+			}
 		}
 	}
 }

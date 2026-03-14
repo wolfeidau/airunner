@@ -214,6 +214,8 @@ func (g *Github) LoginHandler(w http.ResponseWriter, r *http.Request) {
 func (g *Github) CallbackHandler(w http.ResponseWriter, r *http.Request) {
 	log.Debug().Msg("OAuth callback received")
 
+	r.Body = http.MaxBytesReader(w, r.Body, 1*1024*1024) // 1MB limit
+
 	state := r.FormValue("state")
 	code := r.FormValue("code")
 

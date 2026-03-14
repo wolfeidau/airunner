@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -75,12 +76,20 @@ func (c *PublicKeyCacheImpl) GetWebsiteKey(ctx context.Context, jwksURL, kid str
 	// Cache miss or expired - fetch from JWKS endpoint
 	log.Debug().Str("jwks_url", jwksURL).Msg("Fetching JWKS")
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, jwksURL, nil)
+	parsedURL, err := url.Parse(jwksURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid JWKS URL: %w", err)
+	}
+	if parsedURL.Scheme != "https" {
+		return nil, fmt.Errorf("JWKS URL must use HTTPS, got %q", parsedURL.Scheme)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsedURL.String(), nil) //nolint:gosec // URL scheme validated as HTTPS above
 	if err != nil {
 		return nil, fmt.Errorf("failed to create JWKS request: %w", err)
 	}
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.httpClient.Do(req) //nolint:gosec // URL scheme validated as HTTPS above
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch JWKS: %w", err)
 	}

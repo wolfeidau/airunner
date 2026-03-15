@@ -30,6 +30,7 @@ coverage.*
 .claude
 tmp/
 
-test-certs/
-certs
-public/
+/test-certs/
+/certs
+/public/
+/scripts/

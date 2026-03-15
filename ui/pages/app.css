@@ -1,22 +1,22 @@
 /* Option C — High-contrast dark */
 :root {
-  --bg-base:        #111111;
-  --bg-surface:     #1a1a1a;
-  --bg-elevated:    #222222;
-  --border:         #2a2a2a;
-  --border-strong:  #3a3a3a;
-  --text-primary:   #ededed;
+  --bg-base: #111111;
+  --bg-surface: #1a1a1a;
+  --bg-elevated: #222222;
+  --border: #2a2a2a;
+  --border-strong: #3a3a3a;
+  --text-primary: #ededed;
   --text-secondary: #999999;
-  --text-muted:     #666666;
-  --accent:         #0070f3;
-  --accent-light:   #4d9fff;
-  --accent-dark:    #0057c2;
-  --error:          #e5484d;
-  --warning:        #f06a25;
-  --warning-light:  #f5c542;
-  --success:        #00b894;
-  --purple:         #9b8aef;
-  --teal:           #00c5b5;
+  --text-muted: #666666;
+  --accent: #0070f3;
+  --accent-light: #4d9fff;
+  --accent-dark: #0057c2;
+  --error: #e5484d;
+  --warning: #f06a25;
+  --warning-light: #f5c542;
+  --success: #00b894;
+  --purple: #9b8aef;
+  --teal: #00c5b5;
 }
 
 * {

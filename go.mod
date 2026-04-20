@@ -8,7 +8,7 @@ tool (
 )
 
 require (
-	connectrpc.com/connect v1.19.1
+	connectrpc.com/connect v1.19.2
 	connectrpc.com/cors v0.1.0
 	connectrpc.com/otelconnect v0.9.0
 	filippo.io/csrf v0.2.1

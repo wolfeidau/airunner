@@ -24,7 +24,7 @@ require (
 	github.com/minio/crc64nvme v1.1.1
 	github.com/mr-tron/base58 v1.2.0
 	github.com/rs/cors v1.11.1
-	github.com/rs/zerolog v1.34.0
+	github.com/rs/zerolog v1.35.1
 	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go v0.41.0
 	github.com/wolfeidau/console-stream v0.4.0

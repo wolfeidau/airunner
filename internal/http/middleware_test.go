@@ -80,7 +80,12 @@ func TestExtractClientIP_remoteAddr(t *testing.T) {
 		{
 			name:       "IPv6 with port",
 			remoteAddr: "[2001:db8::1]:54321",
-			expected:   "[2001:db8::1]",
+			expected:   "2001:db8::1",
+		},
+		{
+			name:       "IPv6 loopback with port",
+			remoteAddr: "[::1]:54321",
+			expected:   "::1",
 		},
 		{
 			name:       "no port",

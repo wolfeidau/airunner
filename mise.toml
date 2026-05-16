@@ -1,0 +1,10 @@
+[settings]
+experimental = true
+lockfile = true
+
+[tools]
+bun = "latest"
+go = "latest"
+golangci-lint = "latest"
+goreleaser = "2.15.4"
+ko = "0.18.1"

@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"strings"
 )
@@ -27,11 +28,12 @@ func ExtractClientIP(r *http.Request) string {
 		return xri
 	}
 
-	// Fall back to RemoteAddr, stripping port
-	if idx := strings.LastIndex(r.RemoteAddr, ":"); idx != -1 {
-		return r.RemoteAddr[:idx]
+	// Fall back to RemoteAddr, stripping port (handles IPv4 and [::1]:port forms).
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
 	}
-	return r.RemoteAddr
+	return host
 }
 
 // ClientIPFromContext extracts the client IP from the request context.

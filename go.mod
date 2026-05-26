@@ -1,6 +1,6 @@
 module github.com/wolfeidau/airunner
 
-go 1.25.1
+go 1.26
 
 tool (
 	github.com/air-verse/air
@@ -27,7 +27,7 @@ require (
 	github.com/rs/zerolog v1.35.1
 	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go v0.41.0
-	github.com/wolfeidau/console-stream v0.4.0
+	github.com/wolfeidau/console-stream v0.4.1
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.43.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.43.0

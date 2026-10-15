@@ -2,7 +2,11 @@ module github.com/wolfeidau/airunner
 
 go 1.26.0
 
-tool github.com/nikolaydubina/go-cover-treemap
+tool (
+	connectrpc.com/connect/cmd/protoc-gen-connect-go
+	github.com/nikolaydubina/go-cover-treemap
+	google.golang.org/protobuf/cmd/protoc-gen-go
+)
 
 require (
 	connectrpc.com/connect v1.21.1

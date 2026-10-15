@@ -3,6 +3,7 @@ experimental = true
 lockfile = true
 
 [tools]
+"aqua:air-verse/air" = "1.67.4"
 bun = "latest"
 go = "latest"
 golangci-lint = "latest"

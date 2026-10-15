@@ -68,13 +68,16 @@ func (km *KeyManager) SignJWT(claims jwt.Claims) (string, error) {
 // JWK returns the public key in JWK (JSON Web Key) format.
 // This is used by the JWKS endpoint for API servers to fetch the public key.
 func (km *KeyManager) JWK() map[string]any {
+	// Uncompressed point encoding: 0x04 || X || Y, each coordinate fixed at 32 bytes for P-256.
+	point, _ := km.publicKey.Bytes()
+
 	return map[string]any{
 		"kty": "EC",    // Key Type: Elliptic Curve
 		"use": "sig",   // Public Key Use: Signature
 		"crv": "P-256", // Curve: P-256
 		"kid": km.kid,
-		"x":   base64.RawURLEncoding.EncodeToString(km.publicKey.X.Bytes()),
-		"y":   base64.RawURLEncoding.EncodeToString(km.publicKey.Y.Bytes()),
+		"x":   base64.RawURLEncoding.EncodeToString(point[1:33]),
+		"y":   base64.RawURLEncoding.EncodeToString(point[33:]),
 		"alg": "ES256",
 	}
 }

@@ -455,10 +455,6 @@
   align-items: center;
 }
 
-.event-lifecycle .output-offset {
-  margin-right: 12px;
-}
-
 .event-start {
   border-left-color: var(--accent);
   color: var(--accent);

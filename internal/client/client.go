@@ -6,7 +6,6 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/wolfeidau/airunner/api/gen/proto/go/job/v1/jobv1connect"
-	"golang.org/x/net/http2"
 )
 
 // Config holds common client configuration
@@ -24,9 +23,15 @@ type Clients struct {
 
 // NewClients creates new gRPC clients with the given configuration
 func NewClients(config Config, opts ...connect.ClientOption) (*Clients, error) {
-	transport := &http2.Transport{
-		ReadIdleTimeout: 10 * time.Second,
-		PingTimeout:     10 * time.Second,
+	var protocols http.Protocols
+	protocols.SetHTTP2(true)
+
+	transport := &http.Transport{
+		Protocols: &protocols,
+		HTTP2: &http.HTTP2Config{
+			SendPingTimeout: 10 * time.Second,
+			PingTimeout:     10 * time.Second,
+		},
 	}
 
 	httpClient := &http.Client{

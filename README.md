@@ -38,6 +38,40 @@ You can see a history of jobs by running.
 go run ./cmd/cli list
 ```
 
+## Demo: program status (OSC 7501)
+
+Programs can report what they are doing (working, blocked, done, error) by writing [OSC 7501](https://www.superlogical.com/rex/docs/build/program-status) escape sequences to their output. The worker parses these reports for every job and publishes each one as a `PROGRAM_STATUS` job event, ordered against the surrounding output. The worker only records reports; it takes no action on `blocked`.
+
+`airunner-cli test-status` emits a scripted sequence of reports, interleaved with plain output, so you can see this end to end.
+
+| `--scenario` | Reports | Exit code |
+|---|---|---|
+| `happy` (default) | `build/compile` and `build/test` working 0→100% then done, then `build` done | 0 |
+| `blocked` | as `happy`, plus `build/deploy` blocked on a question, auto-approved after `--step-delay` | 0 |
+| `fail` | `build/test` working, then error `2 tests failed` | 1 |
+
+`--steps` (default 5) sets progress updates per id and `--step-delay` (default 500ms) sets the pause between them.
+
+With the server and a worker running, build the CLI and submit a job that runs it:
+
+```sh
+make build-cli
+go run ./cmd/cli submit --monitor \
+  --command "$PWD/bin/airunner-cli" --args="test-status,--scenario=blocked" \
+  github.com/example/demo
+```
+
+- The worker runs the command on its host, so `--command` must be an absolute path the worker can execute.
+- Pass `--args` as a single `--args="…"` token; the comma-separated values contain flags, which the CLI otherwise rejects.
+- Add `--credential NAME` if your default credential is not registered with the server (`go run ./cmd/cli credentials list` shows the default).
+- Add `--process-type=pipe` to run without a PTY; both modes capture reports.
+
+What to expect:
+
+- `monitor` prints a `📟 Program status:` line per report, e.g. `blocked [build/deploy/question] - Approve deploy?`.
+- The dashboard shows each report as its own line: blocked in orange, done in green, error in red. Raw escape sequences are stripped from the output.
+- `--scenario=fail` ends the job as `FAILED` with exit code 1.
+
 ## Architecture
 
 Airunner is a distributed job orchestration platform that implements a job queue system with real-time event streaming. The system follows a client-server architecture similar to AWS SQS + Lambda, but designed for running arbitrary commands in Git repositories.

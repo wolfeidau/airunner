@@ -71,6 +71,9 @@ make build-server # Build only the server binary
 
 # List mode - list and filter jobs
 ./bin/airunner-cli list [--server=URL] [--queue=NAME] [--state=STATE] [--watch]
+
+# Test status mode - emit OSC 7501 program status reports (demo/testing; see README)
+./bin/airunner-cli test-status [--scenario=happy|blocked|fail] [--steps=N] [--step-delay=DURATION]
 ```
 
 **Protocol Buffers:**

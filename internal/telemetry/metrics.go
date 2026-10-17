@@ -33,11 +33,6 @@ type Metrics struct {
 	JobsReleasedTotal    metric.Int64Counter
 	VisibilityUpdates    metric.Int64Counter
 
-	// DynamoDB metrics (SQS store only)
-	DynamoDBOperationsTotal metric.Int64Counter
-	DynamoDBThrottlesTotal  metric.Int64Counter
-	DynamoDBBatchRetries    metric.Int64Counter
-
 	// Channel metrics
 	ChannelOverflowTotal metric.Int64Counter
 }
@@ -146,25 +141,6 @@ func initMetrics() *Metrics {
 		"airunner.jobs.visibility_updates.total",
 		metric.WithDescription("Total number of visibility timeout updates"),
 		metric.WithUnit("{update}"),
-	)
-
-	// DynamoDB metrics
-	m.DynamoDBOperationsTotal, _ = meter.Int64Counter(
-		"airunner.dynamodb.operations.total",
-		metric.WithDescription("Total number of DynamoDB operations"),
-		metric.WithUnit("{operation}"),
-	)
-
-	m.DynamoDBThrottlesTotal, _ = meter.Int64Counter(
-		"airunner.dynamodb.throttles.total",
-		metric.WithDescription("Total number of DynamoDB throttling events"),
-		metric.WithUnit("{throttle}"),
-	)
-
-	m.DynamoDBBatchRetries, _ = meter.Int64Counter(
-		"airunner.dynamodb.batch_retries.total",
-		metric.WithDescription("Total number of DynamoDB batch write retries"),
-		metric.WithUnit("{retry}"),
 	)
 
 	// Channel metrics

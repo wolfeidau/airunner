@@ -19,6 +19,7 @@ import (
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 	"github.com/wolfeidau/airunner/cmd/cli/internal/credentials"
 	"github.com/wolfeidau/airunner/internal/client"
+	"github.com/wolfeidau/airunner/internal/util"
 	"github.com/wolfeidau/airunner/internal/worker"
 	"github.com/wolfeidau/airunner/internal/worker/wal"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -218,10 +219,15 @@ func (w *WorkerCmd) processJob(ctx context.Context, clients *client.Clients) (bo
 	// Build job result based on execution outcome
 	if executeErr != nil {
 		log.Error().Err(executeErr).Str("job_id", job.JobId).Msg("Job execution failed")
+		exitCode := int32(1)
+		var exitErr *worker.ExitError
+		if errors.As(executeErr, &exitErr) {
+			exitCode = util.AsInt32(exitErr.Code)
+		}
 		jobResult = &jobv1.JobResult{
 			JobId:        job.JobId,
 			Success:      false,
-			ExitCode:     1,
+			ExitCode:     exitCode,
 			ErrorMessage: executeErr.Error(),
 			StartedAt:    job.UpdatedAt, // Job was marked RUNNING when dequeued
 			CompletedAt:  timestamppb.Now(),

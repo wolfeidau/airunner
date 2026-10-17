@@ -470,6 +470,12 @@
   color: var(--error);
 }
 
+.event-warning {
+  border-left-color: var(--warning);
+  color: var(--warning-light);
+  background-color: rgba(240, 106, 37, 0.08);
+}
+
 .event-error {
   border-left-color: var(--error);
   color: var(--error);

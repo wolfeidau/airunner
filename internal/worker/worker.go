@@ -161,6 +161,7 @@ func (je *JobExecutor) createDirectProcess(job *jobv1.Job, flushInterval time.Du
 	opts := []consolestream.ProcessOption{
 		consolestream.WithEnvMap(job.JobParams.Environment),
 		consolestream.WithFlushInterval(flushInterval),
+		consolestream.WithProgramStatus(), // Capture OSC 7501 program status reports
 	}
 
 	// Set process type
@@ -190,6 +191,7 @@ func (je *JobExecutor) createContainerProcess(ctx context.Context, job *jobv1.Jo
 		consolestream.WithContainerImage(cfg.Image),
 		consolestream.WithContainerEnvMap(job.JobParams.Environment),
 		consolestream.WithContainerFlushInterval(flushInterval),
+		consolestream.WithContainerProgramStatus(), // Capture OSC 7501 program status reports
 	}
 
 	// Runtime selection
@@ -261,6 +263,10 @@ func (je *JobExecutor) handleEvent(event consolestream.Event, jobID string) erro
 
 	case *consolestream.ImagePullComplete:
 		return je.publishImagePullCompleteEvent(e)
+
+	// OSC 7501 program status reports (recorded only, no action taken)
+	case *consolestream.ProgramStatus:
+		return je.publishProgramStatusEvent(e)
 
 	default:
 		// Handle other unexpected event types
@@ -408,6 +414,30 @@ func (je *JobExecutor) publishImagePullStartEvent(event *consolestream.ImagePull
 	if err := je.batcher.AddEvent(context.Background(), jobEvent); err != nil {
 		log.Error().Err(err).Msg("Failed to add image pull start event to batcher")
 		return fmt.Errorf("failed to publish image pull start event: %w", err)
+	}
+
+	return nil
+}
+
+func (je *JobExecutor) publishProgramStatusEvent(event *consolestream.ProgramStatus) error {
+	jobEvent := &jobv1.JobEvent{
+		EventType: jobv1.EventType_EVENT_TYPE_PROGRAM_STATUS,
+		EventData: &jobv1.JobEvent_ProgramStatus{
+			ProgramStatus: &jobv1.ProgramStatusEvent{
+				State:    event.State,
+				Id:       event.ID,
+				Kind:     event.Kind,
+				App:      event.App,
+				Title:    event.Title,
+				Msg:      event.Msg,
+				Progress: int32(event.Progress), //nolint:gosec // progress is bounded to -1..100
+			},
+		},
+	}
+
+	if err := je.batcher.AddEvent(context.Background(), jobEvent); err != nil {
+		log.Error().Err(err).Msg("Failed to add program status event to batcher")
+		return fmt.Errorf("failed to publish program status event: %w", err)
 	}
 
 	return nil

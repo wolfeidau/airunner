@@ -57,6 +57,9 @@ message JobEvent {
     GitCloneStartEvent git_clone_start = 16;
     GitCloneEndEvent git_clone_end = 17;
     GitCloneErrorEvent git_clone_error = 18;
+
+    // Program status events
+    ProgramStatusEvent program_status = 19;
   }
 }
 
@@ -156,6 +159,17 @@ message GitCloneErrorEvent {
   string stderr_output = 2;
 }
 
+// ProgramStatusEvent is an OSC 7501 program status report found in the job output
+message ProgramStatusEvent {
+  string state = 1; // e.g. working, blocked, done
+  string id = 2; // Status id, groups reports from one task
+  string kind = 3; // e.g. build, test
+  string app = 4; // Reporting application
+  string title = 5; // Decoded title
+  string msg = 6; // Decoded message
+  int32 progress = 7; // 0-100, or -1 if indeterminate
+}
+
 // Batch configuration for event publishing
 //
 // IMPORTANT: max_batch_bytes must account for persistence backend limits:
@@ -206,6 +220,9 @@ enum EventType {
   EVENT_TYPE_GIT_CLONE_START = 13;
   EVENT_TYPE_GIT_CLONE_END = 14;
   EVENT_TYPE_GIT_CLONE_ERROR = 15;
+
+  // Program status events (OSC 7501)
+  EVENT_TYPE_PROGRAM_STATUS = 16;
 }
 
 message PublishJobEventsRequest {

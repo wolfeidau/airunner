@@ -16,6 +16,23 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+// ExitError reports that the job process exited with a non-zero exit code.
+type ExitError struct {
+	Code int
+}
+
+func (e *ExitError) Error() string {
+	return fmt.Sprintf("process exited with code %d", e.Code)
+}
+
+// processEndError returns an ExitError for a non-zero exit code, otherwise nil.
+func processEndError(end *consolestream.ProcessEnd) error {
+	if end.ExitCode != 0 {
+		return &ExitError{Code: end.ExitCode}
+	}
+	return nil
+}
+
 type JobExecutor struct {
 	eventStream *connect.ClientStreamForClient[jobv1.PublishJobEventsRequest, jobv1.PublishJobEventsResponse]
 	taskToken   string
@@ -126,8 +143,8 @@ func (je *JobExecutor) executeDirect(ctx context.Context, job *jobv1.Job, flushI
 			return fmt.Errorf("event handling failed: %w", err)
 		}
 
-		if _, ok := event.Event.(*consolestream.ProcessEnd); ok {
-			return nil
+		if end, ok := event.Event.(*consolestream.ProcessEnd); ok {
+			return processEndError(end)
 		}
 	}
 
@@ -148,8 +165,8 @@ func (je *JobExecutor) executeContainer(ctx context.Context, job *jobv1.Job, flu
 			return fmt.Errorf("event handling failed: %w", err)
 		}
 
-		if _, ok := event.Event.(*consolestream.ProcessEnd); ok {
-			return nil
+		if end, ok := event.Event.(*consolestream.ProcessEnd); ok {
+			return processEndError(end)
 		}
 	}
 

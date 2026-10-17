@@ -103,7 +103,7 @@ const (
 // The onFlush callback receives a context that can be used for cancellation and tracing.
 func NewEventBatcherWithContext(config *jobv1.ExecutionConfig, onFlush func(context.Context, *jobv1.JobEvent) error) *EventBatcher {
 	if config == nil || config.Batching == nil {
-		// Use sensible defaults aligned with DynamoDB limits
+		// Use conservative defaults
 		config = &jobv1.ExecutionConfig{
 			Batching: &jobv1.BatchingConfig{
 				FlushIntervalSeconds:   defaultFlushIntervalSeconds,

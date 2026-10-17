@@ -17,6 +17,7 @@ var (
 		Init        commands.InitCmd        `cmd:"" help:"Initialize a new credential"`
 		Credentials commands.CredentialsCmd `cmd:"" help:"Manage credentials"`
 		TestOutput  commands.TestOutputCmd  `cmd:"" help:"Generate test output with known timing patterns"`
+		TestStatus  commands.TestStatusCmd  `cmd:"" help:"Emit OSC 7501 program status reports for demos and testing"`
 		Debug       bool                    `help:"Enable debug mode."`
 		Version     kong.VersionFlag
 	}

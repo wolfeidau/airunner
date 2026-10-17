@@ -26,6 +26,7 @@ import {
   type OutputBatchEvent,
 } from "../../api/gen/proto/es/job/v1/job_pb";
 import { timestampToJsDate } from "../lib/proto_convert";
+import { stripProgramStatus } from "../lib/program_status";
 
 import "./app.css";
 import "./dashboard.css";
@@ -119,9 +120,15 @@ function OutputBatchRenderer({
         const offsetSeconds = (offsetMs / 1000).toFixed(1);
 
         // Decode bytes to string
-        const text = new TextDecoder("utf-8", { fatal: false }).decode(
+        const rawText = new TextDecoder("utf-8", { fatal: false }).decode(
           output.output,
         );
+        const text = stripProgramStatus(rawText);
+
+        // Skip lines that only held an OSC 7501 status report
+        if (rawText !== text && text.trim() === "") {
+          return null;
+        }
 
         // Style based on stream type (stdout vs stderr)
         const className =
@@ -265,6 +272,29 @@ function EventItem({
           <div className="event-lifecycle event-error">
             <span className="output-offset">+{offsetSeconds}s</span>[{timestamp}
             ] ❌ Git clone failed: {gitErr.errorMessage}
+          </div>
+        );
+      }
+      break;
+
+    case EventType.PROGRAM_STATUS:
+      if (event.eventData.case === "programStatus") {
+        const ps = event.eventData.value;
+        const stateClass =
+          ps.state === "blocked"
+            ? "event-warning"
+            : ps.state === "done"
+              ? "event-success"
+              : "event-start";
+        const label = [ps.kind, ps.id].filter(Boolean).join(" ");
+        return (
+          <div className={`event-lifecycle ${stateClass}`}>
+            <span className="output-offset">+{offsetSeconds}s</span>[{timestamp}
+            ] {ps.state}
+            {label && ` [${label}]`}
+            {ps.title && ` ${ps.title}`}
+            {ps.msg && ` - ${ps.msg}`}
+            {ps.progress >= 0 && ` (${ps.progress}%)`}
           </div>
         );
       }

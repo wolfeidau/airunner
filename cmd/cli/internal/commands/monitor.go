@@ -339,6 +339,30 @@ func monitorJob(ctx context.Context, clients *client.Clients, args monitorJobArg
 				}
 			}
 
+		case jobv1.EventType_EVENT_TYPE_PROGRAM_STATUS:
+			if ps := event.GetProgramStatus(); ps != nil {
+				fmt.Printf("[%s] 📟 Program status: %s",
+					event.Timestamp.AsTime().Format("15:04:05"),
+					ps.State)
+				if ps.Id != "" {
+					fmt.Printf(" [%s", ps.Id)
+					if ps.Kind != "" {
+						fmt.Printf("/%s", ps.Kind)
+					}
+					fmt.Print("]")
+				}
+				if ps.Title != "" {
+					fmt.Printf(" %s", ps.Title)
+				}
+				if ps.Msg != "" {
+					fmt.Printf(" - %s", ps.Msg)
+				}
+				if ps.Progress >= 0 {
+					fmt.Printf(" (%d%%)", ps.Progress)
+				}
+				fmt.Println()
+			}
+
 		// Container lifecycle events
 		case jobv1.EventType_EVENT_TYPE_CONTAINER_CREATE:
 			if create := event.GetContainerCreate(); create != nil {

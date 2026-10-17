@@ -36,11 +36,11 @@ proto-generate: ## Generate Go code from proto files
 
 .PHONY: proto-lint
 proto-lint: ## Lint protocol buffer files
-	cd api && buf lint
+	cd api && bunx @bufbuild/buf lint
 
 .PHONY: proto-breaking
 proto-breaking: ## Check for breaking changes in proto files
-	cd api && buf breaking
+	cd api && bunx @bufbuild/buf breaking --against '../.git#branch=main,subdir=api'
 
 .PHONY: certs
 certs: ## Generate local TLS certificates

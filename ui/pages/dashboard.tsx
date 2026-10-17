@@ -281,11 +281,11 @@ function EventItem({
       if (event.eventData.case === "programStatus") {
         const ps = event.eventData.value;
         const stateClass =
-          ps.state === "blocked"
-            ? "event-warning"
-            : ps.state === "done"
-              ? "event-success"
-              : "event-start";
+          {
+            blocked: "event-warning",
+            done: "event-success",
+            error: "event-error",
+          }[ps.state] ?? "event-start";
         const label = [ps.kind, ps.id].filter(Boolean).join(" ");
         return (
           <div className={`event-lifecycle ${stateClass}`}>

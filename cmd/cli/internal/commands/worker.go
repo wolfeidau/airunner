@@ -16,6 +16,7 @@ import (
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 	"github.com/wolfeidau/airunner/cmd/cli/internal/credentials"
 	"github.com/wolfeidau/airunner/internal/client"
+	"github.com/wolfeidau/airunner/internal/leasereason"
 	"github.com/wolfeidau/airunner/internal/telemetry"
 	"github.com/wolfeidau/airunner/internal/util"
 	"github.com/wolfeidau/airunner/internal/worker"
@@ -277,7 +278,7 @@ type jobRun struct {
 // or abandon the job depending on what the lease and the publish path report.
 func (r *jobRun) finish(ctx context.Context, executeErr error) error {
 	if r.leaseLost() {
-		r.abandon(abandonLeaseLost, "lease lost")
+		r.abandonLost("lease lost", nil)
 		return nil
 	}
 
@@ -288,7 +289,7 @@ func (r *jobRun) finish(ctx context.Context, executeErr error) error {
 	switch {
 	case flushErr == nil:
 	case errors.Is(flushErr, wal.ErrLeaseLost) || r.leaseLost():
-		r.abandon(abandonLeaseLost, "lease lost")
+		r.abandonLost("lease lost", flushErr)
 		return nil
 	case errors.Is(flushErr, wal.ErrPermanent):
 		// The server will never accept the remaining events: fail the job with the
@@ -316,6 +317,28 @@ func (r *jobRun) finish(ctx context.Context, executeErr error) error {
 // leaseLost reports whether the lease controller aborted or the WAL sender saw lease loss.
 func (r *jobRun) leaseLost() bool {
 	return r.ctrl.Err() != nil || errors.Is(r.wal.Err(), wal.ErrLeaseLost)
+}
+
+// cancelled reports whether the controller or the WAL sender saw the job cancelled.
+func (r *jobRun) cancelled(errs ...error) bool {
+	if errors.Is(r.ctrl.Err(), lease.ErrCancelled) || isCancelled(r.wal.Err()) {
+		return true
+	}
+	for _, err := range errs {
+		if isCancelled(err) {
+			return true
+		}
+	}
+	return false
+}
+
+// abandonLost abandons the job as cancelled when any evidence says so, else as lease loss.
+func (r *jobRun) abandonLost(detail string, err error) {
+	if r.cancelled(err) {
+		r.abandon(abandonCancelled, "job cancelled")
+		return
+	}
+	r.abandon(abandonLeaseLost, detail)
 }
 
 // complete sends CompleteJob with the acknowledged event prefix. Lease loss on completion
@@ -346,7 +369,7 @@ func (r *jobRun) complete(ctx context.Context, executeErr error) error {
 	}))
 	if err != nil {
 		if connect.CodeOf(err) == connect.CodeFailedPrecondition {
-			r.abandon(abandonLeaseLost, "lease lost on completion")
+			r.abandonLost("lease lost on completion", err)
 			return nil
 		}
 		return fmt.Errorf("failed to complete job: %w", err)
@@ -359,6 +382,7 @@ func (r *jobRun) complete(ctx context.Context, executeErr error) error {
 // Abandon reasons, used as the reason attribute of worker.jobs.abandoned.
 const (
 	abandonLeaseLost    = "lease_lost"
+	abandonCancelled    = "cancelled"
 	abandonFlushTimeout = "flush_timeout"
 	abandonOther        = "other"
 )
@@ -368,6 +392,15 @@ const (
 func (r *jobRun) abandon(reason, detail string) {
 	if r.metrics != nil {
 		r.metrics.JobsAbandoned.Add(context.Background(), 1, metric.WithAttributes(attribute.String("reason", reason)))
+	}
+	if reason == abandonCancelled {
+		log.Info().
+			Str("job_id", r.job.JobId).
+			Int32("attempt", r.job.Attempt).
+			Int("pending", r.wal.Pending()).
+			Msg("job cancelled")
+		r.discard()
+		return
 	}
 	log.Warn().
 		Str("job_id", r.job.JobId).
@@ -408,6 +441,9 @@ func newRenewFunc(clients *client.Clients, taskToken string) lease.RenewFunc {
 			VisibilityTimeoutSeconds: util.AsInt32(int(requested / time.Second)),
 		}))
 		if err != nil {
+			if isCancelled(err) {
+				return 0, fmt.Errorf("%w: %w", lease.ErrCancelled, err)
+			}
 			if connect.CodeOf(err) == connect.CodeFailedPrecondition {
 				return 0, fmt.Errorf("%w: %w", lease.ErrLost, err)
 			}
@@ -415,6 +451,15 @@ func newRenewFunc(clients *client.Clients, taskToken string) lease.RenewFunc {
 		}
 		return time.Duration(resp.Msg.VisibilityTimeoutSeconds) * time.Second, nil
 	}
+}
+
+// isCancelled reports whether err is a FailedPrecondition carrying the cancelled lease reason.
+func isCancelled(err error) bool {
+	var connErr *connect.Error
+	if !errors.As(err, &connErr) || connErr.Code() != connect.CodeFailedPrecondition {
+		return false
+	}
+	return connErr.Meta().Get(leasereason.Header) == leasereason.Cancelled
 }
 
 func isDeadlineExceeded(err error) bool {

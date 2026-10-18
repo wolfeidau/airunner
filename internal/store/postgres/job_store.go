@@ -512,6 +512,10 @@ func lockLeaseRow(ctx context.Context, tx pgx.Tx, caller store.Caller, tt *taskT
 		return nil, mapPostgresError(err)
 	}
 
+	if state == int32(jobv1.JobState_JOB_STATE_CANCELLED) {
+		return nil, store.ErrJobCancelled
+	}
+
 	var opTime time.Time
 	if err := tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&opTime); err != nil {
 		return nil, mapPostgresError(err)
@@ -711,6 +715,80 @@ func (s *JobStore) ReleaseJob(ctx context.Context, caller store.Caller, taskToke
 		Msg("Released job back to queue")
 
 	return nil
+}
+
+// CancelJob cancels a SCHEDULED or RUNNING job and clears any lease, so the holder's
+// next fenced call fails with store.ErrJobCancelled. Cancelling a CANCELLED job is a
+// no-op; COMPLETED or FAILED returns store.ErrFailedPrecondition.
+func (s *JobStore) CancelJob(ctx context.Context, caller store.Caller, jobID string) (jobv1.JobState, error) {
+	if _, err := uuid.Parse(jobID); err != nil {
+		return 0, store.ErrJobNotFound
+	}
+
+	queryCtx, cancel := s.withQueryTimeout(ctx)
+	defer cancel()
+
+	tx, err := s.pool.BeginTx(queryCtx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return 0, mapPostgresError(err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(queryCtx)) }()
+
+	if _, err := tx.Exec(queryCtx, fenceTimeoutSQL); err != nil {
+		return 0, mapPostgresError(err)
+	}
+
+	var state jobv1.JobState
+	err = tx.QueryRow(queryCtx,
+		`SELECT state FROM jobs WHERE org_id = $1 AND job_id = $2 FOR UPDATE`,
+		caller.OrgID, jobID).Scan(&state)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, store.ErrJobNotFound
+		}
+		return 0, mapPostgresError(err)
+	}
+
+	var from string
+	switch state {
+	case jobv1.JobState_JOB_STATE_SCHEDULED:
+		from = telemetry.FromScheduled
+	case jobv1.JobState_JOB_STATE_RUNNING:
+		from = telemetry.FromRunning
+	case jobv1.JobState_JOB_STATE_CANCELLED:
+		return state, nil
+	default:
+		return 0, fmt.Errorf("%w: job is %s", store.ErrFailedPrecondition, state)
+	}
+
+	// 5=CANCELLED; lease columns are cleared together to satisfy jobs_lease_consistency
+	_, err = tx.Exec(queryCtx, `
+		UPDATE jobs
+		SET
+			state = 5,
+			visibility_until = NULL,
+			receipt_handle = NULL,
+			leased_by = NULL,
+			updated_at = clock_timestamp()
+		WHERE org_id = $1 AND job_id = $2
+	`, caller.OrgID, jobID)
+	if err != nil {
+		return 0, mapPostgresError(err)
+	}
+
+	if err := tx.Commit(queryCtx); err != nil {
+		return 0, mapPostgresError(err)
+	}
+
+	s.cfg.Metrics.JobsCancelled.Add(ctx, 1,
+		metric.WithAttributes(telemetry.AttrFrom.String(from)))
+
+	log.Info().
+		Str("job_id", jobID).
+		Str("from", from).
+		Msg("Cancelled job")
+
+	return jobv1.JobState_JOB_STATE_CANCELLED, nil
 }
 
 // ReapExpired reclaims up to limit RUNNING jobs whose lease has expired, returning them

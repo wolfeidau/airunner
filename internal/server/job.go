@@ -198,9 +198,23 @@ func (s *JobServer) ListJobs(ctx context.Context, req *connect.Request[v1.ListJo
 	return connect.NewResponse(resp), nil
 }
 
-// CancelJob is not implemented yet.
-func (s *JobServer) CancelJob(_ context.Context, _ *connect.Request[v1.CancelJobRequest]) (*connect.Response[v1.CancelJobResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cancel is not implemented yet"))
+// CancelJob cancels a SCHEDULED or RUNNING job. Cancelling a cancelled job succeeds.
+func (s *JobServer) CancelJob(ctx context.Context, req *connect.Request[v1.CancelJobRequest]) (*connect.Response[v1.CancelJobResponse], error) {
+	caller, err := callerFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if req.Msg.JobId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("job_id is required"))
+	}
+
+	state, err := s.store.CancelJob(ctx, caller, req.Msg.JobId)
+	if err != nil {
+		return nil, toConnectError(err)
+	}
+
+	return connect.NewResponse(&v1.CancelJobResponse{State: state}), nil
 }
 
 // addJitter adds random jitter to a duration to prevent thundering herd.

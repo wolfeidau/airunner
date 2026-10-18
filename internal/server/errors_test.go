@@ -24,6 +24,9 @@ func TestToConnectError(t *testing.T) {
 		{"event too large", store.ErrEventTooLarge, connect.CodeResourceExhausted},
 		{"job not found", store.ErrJobNotFound, connect.CodeNotFound},
 		{"lease lost", store.ErrLeaseLost, connect.CodeFailedPrecondition},
+		{"failed precondition", store.ErrFailedPrecondition, connect.CodeFailedPrecondition},
+		{"wrapped failed precondition", fmt.Errorf("%w: job is COMPLETED", store.ErrFailedPrecondition), connect.CodeFailedPrecondition},
+		{"job cancelled", store.ErrJobCancelled, connect.CodeFailedPrecondition},
 		{"conflict", store.ErrConflict, connect.CodeAlreadyExists},
 		{"unavailable", store.ErrUnavailable, connect.CodeUnavailable},
 		{"deadline", context.DeadlineExceeded, connect.CodeDeadlineExceeded},
@@ -39,6 +42,18 @@ func TestToConnectError(t *testing.T) {
 			require.Equal(t, tt.code, connect.CodeOf(toConnectError(tt.err)))
 		})
 	}
+
+	t.Run("cancelled sets lease reason header", func(t *testing.T) {
+		var ce *connect.Error
+		require.ErrorAs(t, toConnectError(fmt.Errorf("op: %w", store.ErrJobCancelled)), &ce)
+		require.Equal(t, LeaseReasonCancelled, ce.Meta().Get(LeaseReasonHeader))
+	})
+
+	t.Run("plain lease loss has no lease reason header", func(t *testing.T) {
+		var ce *connect.Error
+		require.ErrorAs(t, toConnectError(store.ErrLeaseLost), &ce)
+		require.Empty(t, ce.Meta().Get(LeaseReasonHeader))
+	})
 
 	t.Run("nil", func(t *testing.T) {
 		require.NoError(t, toConnectError(nil))

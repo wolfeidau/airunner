@@ -82,7 +82,7 @@ func successResult(jobID string) *jobv1.JobResult {
 
 func TestFencing_OldTokenAfterRedelivery(t *testing.T) {
 	ctx := context.Background()
-	js, fx := setupStore(t)
+	js, fx := setupUnstartedStore(t)
 	jobID, oldToken := leasedJob(t, js, fx, "redeliver", 3, 300)
 
 	expireLease(t, js, jobID)
@@ -107,7 +107,7 @@ func TestFencing_OldTokenAfterRedelivery(t *testing.T) {
 
 func TestFencing_SameOrgDifferentWorker(t *testing.T) {
 	ctx := context.Background()
-	js, fx := setupStore(t)
+	js, fx := setupUnstartedStore(t)
 	jobID, token := leasedJob(t, js, fx, "wrongworker", 3, 300)
 
 	// Another principal in the same org (the user fixture) must not use the worker's token.
@@ -124,7 +124,8 @@ func TestFencing_SameOrgDifferentWorker(t *testing.T) {
 
 func TestFencing_ExpiredUnreapedLease(t *testing.T) {
 	ctx := context.Background()
-	js, fx := setupStore(t)
+	// Unstarted: a started store's reaper could reclaim the expired lease mid-test.
+	js, fx := setupUnstartedStore(t)
 	jobID, token := leasedJob(t, js, fx, "unreaped", 3, 300)
 	expireLease(t, js, jobID)
 
@@ -142,7 +143,7 @@ func TestFencing_ExpiredUnreapedLease(t *testing.T) {
 
 func TestFencing_ReleaseUntilExhausted(t *testing.T) {
 	ctx := context.Background()
-	js, fx := setupStore(t)
+	js, fx := setupUnstartedStore(t)
 	jobID, token := leasedJob(t, js, fx, "exhaust", 2, 300)
 
 	require.NoError(t, js.ReleaseJob(ctx, fx.Worker, token))
@@ -164,7 +165,7 @@ func TestFencing_ReleaseUntilExhausted(t *testing.T) {
 
 func TestFencing_FinalExpiryFails(t *testing.T) {
 	ctx := context.Background()
-	js, fx := setupStore(t)
+	js, fx := setupUnstartedStore(t)
 	jobID, _ := leasedJob(t, js, fx, "finalexpiry", 1, 300)
 
 	n, err := js.ReapExpired(ctx, 10)
@@ -182,7 +183,7 @@ func TestFencing_FinalExpiryFails(t *testing.T) {
 }
 
 func TestFencing_ReaperLoop(t *testing.T) {
-	js, fx := setupStore(t)
+	js, fx := setupUnstartedStore(t)
 	jobID, _ := leasedJob(t, js, fx, "loop", 3, 300)
 	expireLease(t, js, jobID)
 
@@ -206,7 +207,7 @@ func TestFencing_Publish(t *testing.T) {
 	ctx := context.Background()
 
 	setup := func(t *testing.T, name string) (*JobStore, orgFixture, string, string) {
-		js, fx := setupStore(t)
+		js, fx := setupUnstartedStore(t)
 		jobID, token := leasedJob(t, js, fx, name, 3, 300)
 		return js, fx, jobID, token
 	}
@@ -306,7 +307,7 @@ func TestFencing_Publish(t *testing.T) {
 
 func TestFencing_CompleteFinalSequence(t *testing.T) {
 	ctx := context.Background()
-	js, fx := setupStore(t)
+	js, fx := setupUnstartedStore(t)
 	jobID, token := leasedJob(t, js, fx, "finalseq", 3, 300)
 
 	_, err := js.PublishEvents(ctx, fx.Worker, token, []*jobv1.JobEvent{startEvent(1), batchEvent(2, 3)})
@@ -345,7 +346,7 @@ func holdRowLock(t *testing.T, js *JobStore, jobID string, setSQL string) (relea
 // after the lock is acquired, not the (frozen) transaction start time.
 func TestBarrier_PublishWaitsPastExpiry(t *testing.T) {
 	ctx := context.Background()
-	js, fx := setupStore(t)
+	js, fx := setupUnstartedStore(t)
 	jobID, token := leasedJob(t, js, fx, "barrier", 3, 300)
 
 	release := holdRowLock(t, js, jobID,
@@ -373,7 +374,7 @@ func TestBarrier_PublishWaitsPastExpiry(t *testing.T) {
 // a later sweep reclaims them.
 func TestBarrier_ReaperSkipsLockedRow(t *testing.T) {
 	ctx := context.Background()
-	js, fx := setupStore(t)
+	js, fx := setupUnstartedStore(t)
 	jobID, _ := leasedJob(t, js, fx, "skiplocked", 3, 300)
 	expireLease(t, js, jobID)
 
@@ -392,7 +393,7 @@ func TestBarrier_PublishVersusReapOrdering(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("reap first then publish fails", func(t *testing.T) {
-		js, fx := setupStore(t)
+		js, fx := setupUnstartedStore(t)
 		jobID, token := leasedJob(t, js, fx, "reapfirst", 3, 300)
 		expireLease(t, js, jobID)
 		n, err := js.ReapExpired(ctx, 10)
@@ -405,7 +406,7 @@ func TestBarrier_PublishVersusReapOrdering(t *testing.T) {
 	})
 
 	t.Run("publish first then reap keeps events", func(t *testing.T) {
-		js, fx := setupStore(t)
+		js, fx := setupUnstartedStore(t)
 		jobID, token := leasedJob(t, js, fx, "publishfirst", 3, 300)
 		_, err := js.PublishEvents(ctx, fx.Worker, token, []*jobv1.JobEvent{startEvent(1)})
 		require.NoError(t, err)
@@ -418,7 +419,7 @@ func TestBarrier_PublishVersusReapOrdering(t *testing.T) {
 	})
 
 	t.Run("concurrent publishers and reaper", func(t *testing.T) {
-		js, fx := setupStore(t)
+		js, fx := setupUnstartedStore(t)
 		jobID, token := leasedJob(t, js, fx, "concurrent", 3, 300)
 		expireLease(t, js, jobID)
 

@@ -2,6 +2,8 @@ package memory
 
 import (
 	"context"
+	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -121,27 +123,35 @@ func (s *SessionStore) DeleteByPrincipal(ctx context.Context, principalID uuid.U
 	return count, nil
 }
 
-// DeleteExpired deletes all expired sessions (cleanup job).
-func (s *SessionStore) DeleteExpired(ctx context.Context) (int, error) {
+// DeleteExpired deletes up to limit expired sessions (oldest expiry first) and
+// returns the number deleted.
+func (s *SessionStore) DeleteExpired(ctx context.Context, limit int) (int, error) {
+	if limit <= 0 {
+		return 0, fmt.Errorf("limit must be positive, got %d", limit)
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var toDelete []uuid.UUID
 	now := time.Now()
-
-	for id, session := range s.sessions {
+	var expired []*models.Session
+	for _, session := range s.sessions {
 		if now.After(session.ExpiresAt) {
-			toDelete = append(toDelete, id)
+			expired = append(expired, session)
 		}
 	}
 
-	for _, sessionID := range toDelete {
-		session := s.sessions[sessionID]
-		s.removeFromPrincipalIndex(session.PrincipalID, sessionID)
-		delete(s.sessions, sessionID)
+	sort.Slice(expired, func(i, j int) bool { return expired[i].ExpiresAt.Before(expired[j].ExpiresAt) })
+	if len(expired) > limit {
+		expired = expired[:limit]
 	}
 
-	return len(toDelete), nil
+	for _, session := range expired {
+		s.removeFromPrincipalIndex(session.PrincipalID, session.SessionID)
+		delete(s.sessions, session.SessionID)
+	}
+
+	return len(expired), nil
 }
 
 // removeFromPrincipalIndex removes a session ID from the principal's session list.

@@ -28,6 +28,12 @@ import (
 	"github.com/wolfeidau/airunner/internal/website/oidc"
 )
 
+// Expired session cleanup bounds: rows per delete and deletes per sweep.
+const (
+	sessionSweepBatch      = 1000
+	sessionSweepMaxBatches = 10
+)
+
 type ServerCmd struct {
 	// Server configuration
 	Listen string `help:"HTTP server listen address" default:"0.0.0.0:443" env:"AIRUNNER_LISTEN"`
@@ -52,6 +58,11 @@ type ServerCmd struct {
 
 	// LeaseReaperInterval is how often expired job leases are reaped.
 	LeaseReaperInterval time.Duration `help:"interval between expired lease reaper runs" default:"5s" env:"AIRUNNER_LEASE_REAPER_INTERVAL"`
+
+	// Retention of terminal jobs, their events and expired sessions.
+	Retention         RetentionFlags `embed:""`
+	RetentionInterval time.Duration  `help:"interval between in-process retention and session sweeps (0 disables in-process sweeps; run 'airunner-server cleanup' on a schedule instead)" default:"1h" env:"AIRUNNER_RETENTION_INTERVAL"`
+	EventPollInterval time.Duration  `help:"interval between event stream polls" default:"500ms" env:"AIRUNNER_EVENT_POLL_INTERVAL"`
 
 	// Store configuration
 	PostgresStore PostgresStoreFlags `embed:"" prefix:"postgres-"`
@@ -127,6 +138,14 @@ func (c *ServerCmd) Run(globals *Globals) error {
 		interceptors = append(interceptors, otelInterceptor)
 	}
 
+	jobRetention, eventRetention, err := c.Retention.Durations()
+	if err != nil {
+		return err
+	}
+	if c.RetentionInterval < 0 {
+		return errors.New("--retention-interval must not be negative")
+	}
+
 	// Create shared connection pool for all PostgreSQL stores
 	poolCfg := &postgresstore.PoolConfig{
 		ConnString:      c.PostgresStore.ConnString,
@@ -163,8 +182,13 @@ func (c *ServerCmd) Run(globals *Globals) error {
 			},
 			HeartbeatIntervalSeconds: c.Execution.HeartbeatInterval,
 		},
-		DefaultMaxAttempts:  c.PostgresStore.DefaultMaxAttempts,
-		LeaseReaperInterval: c.LeaseReaperInterval,
+		DefaultMaxAttempts:   c.PostgresStore.DefaultMaxAttempts,
+		LeaseReaperInterval:  c.LeaseReaperInterval,
+		StreamPollInterval:   c.EventPollInterval,
+		JobRetention:         jobRetention,
+		EventRetention:       eventRetention,
+		RetentionInterval:    c.RetentionInterval,
+		DisableRetentionLoop: c.RetentionInterval == 0,
 	}
 
 	jobStore, err := postgresstore.NewJobStore(pool, jobStoreCfg)
@@ -186,6 +210,24 @@ func (c *ServerCmd) Run(globals *Globals) error {
 			log.Error().Err(stopErr).Msg("Failed to stop job store")
 		}
 	}()
+
+	if c.RetentionInterval == 0 {
+		log.Info().Msg("In-process retention disabled; run `airunner-server cleanup` on a schedule")
+	} else {
+		// Expired session cleanup shares the pool, so it is stopped and joined before pool close.
+		sweepCtx, stopSweep := context.WithCancel(ctx)
+		sweepDone := make(chan struct{})
+		go func() {
+			defer close(sweepDone)
+			postgresstore.RunSessionSweeper(sweepCtx, sessionStore, c.RetentionInterval, sessionSweepBatch, sessionSweepMaxBatches, func(n int) {
+				telemetry.GetMetrics().RetentionSessionsDeleted.Add(sweepCtx, int64(n))
+			})
+		}()
+		defer func() {
+			stopSweep()
+			<-sweepDone
+		}()
+	}
 
 	// Seed the reserved development identity for --no-auth mode
 	var devPrincipal *auth.Principal

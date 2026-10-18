@@ -32,6 +32,27 @@ type JobStoreConfig struct {
 
 	// StreamPollInterval is how often an event stream polls for new events. Default: 500ms.
 	StreamPollInterval time.Duration
+
+	// JobRetention is how long terminal jobs (completed, failed, cancelled) are kept,
+	// measured from their last update. Default: 90 days. Must be positive.
+	JobRetention time.Duration
+
+	// EventRetention is how long the events of terminal jobs are kept, measured from
+	// the job's last update. 0 keeps events until the job itself is deleted. Must be
+	// >= 0 and <= JobRetention.
+	//
+	// ApplyDefaults sets this to 30 days only when both EventRetention and JobRetention
+	// are unset (zero). Callers that set JobRetention explicitly and leave EventRetention
+	// zero therefore get "keep events for the job's lifetime".
+	EventRetention time.Duration
+
+	// RetentionInterval is how often the retention sweep runs. Default: 1h.
+	// Must be positive when the retention loop is enabled and never negative.
+	RetentionInterval time.Duration
+
+	// DisableRetentionLoop stops Start from running the in-process retention loop.
+	// Retention can then be run on a schedule with SweepRetention.
+	DisableRetentionLoop bool
 }
 
 // Validate checks that the configuration is valid.
@@ -56,6 +77,22 @@ func (c *JobStoreConfig) Validate() error {
 		return fmt.Errorf("stream poll interval must be positive")
 	}
 
+	if c.JobRetention <= 0 {
+		return fmt.Errorf("job retention must be positive")
+	}
+
+	if c.EventRetention < 0 {
+		return fmt.Errorf("event retention must not be negative")
+	}
+
+	if c.EventRetention > c.JobRetention {
+		return fmt.Errorf("event retention must not exceed job retention")
+	}
+
+	if c.RetentionInterval < 0 || (c.RetentionInterval == 0 && !c.DisableRetentionLoop) {
+		return fmt.Errorf("retention interval must be positive")
+	}
+
 	return nil
 }
 
@@ -71,6 +108,20 @@ func (c *JobStoreConfig) ApplyDefaults() {
 
 	if c.StreamPollInterval == 0 {
 		c.StreamPollInterval = 500 * time.Millisecond
+	}
+
+	// EventRetention 0 is meaningful (keep events with the job), so its default only
+	// applies when retention is entirely unconfigured.
+	if c.JobRetention == 0 && c.EventRetention == 0 {
+		c.EventRetention = 30 * 24 * time.Hour
+	}
+
+	if c.JobRetention == 0 {
+		c.JobRetention = 90 * 24 * time.Hour
+	}
+
+	if c.RetentionInterval == 0 && !c.DisableRetentionLoop {
+		c.RetentionInterval = time.Hour
 	}
 
 	if c.DefaultMaxAttempts == 0 {

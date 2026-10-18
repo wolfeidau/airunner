@@ -180,17 +180,19 @@ func TestSender_DuplicateAck(t *testing.T) {
 }
 
 func TestSender_BadAckIsPermanent(t *testing.T) {
-	tests := map[string]Ack{
-		"wrong attempt": {Attempt: 2, Through: 3},
-		"short through": {Attempt: 1, Through: 2},
-		"long through":  {Attempt: 1, Through: 4},
+	// Acks are derived from the batch actually sent: the sender may pick up a prefix
+	// of the appended records before the rest arrive.
+	tests := map[string]func(last int64) Ack{
+		"wrong attempt": func(last int64) Ack { return Ack{Attempt: 2, Through: last} },
+		"short through": func(last int64) Ack { return Ack{Attempt: 1, Through: last - 1} },
+		"long through":  func(last int64) Ack { return Ack{Attempt: 1, Through: last + 1} },
 	}
 	for name, ack := range tests {
 		t.Run(name, func(t *testing.T) {
 			r := newReceiver()
 			r.script = append(r.script, func(r *fakeReceiver, ev []*jobv1.JobEvent) (Ack, error) {
 				r.commit(ev)
-				return ack, nil
+				return ack(ev[len(ev)-1].Sequence), nil
 			})
 			w := startWAL(t, testCfg(t), r)
 			appendSeqs(t, w, 3)

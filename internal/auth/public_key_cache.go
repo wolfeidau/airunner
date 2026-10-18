@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"math/big"
 	"net/http"
 	"net/url"
 	"sync"
@@ -210,14 +209,24 @@ func parseJWK(jwk map[string]any) (*ecdsa.PublicKey, error) {
 		return nil, fmt.Errorf("failed to decode y: %w", err)
 	}
 
-	x := new(big.Int).SetBytes(xBytes)
-	y := new(big.Int).SetBytes(yBytes)
+	// P-256 coordinates are 32 bytes; left-pad shorter encodings that dropped leading zeros
+	const coordLen = 32
+	if len(xBytes) > coordLen || len(yBytes) > coordLen {
+		return nil, fmt.Errorf("invalid P-256 coordinate length")
+	}
 
-	return &ecdsa.PublicKey{
-		Curve: getP256Curve(),
-		X:     x,
-		Y:     y,
-	}, nil
+	// Uncompressed SEC 1 point: 0x04 || X || Y. Parsing also verifies the point is on the curve.
+	point := make([]byte, 1+2*coordLen)
+	point[0] = 0x04
+	copy(point[1+coordLen-len(xBytes):1+coordLen], xBytes)
+	copy(point[1+2*coordLen-len(yBytes):], yBytes)
+
+	publicKey, err := ecdsa.ParseUncompressedPublicKey(getP256Curve(), point)
+	if err != nil {
+		return nil, fmt.Errorf("invalid P-256 public key: %w", err)
+	}
+
+	return publicKey, nil
 }
 
 // decodeBase64URL decodes a base64url-encoded string (without padding).

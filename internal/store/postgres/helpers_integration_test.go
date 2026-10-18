@@ -25,6 +25,17 @@ type orgFixture struct {
 // It cannot use postgrestest because that package imports this one.
 func setupStore(t testing.TB) (*JobStore, orgFixture) {
 	t.Helper()
+	js, fx := setupUnstartedStore(t)
+	require.NoError(t, js.Start())
+	t.Cleanup(func() { _ = js.Stop() })
+	return js, fx
+}
+
+// setupUnstartedStore is setupStore without Start: no reaper, retention or monitor
+// goroutines, so tests can hold rows in states the background loops would change.
+// Token operations only need the pool; streams require a started store.
+func setupUnstartedStore(t testing.TB) (*JobStore, orgFixture) {
+	t.Helper()
 	ctx := context.Background()
 
 	pool, err := NewPool(ctx, &PoolConfig{ConnString: pgtest.NewDatabase(t)})
@@ -40,8 +51,6 @@ func setupStore(t testing.TB) (*JobStore, orgFixture) {
 		LeaseReaperInterval: time.Hour,
 	})
 	require.NoError(t, err)
-	require.NoError(t, js.Start())
-	t.Cleanup(func() { _ = js.Stop() })
 
 	return js, seedOrg(t, js)
 }

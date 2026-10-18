@@ -9,6 +9,8 @@ import (
 	"connectrpc.com/connect"
 	"github.com/rs/zerolog/log"
 	"github.com/wolfeidau/airunner/api/gen/proto/go/job/v1/jobv1connect"
+	"github.com/wolfeidau/airunner/internal/telemetry"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // Role names used for authorization.
@@ -39,14 +41,25 @@ var jobServicePrefixes = []string{
 
 // NewJobAuthzInterceptor returns an interceptor enforcing role-based access to the
 // job and event services. Procedures outside those services pass through unchanged.
-func NewJobAuthzInterceptor() connect.Interceptor {
-	return &jobAuthzInterceptor{}
+func NewJobAuthzInterceptor(m *telemetry.Metrics) connect.Interceptor {
+	if m == nil {
+		m = telemetry.NoopMetrics()
+	}
+	return &jobAuthzInterceptor{metrics: m}
 }
 
-type jobAuthzInterceptor struct{}
+type jobAuthzInterceptor struct {
+	metrics *telemetry.Metrics
+}
+
+func (i jobAuthzInterceptor) countDenied(ctx context.Context, procedure, reason string) {
+	i.metrics.AuthzDenied.Add(ctx, 1, metric.WithAttributes(
+		telemetry.AttrProcedure.String(procedure),
+		telemetry.AttrReason.String(reason)))
+}
 
 // authorize returns nil if the call may proceed.
-func (jobAuthzInterceptor) authorize(ctx context.Context, procedure string) error {
+func (i jobAuthzInterceptor) authorize(ctx context.Context, procedure string) error {
 	roles, known := jobProcedureRoles[procedure]
 	if !known && !hasJobServicePrefix(procedure) {
 		return nil
@@ -55,6 +68,7 @@ func (jobAuthzInterceptor) authorize(ctx context.Context, procedure string) erro
 	principal := PrincipalFromContext(ctx)
 	if principal == nil {
 		log.Warn().Str("procedure", procedure).Msg("authz: no principal")
+		i.countDenied(ctx, procedure, telemetry.ReasonUnauthenticated)
 		return connect.NewError(connect.CodeUnauthenticated, ErrUnauthenticated)
 	}
 
@@ -67,6 +81,7 @@ func (jobAuthzInterceptor) authorize(ctx context.Context, procedure string) erro
 		Str("principal_id", principal.PrincipalID.String()).
 		Str("org_id", principal.OrgID.String()).
 		Msg("authz: permission denied")
+	i.countDenied(ctx, procedure, telemetry.ReasonForbidden)
 	return connect.NewError(connect.CodePermissionDenied, errPermissionDenied)
 }
 

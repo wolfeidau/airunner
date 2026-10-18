@@ -26,6 +26,7 @@ import (
 	postgresstore "github.com/wolfeidau/airunner/internal/store/postgres"
 	"github.com/wolfeidau/airunner/internal/telemetry"
 	"github.com/wolfeidau/airunner/internal/website/oidc"
+	"go.opentelemetry.io/otel"
 )
 
 // Expired session cleanup bounds: rows per delete and deletes per sweep.
@@ -62,6 +63,7 @@ type ServerCmd struct {
 	// Retention of terminal jobs, their events and expired sessions.
 	Retention         RetentionFlags `embed:""`
 	RetentionInterval time.Duration  `help:"interval between in-process retention and session sweeps (0 disables in-process sweeps; run 'airunner-server cleanup' on a schedule instead)" default:"1h" env:"AIRUNNER_RETENTION_INTERVAL"`
+	StreamSendTimeout time.Duration  `help:"maximum time one stream send may block before the stream is closed with DeadlineExceeded (0 disables)" default:"30s" env:"AIRUNNER_STREAM_SEND_TIMEOUT"`
 	EventPollInterval time.Duration  `help:"interval between event stream polls" default:"500ms" env:"AIRUNNER_EVENT_POLL_INTERVAL"`
 
 	// Store configuration
@@ -146,6 +148,10 @@ func (c *ServerCmd) Run(globals *Globals) error {
 		return errors.New("--retention-interval must not be negative")
 	}
 
+	if c.StreamSendTimeout < 0 {
+		return errors.New("--stream-send-timeout must not be negative")
+	}
+
 	// Create shared connection pool for all PostgreSQL stores
 	poolCfg := &postgresstore.PoolConfig{
 		ConnString:      c.PostgresStore.ConnString,
@@ -171,7 +177,13 @@ func (c *ServerCmd) Run(globals *Globals) error {
 		log.Info().Msg("Database migrations completed")
 	}
 
+	metrics, err := telemetry.NewMetrics(otel.GetMeterProvider().Meter(telemetry.MeterName))
+	if err != nil {
+		return fmt.Errorf("failed to create metrics: %w", err)
+	}
+
 	jobStoreCfg := &postgresstore.JobStoreConfig{
+		Metrics:            metrics,
 		TokenSigningSecret: []byte(c.PostgresStore.TokenSigningSecret),
 		DefaultExecutionConfig: &jobv1.ExecutionConfig{
 			Batching: &jobv1.BatchingConfig{
@@ -220,7 +232,7 @@ func (c *ServerCmd) Run(globals *Globals) error {
 		go func() {
 			defer close(sweepDone)
 			postgresstore.RunSessionSweeper(sweepCtx, sessionStore, c.RetentionInterval, sessionSweepBatch, sessionSweepMaxBatches, func(n int) {
-				telemetry.GetMetrics().RetentionSessionsDeleted.Add(sweepCtx, int64(n))
+				metrics.RetentionSessionsDel.Add(sweepCtx, int64(n))
 			})
 		}()
 		defer func() {
@@ -335,7 +347,7 @@ func (c *ServerCmd) Run(globals *Globals) error {
 
 	// Create services
 	credentialService := server.NewCredentialServiceServer(principalStore, organizationStore)
-	jobServer := server.NewServer(jobStore).WithCredentialService(credentialService)
+	jobServer := server.NewServer(jobStore).WithMetrics(metrics).WithStreamSendTimeout(c.StreamSendTimeout).WithCredentialService(credentialService)
 
 	// Get Connect RPC handler for job services
 	jobHandler := jobServer.Handler(interceptors...)

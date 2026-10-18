@@ -16,7 +16,9 @@ import (
 	"github.com/rs/zerolog/log"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 	"github.com/wolfeidau/airunner/internal/store"
+	"github.com/wolfeidau/airunner/internal/telemetry"
 	"github.com/wolfeidau/airunner/internal/util"
+	"go.opentelemetry.io/otel/metric"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -288,6 +290,8 @@ func (s *JobStore) EnqueueJob(ctx context.Context, caller store.Caller, req *job
 		}, nil
 	}
 
+	s.cfg.Metrics.JobsEnqueued.Add(ctx, 1)
+
 	log.Info().
 		Str("job_id", jobID).
 		Str("queue", req.Queue).
@@ -427,6 +431,7 @@ func (s *JobStore) DequeueJobs(ctx context.Context, caller store.Caller, queue s
 
 	// Only log at info level when jobs are actually dequeued
 	if len(results) > 0 {
+		s.cfg.Metrics.JobsDequeued.Add(ctx, int64(len(results)))
 		log.Info().
 			Str("queue", queue).
 			Int("dequeued", len(results)).
@@ -523,6 +528,14 @@ func lockLeaseRow(ctx context.Context, tx pgx.Tx, caller store.Caller, tt *taskT
 	return &leaseRow{attempt: attempt, lastEventSequence: lastSeq, operationTime: opTime}, nil
 }
 
+// countLeaseLost records jobs.lease_lost when err wraps store.ErrLeaseLost.
+func (s *JobStore) countLeaseLost(ctx context.Context, operation string, err error) {
+	if errors.Is(err, store.ErrLeaseLost) {
+		s.cfg.Metrics.JobsLeaseLost.Add(ctx, 1,
+			metric.WithAttributes(telemetry.AttrOperation.String(operation)))
+	}
+}
+
 // UpdateJobVisibility extends the lease and returns the effective timeout in seconds.
 // The receipt handle does NOT change (matches AWS SQS behavior). The new expiry is
 // measured from the fenced operation time.
@@ -542,6 +555,7 @@ func (s *JobStore) UpdateJobVisibility(ctx context.Context, caller store.Caller,
 
 	tx, row, err := s.lockLease(queryCtx, caller, tt)
 	if err != nil {
+		s.countLeaseLost(ctx, telemetry.OpRenew, err)
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(queryCtx)) }()
@@ -559,6 +573,8 @@ func (s *JobStore) UpdateJobVisibility(ctx context.Context, caller store.Caller,
 	if err := tx.Commit(queryCtx); err != nil {
 		return 0, mapPostgresError(err)
 	}
+
+	s.cfg.Metrics.LeaseRenewals.Add(ctx, 1)
 
 	log.Debug().
 		Str("job_id", tt.JobID).
@@ -603,6 +619,7 @@ func (s *JobStore) CompleteJob(ctx context.Context, caller store.Caller, taskTok
 
 	tx, row, err := s.lockLease(queryCtx, caller, tt)
 	if err != nil {
+		s.countLeaseLost(ctx, telemetry.OpComplete, err)
 		return err
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(queryCtx)) }()
@@ -632,6 +649,13 @@ func (s *JobStore) CompleteJob(ctx context.Context, caller store.Caller, taskTok
 		return mapPostgresError(err)
 	}
 
+	resultLabel := telemetry.ResultSuccess
+	if !result.Success {
+		resultLabel = telemetry.ResultFailure
+	}
+	s.cfg.Metrics.JobsCompleted.Add(ctx, 1,
+		metric.WithAttributes(telemetry.AttrResult.String(resultLabel)))
+
 	log.Info().
 		Str("job_id", tt.JobID).
 		Str("state", finalState.String()).
@@ -655,6 +679,7 @@ func (s *JobStore) ReleaseJob(ctx context.Context, caller store.Caller, taskToke
 
 	tx, row, err := s.lockLease(queryCtx, caller, tt)
 	if err != nil {
+		s.countLeaseLost(ctx, telemetry.OpRelease, err)
 		return err
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(queryCtx)) }()
@@ -679,6 +704,8 @@ func (s *JobStore) ReleaseJob(ctx context.Context, caller store.Caller, taskToke
 		return mapPostgresError(err)
 	}
 
+	s.cfg.Metrics.JobsReleased.Add(ctx, 1)
+
 	log.Info().
 		Str("job_id", tt.JobID).
 		Msg("Released job back to queue")
@@ -693,7 +720,7 @@ func (s *JobStore) ReapExpired(ctx context.Context, limit int) (int, error) {
 	queryCtx, cancel := s.withQueryTimeout(ctx)
 	defer cancel()
 
-	tag, err := s.pool.Exec(queryCtx, `
+	rows, err := s.pool.Query(queryCtx, `
 		WITH expired AS (
 			SELECT job_id
 			FROM jobs
@@ -712,12 +739,38 @@ func (s *JobStore) ReapExpired(ctx context.Context, limit int) (int, error) {
 			updated_at = clock_timestamp()
 		FROM expired
 		WHERE jobs.job_id = expired.job_id
+		RETURNING jobs.state
 	`, limit)
 	if err != nil {
 		return 0, mapPostgresError(err)
 	}
+	defer rows.Close()
 
-	return int(tag.RowsAffected()), nil
+	var redelivered, deadLettered int64
+	for rows.Next() {
+		var state jobv1.JobState
+		if err := rows.Scan(&state); err != nil {
+			return 0, mapPostgresError(err)
+		}
+		if state == jobv1.JobState_JOB_STATE_FAILED {
+			deadLettered++
+		} else {
+			redelivered++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, mapPostgresError(err)
+	}
+	rows.Close()
+
+	if redelivered > 0 {
+		s.cfg.Metrics.JobsRedelivered.Add(ctx, redelivered)
+	}
+	if deadLettered > 0 {
+		s.cfg.Metrics.JobsDeadLettered.Add(ctx, deadLettered)
+	}
+
+	return int(redelivered + deadLettered), nil
 }
 
 const (
@@ -744,6 +797,9 @@ func (s *JobStore) runReaper(ctx context.Context) {
 
 // reapTick runs up to reaperMaxBatches batches, stopping early on a short batch.
 func (s *JobStore) reapTick(ctx context.Context) {
+	start := time.Now()
+	defer func() { s.recordReaperBacklog(ctx, time.Since(start)) }()
+
 	total := 0
 	for range reaperMaxBatches {
 		n, err := s.ReapExpired(ctx, reaperBatchSize)
@@ -762,6 +818,36 @@ func (s *JobStore) reapTick(ctx context.Context) {
 	if total > 0 {
 		log.Info().Int("reclaimed", total).Msg("Reclaimed expired leases")
 	}
+}
+
+// recordReaperBacklog records the sweep duration and the expired-lease backlog that
+// remains after a reaper tick.
+func (s *JobStore) recordReaperBacklog(ctx context.Context, elapsed time.Duration) {
+	m := s.cfg.Metrics
+	m.ReaperSweepDuration.Record(ctx, elapsed.Seconds())
+	if ctx.Err() != nil {
+		return
+	}
+
+	queryCtx, cancel := s.withQueryTimeout(ctx)
+	defer cancel()
+
+	var count int64
+	var age float64
+	err := s.pool.QueryRow(queryCtx, `
+		SELECT count(*),
+		       COALESCE(EXTRACT(EPOCH FROM clock_timestamp() - min(visibility_until)), 0)::float8
+		FROM jobs
+		WHERE state = 2 AND visibility_until <= clock_timestamp()
+	`).Scan(&count, &age)
+	if err != nil {
+		if ctx.Err() == nil {
+			log.Warn().Err(err).Msg("Failed to read reaper backlog")
+		}
+		return
+	}
+	m.ReaperBacklog.Record(ctx, count)
+	m.ReaperOldestExpired.Record(ctx, max(age, 0))
 }
 
 // ListJobs returns jobs in the caller's org matching the filter criteria.
@@ -917,24 +1003,63 @@ func (s *JobStore) PublishEvents(ctx context.Context, caller store.Caller, taskT
 		return &store.PublishResult{}, nil
 	}
 
+	start := time.Now()
+	m := s.cfg.Metrics
+	res, inserted, err := s.publishEvents(ctx, caller, taskToken, events)
+	m.EventsPublishDuration.Record(ctx, time.Since(start).Seconds())
+	switch {
+	case err != nil:
+		s.countLeaseLost(ctx, telemetry.OpPublish, err)
+		m.EventsPublishRejected.Add(ctx, 1,
+			metric.WithAttributes(telemetry.AttrReason.String(publishRejectReason(err))))
+	case inserted == 0:
+		// Every event was an identical replay of committed events.
+		m.EventsPublishReplays.Add(ctx, 1)
+	default:
+		m.EventsPublished.Add(ctx, int64(inserted))
+	}
+	return res, err
+}
+
+// publishRejectReason maps a publish error to a bounded events.publish_rejected reason.
+func publishRejectReason(err error) string {
+	switch {
+	case errors.Is(err, store.ErrLeaseLost):
+		return telemetry.ReasonLeaseLost
+	case errors.Is(err, store.ErrConflict):
+		return telemetry.ReasonConflict
+	case errors.Is(err, store.ErrInvalidArgument):
+		return telemetry.ReasonInvalid
+	case errors.Is(err, store.ErrEventTooLarge):
+		return telemetry.ReasonTooLarge
+	case errors.Is(err, store.ErrUnavailable):
+		return telemetry.ReasonUnavailable
+	default:
+		return telemetry.ReasonOther
+	}
+}
+
+// publishEvents applies the request and returns the number of newly inserted events.
+func (s *JobStore) publishEvents(ctx context.Context, caller store.Caller, taskToken string, events []*jobv1.JobEvent) (*store.PublishResult, int, error) {
+
 	queryCtx, cancel := s.withQueryTimeout(ctx)
 	defer cancel()
 
 	tt, err := s.decodeTaskToken(taskToken)
 	if err != nil {
 		log.Warn().Err(err).Msg("Invalid task token")
-		return nil, err
+		return nil, 0, err
 	}
 
 	tx, row, err := s.lockLease(queryCtx, caller, tt)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(queryCtx)) }()
 
 	prepared, err := prepareEvents(events, row.attempt)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	last := row.lastEventSequence
@@ -949,16 +1074,16 @@ func (s *JobStore) PublishEvents(ctx context.Context, caller store.Caller, taskT
 				VALUES ($1, $2, $3, $4, $5, $6, $7)
 			`, tt.JobID, row.attempt, p.start, p.end, p.event.Timestamp.AsTime(), p.event.EventType, p.payload)
 			if err != nil {
-				return nil, mapPostgresError(fmt.Errorf("failed to insert event %d: %w", i, err))
+				return nil, 0, mapPostgresError(fmt.Errorf("failed to insert event %d: %w", i, err))
 			}
 			last = p.end
 			inserted = append(inserted, p.event)
 		case p.start <= last:
 			if err := s.checkReplay(queryCtx, tx, tt.JobID, row.attempt, i, p); err != nil {
-				return nil, err
+				return nil, 0, err
 			}
 		default:
-			return nil, fmt.Errorf("%w: event %d starts at sequence %d but next expected is %d",
+			return nil, 0, fmt.Errorf("%w: event %d starts at sequence %d but next expected is %d",
 				store.ErrInvalidArgument, i, p.start, last+1)
 		}
 		acked = max(acked, p.end)
@@ -968,12 +1093,12 @@ func (s *JobStore) PublishEvents(ctx context.Context, caller store.Caller, taskT
 		if _, err := tx.Exec(queryCtx,
 			`UPDATE jobs SET last_event_sequence = $1 WHERE org_id = $2 AND job_id = $3`,
 			last, caller.OrgID, tt.JobID); err != nil {
-			return nil, mapPostgresError(err)
+			return nil, 0, mapPostgresError(err)
 		}
 	}
 
 	if err := tx.Commit(queryCtx); err != nil {
-		return nil, mapPostgresError(err)
+		return nil, 0, mapPostgresError(err)
 	}
 
 	log.Debug().
@@ -983,7 +1108,7 @@ func (s *JobStore) PublishEvents(ctx context.Context, caller store.Caller, taskT
 		Int("inserted", len(inserted)).
 		Msg("Published events")
 
-	return &store.PublishResult{Attempt: row.attempt, AcknowledgedThroughSequence: acked}, nil
+	return &store.PublishResult{Attempt: row.attempt, AcknowledgedThroughSequence: acked}, len(inserted), nil
 }
 
 // checkReplay verifies an event at or below the committed sequence matches the stored row exactly.
@@ -1025,6 +1150,9 @@ func (s *JobStore) StreamEvents(ctx context.Context, caller store.Caller, req st
 	s.wg.Add(1)
 	s.lcMu.RUnlock()
 	defer s.wg.Done()
+
+	s.cfg.Metrics.StreamsActive.Add(ctx, 1)
+	defer s.cfg.Metrics.StreamsActive.Add(context.WithoutCancel(ctx), -1)
 
 	// streamCtx ends when either the request ctx or the store lifecycle ctx ends.
 	streamCtx, cancelStream := context.WithCancel(ctx)
@@ -1137,6 +1265,9 @@ func (s *JobStore) runStream(ctx context.Context, caller store.Caller, req store
 		cursor = next
 
 		for _, event := range events {
+			if !closed && event.Timestamp != nil {
+				s.cfg.Metrics.StreamsDeliveryLag.Record(ctx, time.Since(event.Timestamp.AsTime()).Seconds())
+			}
 			if err := send(&store.StreamResponse{Event: event, Attempt: attempt, JobState: js.state}); err != nil {
 				return err
 			}

@@ -11,6 +11,7 @@ import (
 	"github.com/wolfeidau/airunner/internal/logger"
 	postgresstore "github.com/wolfeidau/airunner/internal/store/postgres"
 	"github.com/wolfeidau/airunner/internal/telemetry"
+	"go.opentelemetry.io/otel"
 )
 
 // CleanupCmd runs one retention pass and exits, for use from cron, an ECS scheduled task or
@@ -72,8 +73,14 @@ func (c *CleanupCmd) Run(globals *Globals) error {
 	}
 	defer pool.Close()
 
+	metrics, err := telemetry.NewMetrics(otel.GetMeterProvider().Meter(telemetry.MeterName))
+	if err != nil {
+		return fmt.Errorf("failed to create metrics: %w", err)
+	}
+
 	// The job store is intentionally not started: no reaper, monitor or retention loop.
 	jobStore, err := postgresstore.NewJobStore(pool, &postgresstore.JobStoreConfig{
+		Metrics:              metrics,
 		TokenSigningSecret:   []byte(c.PostgresStore.TokenSigningSecret),
 		DefaultMaxAttempts:   c.PostgresStore.DefaultMaxAttempts,
 		JobRetention:         jobRetention,
@@ -88,7 +95,7 @@ func (c *CleanupCmd) Run(globals *Globals) error {
 
 	sessions, sessionsDrained, sessErr := postgresstore.SweepExpiredSessions(ctx, postgresstore.NewSessionStore(pool), sessionSweepBatch, c.MaxBatches)
 	if sessions > 0 {
-		telemetry.GetMetrics().RetentionSessionsDeleted.Add(ctx, int64(sessions))
+		metrics.RetentionSessionsDel.Add(ctx, int64(sessions))
 	}
 	if sessErr != nil {
 		log.Error().Err(sessErr).Msg("Session sweep failed")

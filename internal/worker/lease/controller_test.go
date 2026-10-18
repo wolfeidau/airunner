@@ -9,6 +9,9 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/wolfeidau/airunner/internal/telemetry"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 var errTransient = errors.New("transient")
@@ -197,4 +200,58 @@ func TestStopBeforeRun(t *testing.T) {
 	c.Stop()
 	c.Run(context.Background())
 	require.NoError(t, c.Err())
+}
+
+func leaseAborts(t *testing.T, reader *sdkmetric.ManualReader) map[string]int64 {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+	out := map[string]int64{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, mm := range sm.Metrics {
+			if mm.Name != "worker.lease.aborts" {
+				continue
+			}
+			for _, dp := range mm.Data.(metricdata.Sum[int64]).DataPoints {
+				v, _ := dp.Attributes.Value("reason")
+				out[v.AsString()] += dp.Value
+			}
+		}
+	}
+	return out
+}
+
+func newTestMetrics(t *testing.T) (*telemetry.WorkerMetrics, *sdkmetric.ManualReader) {
+	t.Helper()
+	reader := sdkmetric.NewManualReader()
+	m, err := telemetry.NewWorkerMetrics(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("test"))
+	require.NoError(t, err)
+	return m, reader
+}
+
+func TestMetricsErrLost(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m, reader := newTestMetrics(t)
+		c := New(func(ctx context.Context, d time.Duration) (time.Duration, error) {
+			return 0, errors.Join(errors.New("rpc"), ErrLost)
+		}, 30*time.Second, WithJitter(noJitter), WithMetrics(m))
+		go c.Run(t.Context())
+		<-c.Done()
+		c.Stop()
+		require.Equal(t, map[string]int64{"lost": 1}, leaseAborts(t, reader))
+	})
+}
+
+func TestMetricsBudgetExhausted(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m, reader := newTestMetrics(t)
+		c := New(func(ctx context.Context, d time.Duration) (time.Duration, error) {
+			return 0, errTransient
+		}, 30*time.Second, WithJitter(noJitter), WithMetrics(m))
+		go c.Run(t.Context())
+		<-c.Done()
+		c.Stop()
+		require.ErrorIs(t, c.Err(), ErrBudgetExhausted)
+		require.Equal(t, map[string]int64{"budget": 1}, leaseAborts(t, reader))
+	})
 }

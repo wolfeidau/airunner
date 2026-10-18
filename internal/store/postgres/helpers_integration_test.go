@@ -35,6 +35,9 @@ func setupStore(t testing.TB) (*JobStore, orgFixture) {
 
 	js, err := NewJobStore(pool, &JobStoreConfig{
 		TokenSigningSecret: []byte("test-secret-key-min-32-bytes-long"),
+		// Tests reap explicitly with ReapExpired; a background tick would race
+		// assertions on expired-but-unreaped leases.
+		LeaseReaperInterval: time.Hour,
 	})
 	require.NoError(t, err)
 	require.NoError(t, js.Start())

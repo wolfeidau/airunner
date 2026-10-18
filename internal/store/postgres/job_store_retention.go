@@ -8,7 +8,6 @@ import (
 
 	"github.com/rs/zerolog/log"
 	"github.com/wolfeidau/airunner/internal/telemetry"
-	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
 
@@ -115,6 +114,9 @@ func (s *JobStore) retentionTick(ctx context.Context) {
 func (s *JobStore) SweepRetention(ctx context.Context, maxBatches int) (RetentionReport, error) {
 	var report RetentionReport
 
+	start := time.Now()
+	defer func() { s.cfg.Metrics.RetentionSweepTime.Record(ctx, time.Since(start).Seconds()) }()
+
 	var now time.Time
 	queryCtx, cancel := s.withQueryTimeout(ctx)
 	err := s.pool.QueryRow(queryCtx, `SELECT clock_timestamp()`).Scan(&now)
@@ -131,14 +133,14 @@ func (s *JobStore) SweepRetention(ctx context.Context, maxBatches int) (Retentio
 	eventCutoff := now.Add(-eventRetention)
 	jobCutoff := now.Add(-s.cfg.JobRetention)
 
-	m := telemetry.GetMetrics()
+	m := s.cfg.Metrics
 
 	events, eventsDrained, eventsErr := s.purgeBatches(ctx, "events", maxBatches, func() (int, error) {
 		return s.PurgeEvents(ctx, eventCutoff, retentionBatchSize)
 	})
 	report.EventsDeleted = events
 	if events > 0 {
-		m.RetentionEventsDeleted.Add(ctx, int64(events))
+		m.RetentionEventsDel.Add(ctx, int64(events))
 		log.Info().Int("deleted", events).Msg("Deleted expired job events")
 	}
 
@@ -147,11 +149,12 @@ func (s *JobStore) SweepRetention(ctx context.Context, maxBatches int) (Retentio
 	})
 	report.JobsDeleted = jobs
 	if jobs > 0 {
-		m.RetentionJobsDeleted.Add(ctx, int64(jobs))
+		m.RetentionJobsDel.Add(ctx, int64(jobs))
 		log.Info().Int("deleted", jobs).Msg("Deleted expired jobs")
 	}
 
 	report.Complete = eventsDrained && jobsDrained
+	s.recordRetentionLag(ctx, now, jobCutoff)
 	return report, errors.Join(eventsErr, jobsErr)
 }
 
@@ -181,6 +184,31 @@ func (s *JobStore) retentionError(ctx context.Context, category string, err erro
 		return
 	}
 	log.Error().Err(err).Str("category", category).Msg("Retention sweep failed")
-	telemetry.GetMetrics().RetentionSweepErrors.Add(ctx, 1,
-		metric.WithAttributes(attribute.String("category", category)))
+	s.cfg.Metrics.RetentionSweepErrors.Add(ctx, 1,
+		metric.WithAttributes(telemetry.AttrCategory.String(category)))
+}
+
+// recordRetentionLag records how far past the job retention cutoff the oldest eligible
+// terminal job is (0 when none are eligible).
+func (s *JobStore) recordRetentionLag(ctx context.Context, now, jobCutoff time.Time) {
+	if ctx.Err() != nil {
+		return
+	}
+	queryCtx, cancel := s.withQueryTimeout(ctx)
+	defer cancel()
+
+	var age float64
+	err := s.pool.QueryRow(queryCtx, `
+		SELECT COALESCE(EXTRACT(EPOCH FROM $1::timestamptz - min(updated_at)), 0)::float8
+		FROM jobs
+		WHERE state IN (3, 4, 5) AND updated_at < $2
+	`, now, jobCutoff).Scan(&age)
+	if err != nil {
+		if ctx.Err() == nil {
+			log.Warn().Err(err).Msg("Failed to read oldest retention-eligible job age")
+		}
+		return
+	}
+	// Age beyond the cutoff.
+	s.cfg.Metrics.RetentionOldestAge.Record(ctx, max(age-s.cfg.JobRetention.Seconds(), 0))
 }

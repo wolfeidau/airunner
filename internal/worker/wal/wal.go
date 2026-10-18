@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
+	"github.com/wolfeidau/airunner/internal/telemetry"
 )
 
 // Sentinel errors. The transport adapter wraps its errors with ErrPermanent
@@ -110,7 +111,20 @@ type WALConfig struct {
 
 	// ArchiveOnComplete enables automatic archiving after job completion
 	ArchiveOnComplete bool
+
+	// Metrics receives WAL and publish metrics. Nil disables recording.
+	Metrics *telemetry.WorkerMetrics
 }
+
+// metrics returns the configured instruments or no-op instruments.
+func (c *WALConfig) metrics() *telemetry.WorkerMetrics {
+	if c == nil || c.Metrics == nil {
+		return noopMetrics
+	}
+	return c.Metrics
+}
+
+var noopMetrics = telemetry.NoopWorkerMetrics()
 
 // BackoffConfig configures exponential backoff retry
 type BackoffConfig struct {
@@ -463,12 +477,17 @@ func (w *walImpl) Discard(keep bool) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	m := w.cfg.metrics()
 	var opErr error
 	if keep {
 		opErr = moveToFailed(w.cfg.WALDir, w.walPath, w.jobID, w.attempt)
-	} else if err := os.Remove(w.walPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+	} else if err := os.Remove(w.walPath); err == nil {
+		// Only deletions count; a move to failed/ is not a deletion.
+		m.WALFailedDeleted.Add(context.Background(), 1)
+	} else if !errors.Is(err, os.ErrNotExist) {
 		opErr = fmt.Errorf("failed to remove WAL: %w", err)
 	}
+	m.WALPendingRecords.Record(context.Background(), 0)
 
 	if w.file != nil {
 		if err := w.file.Close(); err != nil && opErr == nil {

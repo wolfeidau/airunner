@@ -64,7 +64,7 @@ var procedureCalls = map[string]func(ctx context.Context, jobs jobv1connect.JobS
 
 func newAuthzTestClients(t *testing.T, principal *Principal) (jobv1connect.JobServiceClient, jobv1connect.JobEventsServiceClient) {
 	t.Helper()
-	opts := connect.WithInterceptors(NewJobAuthzInterceptor())
+	opts := connect.WithInterceptors(NewJobAuthzInterceptor(nil))
 	mux := http.NewServeMux()
 	mux.Handle(jobv1connect.NewJobServiceHandler(jobv1connect.UnimplementedJobServiceHandler{}, opts))
 	mux.Handle(jobv1connect.NewJobEventsServiceHandler(jobv1connect.UnimplementedJobEventsServiceHandler{}, opts))
@@ -152,7 +152,7 @@ type fakeStreamConn struct {
 func (c fakeStreamConn) Spec() connect.Spec { return c.spec }
 
 func TestJobAuthzInterceptor_UnknownProcedure(t *testing.T) {
-	interceptor := NewJobAuthzInterceptor()
+	interceptor := NewJobAuthzInterceptor(nil)
 	admin := WithPrincipal(context.Background(), &Principal{PrincipalID: uuid.New(), OrgID: uuid.New(), Roles: []string{RoleAdmin}})
 
 	tests := []struct {

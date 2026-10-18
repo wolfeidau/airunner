@@ -11,8 +11,11 @@ import (
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 	"github.com/wolfeidau/airunner/api/gen/proto/go/job/v1/jobv1connect"
 	"github.com/wolfeidau/airunner/internal/client"
+	"github.com/wolfeidau/airunner/internal/telemetry"
 	"github.com/wolfeidau/airunner/internal/worker/lease"
 	"github.com/wolfeidau/airunner/internal/worker/wal"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 func TestClassifyPublishError(t *testing.T) {
@@ -101,3 +104,36 @@ func TestGrpcEventSenderSend(t *testing.T) {
 	_, err = s.Send(context.Background(), nil)
 	require.ErrorIs(t, err, wal.ErrPermanent)
 }
+
+func TestAbandonRecordsReason(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	m, err := telemetry.NewWorkerMetrics(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("test"))
+	require.NoError(t, err)
+
+	for _, reason := range []string{abandonLeaseLost, abandonLeaseLost, abandonFlushTimeout, abandonOther} {
+		r := &jobRun{job: &jobv1.Job{JobId: "j"}, wal: &fakeWAL{}, metrics: m}
+		r.abandon(reason, "test")
+	}
+
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+	got := map[string]int64{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, mm := range sm.Metrics {
+			if mm.Name != "worker.jobs.abandoned" {
+				continue
+			}
+			for _, dp := range mm.Data.(metricdata.Sum[int64]).DataPoints {
+				v, _ := dp.Attributes.Value("reason")
+				got[v.AsString()] += dp.Value
+			}
+		}
+	}
+	require.Equal(t, map[string]int64{"lease_lost": 2, "flush_timeout": 1, "other": 1}, got)
+}
+
+// fakeWAL implements wal.WAL for abandon tests; only Pending and Discard are used.
+type fakeWAL struct{ wal.WAL }
+
+func (*fakeWAL) Pending() int       { return 0 }
+func (*fakeWAL) Discard(bool) error { return nil }

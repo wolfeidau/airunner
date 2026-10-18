@@ -110,6 +110,7 @@ func (s *asyncSender) sendBatch(events []*jobv1.JobEvent, recs []walRecord, retr
 	backoff := s.initialInterval()
 
 	for sendAttempt := 1; ; sendAttempt++ {
+		sentAt := time.Now()
 		ack, err := s.sender.Send(s.ctx, events)
 		if err == nil {
 			if ack.Attempt != s.wal.attempt || ack.Through != through {
@@ -119,6 +120,8 @@ func (s *asyncSender) sendBatch(events []*jobv1.JobEvent, recs []walRecord, retr
 			}
 			s.wal.index.MarkSent(recs)
 			s.wal.setAcked(through)
+			s.cfg.metrics().PublishAckLatency.Record(s.ctx, time.Since(sentAt).Seconds())
+			s.recordPending()
 			log.Debug().
 				Str("job_id", s.wal.jobID).
 				Int("event_count", len(events)).
@@ -130,11 +133,15 @@ func (s *asyncSender) sendBatch(events []*jobv1.JobEvent, recs []walRecord, retr
 
 		if errors.Is(err, ErrLeaseLost) || errors.Is(err, ErrPermanent) {
 			s.wal.setErr(err)
+			s.recordPending()
 			return false
 		}
 		if s.ctx.Err() != nil || !retry {
+			s.recordPending()
 			return false
 		}
+		s.cfg.metrics().PublishRetries.Add(s.ctx, 1)
+		s.recordPending()
 
 		wait := jitter(backoff)
 		log.Warn().
@@ -157,6 +164,11 @@ func (s *asyncSender) sendBatch(events []*jobv1.JobEvent, recs []walRecord, retr
 			return false
 		}
 	}
+}
+
+// recordPending reports the current number of unacknowledged records.
+func (s *asyncSender) recordPending() {
+	s.cfg.metrics().WALPendingRecords.Record(context.Background(), int64(s.wal.index.CountPending()))
 }
 
 // nextBatch reads the next batch of pending records in sequence order.

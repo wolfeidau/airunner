@@ -109,6 +109,13 @@ func (s *JobStore) Start() error {
 		s.runReaper(lifeCtx)
 	}()
 
+	// Start retention sweep goroutine
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.runRetention(lifeCtx)
+	}()
+
 	return nil
 }
 
@@ -720,6 +727,8 @@ const (
 func (s *JobStore) runReaper(ctx context.Context) {
 	ticker := time.NewTicker(s.cfg.LeaseReaperInterval)
 	defer ticker.Stop()
+
+	s.reapTick(ctx)
 
 	for {
 		select {

@@ -172,11 +172,19 @@ func (s *SessionStore) DeleteByPrincipal(ctx context.Context, principalID uuid.U
 	return count, nil
 }
 
-// DeleteExpired deletes all expired sessions (cleanup job).
-func (s *SessionStore) DeleteExpired(ctx context.Context) (int, error) {
-	query := `DELETE FROM sessions WHERE expires_at < $1`
+// DeleteExpired deletes up to limit expired sessions (oldest expiry first) and
+// returns the number deleted.
+func (s *SessionStore) DeleteExpired(ctx context.Context, limit int) (int, error) {
+	if limit <= 0 {
+		return 0, fmt.Errorf("limit must be positive, got %d", limit)
+	}
 
-	result, err := s.pool.Exec(ctx, query, time.Now())
+	query := `
+		DELETE FROM sessions WHERE session_id IN (
+			SELECT session_id FROM sessions WHERE expires_at < clock_timestamp()
+			ORDER BY expires_at LIMIT $1 FOR UPDATE SKIP LOCKED)`
+
+	result, err := s.pool.Exec(ctx, query, limit)
 	if err != nil {
 		return 0, fmt.Errorf("failed to delete expired sessions: %w", err)
 	}
@@ -184,7 +192,7 @@ func (s *SessionStore) DeleteExpired(ctx context.Context) (int, error) {
 	count := int(result.RowsAffected())
 
 	if count > 0 {
-		log.Info().
+		log.Debug().
 			Int("count", count).
 			Msg("Deleted expired sessions")
 	}

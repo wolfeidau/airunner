@@ -28,6 +28,12 @@ import (
 	"github.com/wolfeidau/airunner/internal/website/oidc"
 )
 
+// Expired session cleanup bounds: rows per delete and deletes per sweep.
+const (
+	sessionSweepBatch      = 1000
+	sessionSweepMaxBatches = 10
+)
+
 type ServerCmd struct {
 	// Server configuration
 	Listen string `help:"HTTP server listen address" default:"0.0.0.0:443" env:"AIRUNNER_LISTEN"`
@@ -52,6 +58,12 @@ type ServerCmd struct {
 
 	// LeaseReaperInterval is how often expired job leases are reaped.
 	LeaseReaperInterval time.Duration `help:"interval between expired lease reaper runs" default:"5s" env:"AIRUNNER_LEASE_REAPER_INTERVAL"`
+
+	// Retention of terminal jobs, their events and expired sessions.
+	JobRetentionDays    int           `help:"days to keep terminal jobs after their last update" default:"90" env:"AIRUNNER_JOB_RETENTION_DAYS"`
+	EventsRetentionDays int           `help:"days to keep events of terminal jobs (0 keeps them until the job is deleted)" default:"30" env:"AIRUNNER_EVENTS_RETENTION_DAYS"`
+	RetentionInterval   time.Duration `help:"interval between retention sweeps" default:"1h" env:"AIRUNNER_RETENTION_INTERVAL"`
+	EventPollInterval   time.Duration `help:"interval between event stream polls" default:"500ms" env:"AIRUNNER_EVENT_POLL_INTERVAL"`
 
 	// Store configuration
 	PostgresStore PostgresStoreFlags `embed:"" prefix:"postgres-"`
@@ -165,6 +177,16 @@ func (c *ServerCmd) Run(globals *Globals) error {
 		},
 		DefaultMaxAttempts:  c.PostgresStore.DefaultMaxAttempts,
 		LeaseReaperInterval: c.LeaseReaperInterval,
+		StreamPollInterval:  c.EventPollInterval,
+		JobRetention:        time.Duration(c.JobRetentionDays) * 24 * time.Hour,
+		EventRetention:      time.Duration(c.EventsRetentionDays) * 24 * time.Hour,
+		RetentionInterval:   c.RetentionInterval,
+	}
+	if c.JobRetentionDays <= 0 {
+		return errors.New("--job-retention-days must be positive")
+	}
+	if c.EventsRetentionDays < 0 {
+		return errors.New("--events-retention-days must not be negative")
 	}
 
 	jobStore, err := postgresstore.NewJobStore(pool, jobStoreCfg)
@@ -185,6 +207,20 @@ func (c *ServerCmd) Run(globals *Globals) error {
 		if stopErr := jobStore.Stop(); stopErr != nil {
 			log.Error().Err(stopErr).Msg("Failed to stop job store")
 		}
+	}()
+
+	// Expired session cleanup shares the pool, so it is stopped and joined before pool close.
+	sweepCtx, stopSweep := context.WithCancel(ctx)
+	sweepDone := make(chan struct{})
+	go func() {
+		defer close(sweepDone)
+		postgresstore.RunSessionSweeper(sweepCtx, sessionStore, c.RetentionInterval, sessionSweepBatch, sessionSweepMaxBatches, func(n int) {
+			telemetry.GetMetrics().RetentionSessionsDeleted.Add(sweepCtx, int64(n))
+		})
+	}()
+	defer func() {
+		stopSweep()
+		<-sweepDone
 	}()
 
 	// Seed the reserved development identity for --no-auth mode

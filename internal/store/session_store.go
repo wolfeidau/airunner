@@ -40,7 +40,7 @@ type SessionStore interface {
 	// Returns the number of sessions deleted.
 	DeleteByPrincipal(ctx context.Context, principalID uuid.UUID) (int, error)
 
-	// DeleteExpired deletes all expired sessions (cleanup job).
-	// Returns the number of sessions deleted.
-	DeleteExpired(ctx context.Context) (int, error)
+	// DeleteExpired deletes up to limit expired sessions (cleanup job) and returns
+	// the number deleted. A limit <= 0 is an error.
+	DeleteExpired(ctx context.Context, limit int) (int, error)
 }

@@ -35,6 +35,12 @@ type Metrics struct {
 
 	// Channel metrics
 	ChannelOverflowTotal metric.Int64Counter
+
+	// Retention metrics
+	RetentionEventsDeleted   metric.Int64Counter
+	RetentionJobsDeleted     metric.Int64Counter
+	RetentionSessionsDeleted metric.Int64Counter
+	RetentionSweepErrors     metric.Int64Counter
 }
 
 var (
@@ -148,6 +154,31 @@ func initMetrics() *Metrics {
 		"airunner.channels.overflow.total",
 		metric.WithDescription("Total number of channel overflow events (dropped events)"),
 		metric.WithUnit("{event}"),
+	)
+
+	// Retention metrics
+	m.RetentionEventsDeleted, _ = meter.Int64Counter(
+		"retention.events_deleted",
+		metric.WithDescription("Total number of job events deleted by the retention sweep"),
+		metric.WithUnit("{event}"),
+	)
+
+	m.RetentionJobsDeleted, _ = meter.Int64Counter(
+		"retention.jobs_deleted",
+		metric.WithDescription("Total number of terminal jobs deleted by the retention sweep"),
+		metric.WithUnit("{job}"),
+	)
+
+	m.RetentionSessionsDeleted, _ = meter.Int64Counter(
+		"retention.sessions_deleted",
+		metric.WithDescription("Total number of expired sessions deleted by the retention sweep"),
+		metric.WithUnit("{session}"),
+	)
+
+	m.RetentionSweepErrors, _ = meter.Int64Counter(
+		"retention.sweep_errors",
+		metric.WithDescription("Total number of retention sweep errors, by category"),
+		metric.WithUnit("{error}"),
 	)
 
 	return m

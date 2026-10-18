@@ -48,3 +48,24 @@ func TestConfig_RetentionValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestConfig_DisableRetentionLoop(t *testing.T) {
+	secret := []byte("test-secret-key-min-32-bytes-long")
+
+	c := &JobStoreConfig{TokenSigningSecret: secret, DisableRetentionLoop: true}
+	c.ApplyDefaults()
+	require.Zero(t, c.RetentionInterval)
+	require.NoError(t, c.Validate())
+
+	c = &JobStoreConfig{TokenSigningSecret: secret, DisableRetentionLoop: true, RetentionInterval: -time.Second}
+	c.ApplyDefaults()
+	require.Error(t, c.Validate())
+
+	c = &JobStoreConfig{TokenSigningSecret: secret}
+	c.ApplyDefaults()
+	require.Equal(t, time.Hour, c.RetentionInterval)
+	require.NoError(t, c.Validate())
+
+	c.RetentionInterval = 0
+	require.Error(t, c.Validate())
+}

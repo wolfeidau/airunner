@@ -109,12 +109,14 @@ func (s *JobStore) Start() error {
 		s.runReaper(lifeCtx)
 	}()
 
-	// Start retention sweep goroutine
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
-		s.runRetention(lifeCtx)
-	}()
+	// Start retention sweep goroutine unless retention runs out of process
+	if !s.cfg.DisableRetentionLoop {
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			s.runRetention(lifeCtx)
+		}()
+	}
 
 	return nil
 }

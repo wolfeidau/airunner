@@ -60,10 +60,9 @@ type ServerCmd struct {
 	LeaseReaperInterval time.Duration `help:"interval between expired lease reaper runs" default:"5s" env:"AIRUNNER_LEASE_REAPER_INTERVAL"`
 
 	// Retention of terminal jobs, their events and expired sessions.
-	JobRetentionDays    int           `help:"days to keep terminal jobs after their last update" default:"90" env:"AIRUNNER_JOB_RETENTION_DAYS"`
-	EventsRetentionDays int           `help:"days to keep events of terminal jobs (0 keeps them until the job is deleted)" default:"30" env:"AIRUNNER_EVENTS_RETENTION_DAYS"`
-	RetentionInterval   time.Duration `help:"interval between retention sweeps" default:"1h" env:"AIRUNNER_RETENTION_INTERVAL"`
-	EventPollInterval   time.Duration `help:"interval between event stream polls" default:"500ms" env:"AIRUNNER_EVENT_POLL_INTERVAL"`
+	Retention         RetentionFlags `embed:""`
+	RetentionInterval time.Duration  `help:"interval between in-process retention and session sweeps (0 disables in-process sweeps; run 'airunner-server cleanup' on a schedule instead)" default:"1h" env:"AIRUNNER_RETENTION_INTERVAL"`
+	EventPollInterval time.Duration  `help:"interval between event stream polls" default:"500ms" env:"AIRUNNER_EVENT_POLL_INTERVAL"`
 
 	// Store configuration
 	PostgresStore PostgresStoreFlags `embed:"" prefix:"postgres-"`
@@ -139,6 +138,14 @@ func (c *ServerCmd) Run(globals *Globals) error {
 		interceptors = append(interceptors, otelInterceptor)
 	}
 
+	jobRetention, eventRetention, err := c.Retention.Durations()
+	if err != nil {
+		return err
+	}
+	if c.RetentionInterval < 0 {
+		return errors.New("--retention-interval must not be negative")
+	}
+
 	// Create shared connection pool for all PostgreSQL stores
 	poolCfg := &postgresstore.PoolConfig{
 		ConnString:      c.PostgresStore.ConnString,
@@ -175,18 +182,13 @@ func (c *ServerCmd) Run(globals *Globals) error {
 			},
 			HeartbeatIntervalSeconds: c.Execution.HeartbeatInterval,
 		},
-		DefaultMaxAttempts:  c.PostgresStore.DefaultMaxAttempts,
-		LeaseReaperInterval: c.LeaseReaperInterval,
-		StreamPollInterval:  c.EventPollInterval,
-		JobRetention:        time.Duration(c.JobRetentionDays) * 24 * time.Hour,
-		EventRetention:      time.Duration(c.EventsRetentionDays) * 24 * time.Hour,
-		RetentionInterval:   c.RetentionInterval,
-	}
-	if c.JobRetentionDays <= 0 {
-		return errors.New("--job-retention-days must be positive")
-	}
-	if c.EventsRetentionDays < 0 {
-		return errors.New("--events-retention-days must not be negative")
+		DefaultMaxAttempts:   c.PostgresStore.DefaultMaxAttempts,
+		LeaseReaperInterval:  c.LeaseReaperInterval,
+		StreamPollInterval:   c.EventPollInterval,
+		JobRetention:         jobRetention,
+		EventRetention:       eventRetention,
+		RetentionInterval:    c.RetentionInterval,
+		DisableRetentionLoop: c.RetentionInterval == 0,
 	}
 
 	jobStore, err := postgresstore.NewJobStore(pool, jobStoreCfg)
@@ -209,19 +211,23 @@ func (c *ServerCmd) Run(globals *Globals) error {
 		}
 	}()
 
-	// Expired session cleanup shares the pool, so it is stopped and joined before pool close.
-	sweepCtx, stopSweep := context.WithCancel(ctx)
-	sweepDone := make(chan struct{})
-	go func() {
-		defer close(sweepDone)
-		postgresstore.RunSessionSweeper(sweepCtx, sessionStore, c.RetentionInterval, sessionSweepBatch, sessionSweepMaxBatches, func(n int) {
-			telemetry.GetMetrics().RetentionSessionsDeleted.Add(sweepCtx, int64(n))
-		})
-	}()
-	defer func() {
-		stopSweep()
-		<-sweepDone
-	}()
+	if c.RetentionInterval == 0 {
+		log.Info().Msg("In-process retention disabled; run `airunner-server cleanup` on a schedule")
+	} else {
+		// Expired session cleanup shares the pool, so it is stopped and joined before pool close.
+		sweepCtx, stopSweep := context.WithCancel(ctx)
+		sweepDone := make(chan struct{})
+		go func() {
+			defer close(sweepDone)
+			postgresstore.RunSessionSweeper(sweepCtx, sessionStore, c.RetentionInterval, sessionSweepBatch, sessionSweepMaxBatches, func(n int) {
+				telemetry.GetMetrics().RetentionSessionsDeleted.Add(sweepCtx, int64(n))
+			})
+		}()
+		defer func() {
+			stopSweep()
+			<-sweepDone
+		}()
+	}
 
 	// Seed the reserved development identity for --no-auth mode
 	var devPrincipal *auth.Principal

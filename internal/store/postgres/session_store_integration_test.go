@@ -77,3 +77,23 @@ func TestRunSessionSweeper(t *testing.T) {
 		t.Fatal("sweeper did not return after cancel")
 	}
 }
+
+func TestSweepExpiredSessions(t *testing.T) {
+	ctx := context.Background()
+	s := postgrestest.NewStores(t)
+	fx := postgrestest.SeedOrg(t, s)
+	sessions := postgres.NewSessionStore(s.Pool)
+	seedSessions(t, s, fx, 2500, 3)
+
+	n, drained, err := postgres.SweepExpiredSessions(ctx, sessions, 1000, 2)
+	require.NoError(t, err)
+	require.Equal(t, 2000, n)
+	require.False(t, drained)
+	require.Equal(t, 503, countSessions(t, s))
+
+	n, drained, err = postgres.SweepExpiredSessions(ctx, sessions, 1000, 2)
+	require.NoError(t, err)
+	require.Equal(t, 500, n)
+	require.True(t, drained)
+	require.Equal(t, 3, countSessions(t, s))
+}

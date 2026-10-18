@@ -276,3 +276,57 @@ func TestRetention_LoopPurgesAndStopsPromptly(t *testing.T) {
 	require.NoError(t, rs.Stop())
 	require.Less(t, time.Since(start), 2*time.Second)
 }
+
+func TestRetention_SweepRetentionUnstarted(t *testing.T) {
+	ctx := context.Background()
+	js, fx := setupStore(t)
+	id := seedJob(t, js, fx, "sweep", stateCompletedInt, time.Hour, 3)
+	recent := seedJob(t, js, fx, "sweep-recent", stateCompletedInt, time.Second, 3)
+
+	rs := retentionStore(t, js, JobStoreConfig{JobRetention: time.Minute, DisableRetentionLoop: true})
+
+	report, err := rs.SweepRetention(ctx, 1)
+	require.NoError(t, err)
+	require.Equal(t, RetentionReport{EventsDeleted: 3, JobsDeleted: 1, Complete: true}, report)
+	require.False(t, jobExists(t, js, id))
+	require.True(t, jobExists(t, js, recent))
+	require.Equal(t, 3, countEvents(t, js, recent))
+}
+
+func TestRetention_SweepRetentionBounded(t *testing.T) {
+	ctx := context.Background()
+	js, fx := setupStore(t)
+	id := seedJob(t, js, fx, "bounded", stateCompletedInt, time.Hour, 2500)
+
+	rs := retentionStore(t, js, JobStoreConfig{JobRetention: time.Minute, DisableRetentionLoop: true})
+
+	report, err := rs.SweepRetention(ctx, 1)
+	require.NoError(t, err)
+	require.Equal(t, 1000, report.EventsDeleted)
+	require.Zero(t, report.JobsDeleted)
+	require.False(t, report.Complete)
+	require.True(t, jobExists(t, js, id))
+
+	report, err = rs.SweepRetention(ctx, 10)
+	require.NoError(t, err)
+	require.Equal(t, RetentionReport{EventsDeleted: 1500, JobsDeleted: 1, Complete: true}, report)
+	require.False(t, jobExists(t, js, id))
+}
+
+func TestRetention_DisableRetentionLoop(t *testing.T) {
+	ctx := context.Background()
+	js, fx := setupStore(t)
+	id := seedJob(t, js, fx, "disabled", stateCompletedInt, time.Hour, 3)
+
+	rs := retentionStore(t, js, JobStoreConfig{JobRetention: time.Minute, RetentionInterval: 10 * time.Millisecond, DisableRetentionLoop: true})
+	require.NoError(t, rs.Start())
+	t.Cleanup(func() { _ = rs.Stop() })
+
+	time.Sleep(300 * time.Millisecond)
+	require.True(t, jobExists(t, js, id))
+	require.Equal(t, 3, countEvents(t, js, id))
+
+	report, err := rs.SweepRetention(ctx, 1)
+	require.NoError(t, err)
+	require.Equal(t, 1, report.JobsDeleted)
+}

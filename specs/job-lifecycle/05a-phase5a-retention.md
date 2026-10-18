@@ -21,6 +21,7 @@ Before 5a nothing was ever deleted:
 - [ ] Every delete is bounded, sweeps can be cancelled, and multiple replicas can sweep at once.
 - [ ] Expired sessions are deleted in bounded batches by a server-owned sweeper.
 - [ ] Cutoffs come from the database clock, never from client or event timestamps.
+- [ ] `airunner-server cleanup` runs one pass for external schedulers, and `--retention-interval=0` disables the in-process sweeps.
 - [ ] `retention.{events,jobs,sessions}_deleted` and `retention.sweep_errors` counters are emitted.
 
 ## Rules
@@ -39,6 +40,24 @@ Before 5a nothing was ever deleted:
 | Failure | An error is logged and counted with a `category` label (`clock`, `events`, `jobs`); that category is skipped until the next sweep |
 | Lifecycle | Job and event retention runs inside the JobStore lifecycle and joins on Stop. The session sweeper is cancelled and joined before the pool closes |
 
+## Scheduling
+
+Retention can run in two places. Both use the same bounded code path (`JobStore.SweepRetention` and `SweepExpiredSessions`), so they can safely overlap.
+
+| Mode | How | When to use |
+|---|---|---|
+| In-process (default) | The server sweeps at Start and then every `--retention-interval` (1h) | A single node, or local development |
+| Scheduled | `--retention-interval=0` on the server, plus `airunner-server cleanup` from cron, an ECS scheduled task or a Kubernetes CronJob | When you want cleanup outside the API process, with its own schedule, logs and exit status |
+
+`airunner-server cleanup` runs one pass and exits:
+
+- It deletes events, then jobs, then expired sessions, each drained in batches of 1,000 up to `--max-batches` (default 100) batches per category.
+- It never runs migrations and never starts the reaper or other background loops.
+- It exits non-zero if any category fails. If backlog remains, it logs a warning and exits 0; the next run continues.
+- It accepts `--job-retention-days`, `--events-retention-days`, `--postgres-*` and `--tracing`, with the same env vars as the server. It reuses the Postgres flag validation, so `AIRUNNER_POSTGRES_TOKEN_SECRET` must be set even though cleanup signs no tokens.
+
+The lease reaper always runs in the server. Redelivery depends on its 5s cadence, which makes it unsuitable for an external scheduler.
+
 ## Semantics
 
 - **Idempotency window.** Request IDs are unique per org only while the job exists. After the job is deleted, the same request ID creates a new job, so idempotency lasts for the job retention period.
@@ -51,7 +70,8 @@ Before 5a nothing was ever deleted:
 |---|---|---|---|
 | `--job-retention-days` | `AIRUNNER_JOB_RETENTION_DAYS` | 90 | > 0 |
 | `--events-retention-days` | `AIRUNNER_EVENTS_RETENTION_DAYS` | 30 | ≥ 0 and ≤ job retention; 0 keeps events for the job's lifetime |
-| `--retention-interval` | `AIRUNNER_RETENTION_INTERVAL` | 1h | > 0 |
+| `--retention-interval` | `AIRUNNER_RETENTION_INTERVAL` | 1h | ≥ 0; 0 disables the in-process retention and session sweeps |
+| `cleanup --max-batches` | `AIRUNNER_CLEANUP_MAX_BATCHES` | 100 | > 0; batches per category per run |
 | `--event-poll-interval` | `AIRUNNER_EVENT_POLL_INTERVAL` | 500ms | > 0 (stream polling from [4c](04c-phase4c-event-streams.md)) |
 
 `--events-retention-days` replaces the removed `--events-ttl-days`. `infra/main.tf` still sets `AIRUNNER_EVENTS_TTL_DAYS`; infra is out of scope for this redesign.

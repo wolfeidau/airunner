@@ -13,19 +13,9 @@ import (
 // onDeleted, if non-nil, is called with the number deleted per tick.
 func RunSessionSweeper(ctx context.Context, sessions store.SessionStore, interval time.Duration, batch, maxBatches int, onDeleted func(int)) {
 	sweep := func() {
-		total := 0
-		for i := 0; i < maxBatches && ctx.Err() == nil; i++ {
-			n, err := sessions.DeleteExpired(ctx, batch)
-			total += n
-			if err != nil {
-				if ctx.Err() == nil {
-					log.Error().Err(err).Msg("Session sweep failed")
-				}
-				break
-			}
-			if n < batch {
-				break
-			}
+		total, _, err := SweepExpiredSessions(ctx, sessions, batch, maxBatches)
+		if err != nil && ctx.Err() == nil {
+			log.Error().Err(err).Msg("Session sweep failed")
 		}
 		if total > 0 {
 			log.Info().Int("count", total).Msg("Session sweep deleted expired sessions")
@@ -47,4 +37,25 @@ func RunSessionSweeper(ctx context.Context, sessions store.SessionStore, interva
 			sweep()
 		}
 	}
+}
+
+// SweepExpiredSessions deletes expired sessions in up to maxBatches batches of batch rows.
+// It returns the number deleted, whether it drained (finished on a short batch), and the
+// first error.
+func SweepExpiredSessions(ctx context.Context, sessions store.SessionStore, batch, maxBatches int) (int, bool, error) {
+	total := 0
+	for range maxBatches {
+		if err := ctx.Err(); err != nil {
+			return total, false, err
+		}
+		n, err := sessions.DeleteExpired(ctx, batch)
+		total += n
+		if err != nil {
+			return total, false, err
+		}
+		if n < batch {
+			return total, true, nil
+		}
+	}
+	return total, false, nil
 }

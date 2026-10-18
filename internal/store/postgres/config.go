@@ -47,7 +47,12 @@ type JobStoreConfig struct {
 	EventRetention time.Duration
 
 	// RetentionInterval is how often the retention sweep runs. Default: 1h.
+	// Must be positive when the retention loop is enabled and never negative.
 	RetentionInterval time.Duration
+
+	// DisableRetentionLoop stops Start from running the in-process retention loop.
+	// Retention can then be run on a schedule with SweepRetention.
+	DisableRetentionLoop bool
 }
 
 // Validate checks that the configuration is valid.
@@ -84,7 +89,7 @@ func (c *JobStoreConfig) Validate() error {
 		return fmt.Errorf("event retention must not exceed job retention")
 	}
 
-	if c.RetentionInterval <= 0 {
+	if c.RetentionInterval < 0 || (c.RetentionInterval == 0 && !c.DisableRetentionLoop) {
 		return fmt.Errorf("retention interval must be positive")
 	}
 
@@ -115,7 +120,7 @@ func (c *JobStoreConfig) ApplyDefaults() {
 		c.JobRetention = 90 * 24 * time.Hour
 	}
 
-	if c.RetentionInterval == 0 {
+	if c.RetentionInterval == 0 && !c.DisableRetentionLoop {
 		c.RetentionInterval = time.Hour
 	}
 

@@ -2,6 +2,8 @@ package postgres
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -89,17 +91,37 @@ func (s *JobStore) runRetention(ctx context.Context) {
 	}
 }
 
-// retentionTick purges events and then jobs older than their retention, using the database
-// clock. Each category runs at most retentionMaxBatches batches; remaining work is picked up
-// by the next tick.
+// RetentionReport summarises one retention pass.
+type RetentionReport struct {
+	EventsDeleted int
+	JobsDeleted   int
+	// Complete reports whether every category drained (finished on a short batch).
+	Complete bool
+}
+
+// retentionTick runs one bounded pass for the in-process loop. Errors are already logged
+// and counted by SweepRetention; remaining work is picked up by the next tick.
 func (s *JobStore) retentionTick(ctx context.Context) {
+	_, _ = s.SweepRetention(ctx, retentionMaxBatches)
+}
+
+// SweepRetention runs one retention pass using the database clock: events, then jobs, each
+// up to maxBatches batches of retentionBatchSize. Complete reports whether every category
+// drained. Categories are independent; the returned error joins every category failure.
+// Failures are logged and counted, and deletions are logged and added to the retention
+// metrics, so callers must not repeat either.
+//
+// It only uses the connection pool, so it works on a store that was never Started.
+func (s *JobStore) SweepRetention(ctx context.Context, maxBatches int) (RetentionReport, error) {
+	var report RetentionReport
+
 	var now time.Time
 	queryCtx, cancel := s.withQueryTimeout(ctx)
 	err := s.pool.QueryRow(queryCtx, `SELECT clock_timestamp()`).Scan(&now)
 	cancel()
 	if err != nil {
 		s.retentionError(ctx, "clock", err)
-		return
+		return report, fmt.Errorf("read database clock: %w", err)
 	}
 
 	eventRetention := s.cfg.EventRetention
@@ -111,42 +133,47 @@ func (s *JobStore) retentionTick(ctx context.Context) {
 
 	m := telemetry.GetMetrics()
 
-	events := s.purgeBatches(ctx, "events", func() (int, error) {
+	events, eventsDrained, eventsErr := s.purgeBatches(ctx, "events", maxBatches, func() (int, error) {
 		return s.PurgeEvents(ctx, eventCutoff, retentionBatchSize)
 	})
+	report.EventsDeleted = events
 	if events > 0 {
 		m.RetentionEventsDeleted.Add(ctx, int64(events))
 		log.Info().Int("deleted", events).Msg("Deleted expired job events")
 	}
 
-	jobs := s.purgeBatches(ctx, "jobs", func() (int, error) {
+	jobs, jobsDrained, jobsErr := s.purgeBatches(ctx, "jobs", maxBatches, func() (int, error) {
 		return s.PurgeJobs(ctx, jobCutoff, retentionBatchSize)
 	})
+	report.JobsDeleted = jobs
 	if jobs > 0 {
 		m.RetentionJobsDeleted.Add(ctx, int64(jobs))
 		log.Info().Int("deleted", jobs).Msg("Deleted expired jobs")
 	}
+
+	report.Complete = eventsDrained && jobsDrained
+	return report, errors.Join(eventsErr, jobsErr)
 }
 
-// purgeBatches runs purge up to retentionMaxBatches times, stopping on a short batch,
-// cancellation or error, and returns the total deleted.
-func (s *JobStore) purgeBatches(ctx context.Context, category string, purge func() (int, error)) int {
+// purgeBatches runs purge up to maxBatches times, stopping on a short batch, cancellation or
+// error. It returns the total deleted, whether a short batch was reached, and any error.
+func (s *JobStore) purgeBatches(ctx context.Context, category string, maxBatches int, purge func() (int, error)) (int, bool, error) {
 	total := 0
-	for range retentionMaxBatches {
+	for range maxBatches {
 		if ctx.Err() != nil {
-			break
+			return total, false, ctx.Err()
 		}
 		n, err := purge()
 		total += n
 		if err != nil {
 			s.retentionError(ctx, category, err)
-			break
+			return total, false, fmt.Errorf("purge %s: %w", category, err)
 		}
 		if n < retentionBatchSize {
-			break
+			return total, true, nil
 		}
 	}
-	return total
+	return total, false, nil
 }
 
 func (s *JobStore) retentionError(ctx context.Context, category string, err error) {

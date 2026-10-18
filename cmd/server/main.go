@@ -12,7 +12,8 @@ var (
 	cli     struct {
 		Debug   bool `help:"Enable debug mode."`
 		Version kong.VersionFlag
-		Server  commands.ServerCmd `cmd:"" help:"Start the server (website + API)"`
+		Server  commands.ServerCmd  `cmd:"" help:"Start the server (website + API)"`
+		Cleanup commands.CleanupCmd `cmd:"" help:"Run one retention pass (events, jobs, expired sessions) and exit"`
 	}
 )
 

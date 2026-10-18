@@ -1,5 +1,8 @@
 # Write-Ahead Log (WAL) Event Persistence
 
+> **Superseded in part.** The WAL file layout, sender contract and failure handling described here were replaced in phase 4b of the job lifecycle redesign. See [04b-phase4b-worker-durability.md](../job-lifecycle/04b-phase4b-worker-durability.md) and [00-architecture.md](../job-lifecycle/00-architecture.md). This spec is kept for history.
+
+
 [Architecture](00-architecture.md) | [Phase 1 →](01-phase1-core-wal.md)
 
 ## Overview

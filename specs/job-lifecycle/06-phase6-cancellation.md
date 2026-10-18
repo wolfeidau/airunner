@@ -1,6 +1,6 @@
 # Phase 6: Job cancellation
 
-[← Redesign plan](../job-lifecycle-tenancy-redesign-plan.md) | [← Phase 5b](05b-phase5b-metrics.md) | [Phase 7 (planned) →](../job-lifecycle-tenancy-redesign-plan.md#deliverable-2-implementation-phases)
+[← README](README.md) | [← Phase 5b](05b-phase5b-metrics.md) | [Phase 7 →](07-phase7-documentation.md)
 
 **Goal:** a user can stop a scheduled or running job. A connected worker stops its command within a bounded time, never completes the job, and leaves a clean, final CANCELLED state that streams and retention already understand.
 
@@ -78,4 +78,4 @@ make lint test proto-lint
 bunx biome check ui/pages/ && bunx tsc --noEmit -p tsconfig.json
 ```
 
-[← Redesign plan](../job-lifecycle-tenancy-redesign-plan.md) | [← Phase 5b](05b-phase5b-metrics.md) | [Phase 7 (planned) →](../job-lifecycle-tenancy-redesign-plan.md#deliverable-2-implementation-phases)
+[← README](README.md) | [← Phase 5b](05b-phase5b-metrics.md) | [Phase 7 →](07-phase7-documentation.md)

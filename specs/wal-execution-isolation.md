@@ -1,5 +1,8 @@
 # WAL Execution Isolation Problem
 
+> **Superseded.** Phase 4b of the job lifecycle redesign fixed this problem with per-attempt WALs at `<wal-dir>/<job-id>/<attempt>.wal`, a header that carries the job and attempt, and an exclusive file lock. See [04b-phase4b-worker-durability.md](job-lifecycle/04b-phase4b-worker-durability.md). This document is kept for history.
+
+
 ## Problem Statement
 
 The current WAL implementation has a critical design flaw for CI worker scenarios: WAL files are keyed by **job ID only**, which causes events from different executions of the same job to be mixed together when a job is retried.

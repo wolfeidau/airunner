@@ -26,6 +26,7 @@ type MonitorCmd struct {
 	Timeout       time.Duration     `help:"Timeout for the monitor" default:"5m"`
 	Playback      bool              `help:"Replay events at original speed based on timestamps"`
 	Verbose       bool              `help:"Show verbose debug output including timestamps"`
+	Attempt       int32             `help:"Attempt to stream (0 selects the latest)" default:"0"`
 }
 
 func (m *MonitorCmd) Run(ctx context.Context, globals *Globals) error {
@@ -82,6 +83,7 @@ func (m *MonitorCmd) Run(ctx context.Context, globals *Globals) error {
 		EventFilter:   m.EventFilter,
 		Playback:      m.Playback,
 		Verbose:       m.Verbose,
+		Attempt:       m.Attempt,
 	}); err != nil {
 		return fmt.Errorf("failed to monitor job: %w", err)
 	}
@@ -97,6 +99,7 @@ type monitorJobArgs struct {
 	EventFilter   []jobv1.EventType
 	Playback      bool
 	Verbose       bool
+	Attempt       int32
 }
 
 func monitorJob(ctx context.Context, clients *client.Clients, args monitorJobArgs) error {
@@ -105,6 +108,7 @@ func monitorJob(ctx context.Context, clients *client.Clients, args monitorJobArg
 		FromSequence:  args.FromSequence,
 		FromTimestamp: args.FromTimestamp,
 		EventFilter:   args.EventFilter,
+		Attempt:       args.Attempt,
 	}
 
 	stream, err := clients.Events.StreamJobEvents(ctx, connect.NewRequest(req))
@@ -126,36 +130,38 @@ func monitorJob(ctx context.Context, clients *client.Clients, args monitorJobArg
 	var sequenceGaps []string
 	var processEndReceived bool
 
-	for {
-		var receivedEvent bool
+	var (
+		attemptClosed   bool
+		statusPrinted   bool
+		lastAttempt     int32
+		lastState       jobv1.JobState
+		resolvedAttempt int32
+		resolvedState   jobv1.JobState
+	)
 
-		// After PROCESS_END, use timeout to exit gracefully if no more events
-		if processEndReceived {
-			receiveChan := make(chan bool, 1)
-			go func() {
-				receiveChan <- stream.Receive()
-			}()
+	for stream.Receive() {
+		msg := stream.Msg()
 
-			select {
-			case receivedEvent = <-receiveChan:
-				if !receivedEvent {
-					goto streamComplete
-				}
-			case <-time.After(2 * time.Second):
-				// Grace period expired, exit cleanly
-				if args.Verbose {
-					fmt.Printf("\n[DEBUG] Grace period expired after PROCESS_END, exiting\n")
-				}
-				goto streamComplete
-			}
-		} else {
-			receivedEvent = stream.Receive()
-			if !receivedEvent {
-				goto streamComplete
-			}
+		if statusPrinted && msg.ResolvedAttempt != lastAttempt {
+			// Defensive: a stream pins one attempt, but never compare sequences across attempts
+			lastSequence = 0
+		}
+		if !statusPrinted || msg.ResolvedAttempt != lastAttempt || msg.JobState != lastState {
+			fmt.Println(formatStatus(msg.ResolvedAttempt, msg.JobState))
+			statusPrinted = true
+			lastAttempt = msg.ResolvedAttempt
+			lastState = msg.JobState
+		}
+		resolvedAttempt = msg.ResolvedAttempt
+		resolvedState = msg.JobState
+		if msg.AttemptClosed {
+			attemptClosed = true
 		}
 
-		event := stream.Msg().Event
+		event := msg.Event
+		if event == nil {
+			continue
+		}
 
 		// Verify sequence linearizability
 		if lastSequence > 0 {
@@ -222,7 +228,6 @@ func monitorJob(ctx context.Context, clients *client.Clients, args monitorJobArg
 					end.RunDuration.AsDuration())
 			}
 
-			// Set flag to start grace period for any remaining events
 			processEndReceived = true
 
 		case jobv1.EventType_EVENT_TYPE_PROCESS_ERROR:
@@ -433,9 +438,12 @@ func monitorJob(ctx context.Context, clients *client.Clients, args monitorJobArg
 		}
 	}
 
-streamComplete:
 	if err := stream.Err(); err != nil {
 		return fmt.Errorf("stream error: %w", err)
+	}
+
+	if notice := closingNotice(attemptClosed, processEndReceived, resolvedAttempt, resolvedState); notice != "" {
+		fmt.Printf("\n%s\n", notice)
 	}
 
 	// Report linearizability verification results
@@ -451,6 +459,21 @@ streamComplete:
 	}
 
 	return nil
+}
+
+// formatStatus renders the resolved attempt and job state for display.
+func formatStatus(attempt int32, state jobv1.JobState) string {
+	return fmt.Sprintf("Attempt %d, state %s", attempt, strings.TrimPrefix(state.String(), "JOB_STATE_"))
+}
+
+// closingNotice returns a notice when an attempt closed without a process end event
+// (for example a lost lease followed by redelivery), otherwise an empty string.
+func closingNotice(attemptClosed, processEndSeen bool, attempt int32, state jobv1.JobState) string {
+	if !attemptClosed || processEndSeen {
+		return ""
+	}
+	return fmt.Sprintf("Attempt %d closed without a process end event (job state %s)",
+		attempt, strings.TrimPrefix(state.String(), "JOB_STATE_"))
 }
 
 type playbackTimer struct {

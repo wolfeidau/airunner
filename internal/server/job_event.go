@@ -37,38 +37,24 @@ func (s *JobEventServer) StreamJobEvents(ctx context.Context, req *connect.Reque
 		return err
 	}
 
-	eventChan, err := s.store.StreamEvents(
-		ctx,
-		caller,
-		req.Msg.JobId,
-		req.Msg.Attempt,
-		req.Msg.FromSequence,
-		req.Msg.FromTimestamp,
-		req.Msg.EventFilter,
-	)
+	err = s.store.StreamEvents(ctx, caller, store.StreamRequest{
+		JobID:         req.Msg.JobId,
+		Attempt:       req.Msg.Attempt,
+		FromSequence:  req.Msg.FromSequence,
+		FromTimestamp: req.Msg.FromTimestamp,
+		EventFilter:   req.Msg.EventFilter,
+	}, func(r *store.StreamResponse) error {
+		return stream.Send(&v1.StreamJobEventsResponse{
+			Event:           r.Event,
+			ResolvedAttempt: r.Attempt,
+			JobState:        r.JobState,
+			AttemptClosed:   r.AttemptClosed,
+		})
+	})
 	if err != nil {
 		return toConnectError(err)
 	}
-
-	// Stream events to client
-	for {
-		select {
-		case event, ok := <-eventChan:
-			if !ok {
-				return nil // Channel closed
-			}
-
-			resp := &v1.StreamJobEventsResponse{
-				Event: event,
-			}
-			if err := stream.Send(resp); err != nil {
-				return toConnectError(err)
-			}
-
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
+	return nil
 }
 
 func (s *JobEventServer) PublishJobEvents(ctx context.Context, req *connect.Request[v1.PublishJobEventsRequest]) (*connect.Response[v1.PublishJobEventsResponse], error) {

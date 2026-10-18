@@ -33,11 +33,13 @@ import "./dashboard.css";
 import type { Timestamp } from "@bufbuild/protobuf/wkt";
 
 // Custom hook to stream job events in real-time
-function useJobEventStream(jobId: string) {
+function useJobEventStream(jobId: string, attempt: number) {
   const [events, setEvents] = useState<JobEvent[]>([]);
   const [isConnecting, setIsConnecting] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [jobCompleted, setJobCompleted] = useState(false);
+  const [resolvedAttempt, setResolvedAttempt] = useState(0);
+  const [jobState, setJobState] = useState<JobState>(JobState.UNSPECIFIED);
 
   // Get transport from provider
   const transport = useTransport();
@@ -45,12 +47,20 @@ function useJobEventStream(jobId: string) {
   useEffect(() => {
     const abortController = new AbortController();
 
+    setEvents([]);
+    setIsConnecting(true);
+    setError(null);
+    setJobCompleted(false);
+    setResolvedAttempt(0);
+    setJobState(JobState.UNSPECIFIED);
+
     async function streamEvents() {
       try {
         const eventsClient = createClient(JobEventsService, transport);
         const stream = eventsClient.streamJobEvents(
           {
             jobId,
+            attempt,
             fromSequence: 0n,
             fromTimestamp: 0n,
             eventFilter: [],
@@ -61,14 +71,14 @@ function useJobEventStream(jobId: string) {
         setIsConnecting(false);
 
         for await (const response of stream) {
-          if (response.event) {
-            setEvents((prev) => [...prev, response.event]);
-
-            // Detect job completion and close stream
-            if (response.event.eventType === EventType.PROCESS_END) {
-              setJobCompleted(true);
-              break; // Close stream after job completes
-            }
+          setResolvedAttempt(response.resolvedAttempt);
+          setJobState(response.jobState);
+          if (response.attemptClosed) {
+            setJobCompleted(true);
+          }
+          const event = response.event;
+          if (event) {
+            setEvents((prev) => [...prev, event]);
           }
         }
       } catch (err: unknown) {
@@ -85,9 +95,16 @@ function useJobEventStream(jobId: string) {
     streamEvents();
 
     return () => abortController.abort();
-  }, [jobId, transport]);
+  }, [jobId, attempt, transport]);
 
-  return { events, isConnecting, error, jobCompleted };
+  return {
+    events,
+    isConnecting,
+    error,
+    jobCompleted,
+    resolvedAttempt,
+    jobState,
+  };
 }
 
 // OutputBatch Renderer - unpacks batched console output
@@ -390,7 +407,13 @@ function EventItem({
 }
 
 // EventsConsole - scrollable event container with auto-scroll
-function EventsConsole({ events }: { events: JobEvent[] }) {
+function EventsConsole({
+  jobId,
+  events,
+}: {
+  jobId: string;
+  events: JobEvent[];
+}) {
   const consoleEndRef = useRef<HTMLDivElement>(null);
 
   // Calculate job start time from first event
@@ -408,7 +431,7 @@ function EventsConsole({ events }: { events: JobEvent[] }) {
     <div className="events-console">
       {events.map((event) => (
         <EventItem
-          key={event.sequence}
+          key={`${jobId}-${event.attempt}-${event.sequence}`}
           event={event}
           startTimeMs={startTimeMs}
         />
@@ -418,10 +441,28 @@ function EventsConsole({ events }: { events: JobEvent[] }) {
   );
 }
 
+// Human-readable job state: strip the enum prefix and lowercase
+function formatJobState(state: JobState): string {
+  return JobState[state].replace(/^JOB_STATE_/, "").toLowerCase();
+}
+
 // Job Events View component (Phase 3 - with streaming, Phase 4 will add full rendering)
 function JobEventsView({ jobId }: { jobId: string }) {
-  const { events, isConnecting, error, jobCompleted } =
-    useJobEventStream(jobId);
+  const [selectedAttempt, setSelectedAttempt] = useState(0);
+  const [latestAttempt, setLatestAttempt] = useState(0);
+  const {
+    events,
+    isConnecting,
+    error,
+    jobCompleted,
+    resolvedAttempt,
+    jobState,
+  } = useJobEventStream(jobId, selectedAttempt);
+
+  // Track the highest attempt seen so older attempts can still be selected
+  useEffect(() => {
+    setLatestAttempt((prev) => Math.max(prev, resolvedAttempt));
+  }, [resolvedAttempt]);
 
   return (
     <div className="events-container">
@@ -436,12 +477,35 @@ function JobEventsView({ jobId }: { jobId: string }) {
           ← Back to Jobs
         </button>
         <h2 className="events-title">Job: {jobId.slice(0, 12)}</h2>
+        {resolvedAttempt > 0 && (
+          <span className="events-attempt">Attempt {resolvedAttempt}</span>
+        )}
+        {jobState !== JobState.UNSPECIFIED && (
+          <span className="events-state">{formatJobState(jobState)}</span>
+        )}
+        {latestAttempt > 1 && (
+          <label className="events-attempt-select">
+            Attempt
+            <select
+              value={selectedAttempt || resolvedAttempt}
+              onChange={(e) => setSelectedAttempt(Number(e.target.value))}
+            >
+              {Array.from({ length: latestAttempt }, (_, i) => i + 1).map(
+                (n) => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ),
+              )}
+            </select>
+          </label>
+        )}
       </div>
 
       {/* Job completion banner */}
       {jobCompleted && (
         <div className="events-banner events-banner-completed">
-          Job Completed
+          Attempt {resolvedAttempt} closed ({formatJobState(jobState)})
         </div>
       )}
 
@@ -477,7 +541,7 @@ function JobEventsView({ jobId }: { jobId: string }) {
 
       {/* Events console (Phase 4 - full rendering) */}
       {!isConnecting && !error && events.length > 0 && (
-        <EventsConsole events={events} />
+        <EventsConsole jobId={jobId} events={events} />
       )}
     </div>
   );
@@ -937,7 +1001,7 @@ function Dashboard() {
 
       {/* Conditional rendering: show event view, credentials view, or job list */}
       {selectedJobId ? (
-        <JobEventsView jobId={selectedJobId} />
+        <JobEventsView key={selectedJobId} jobId={selectedJobId} />
       ) : activeTab === "credentials" ? (
         <CredentialsView />
       ) : (

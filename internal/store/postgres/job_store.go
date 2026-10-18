@@ -36,10 +36,6 @@ type JobStore struct {
 	pool *pgxpool.Pool
 	cfg  *JobStoreConfig
 
-	// Event streaming support (in-memory fanout)
-	mu           sync.RWMutex
-	eventStreams map[string][]chan *jobv1.JobEvent
-
 	// Lifecycle. lcMu guards state, lifeCtx and lifeCancel; wg.Add is only called
 	// while the store is started so Stop's wg.Wait cannot race with it.
 	lcMu       sync.RWMutex
@@ -75,9 +71,8 @@ func NewJobStore(pool *pgxpool.Pool, cfg *JobStoreConfig) (*JobStore, error) {
 	}
 
 	return &JobStore{
-		pool:         pool,
-		cfg:          cfg,
-		eventStreams: make(map[string][]chan *jobv1.JobEvent),
+		pool: pool,
+		cfg:  cfg,
 	}, nil
 }
 
@@ -977,10 +972,6 @@ func (s *JobStore) PublishEvents(ctx context.Context, caller store.Caller, taskT
 		Int("inserted", len(inserted)).
 		Msg("Published events")
 
-	for _, event := range inserted {
-		s.fanoutEvent(tt.JobID, event)
-	}
-
 	return &store.PublishResult{Attempt: row.attempt, AcknowledgedThroughSequence: acked}, nil
 }
 
@@ -1006,139 +997,213 @@ func (s *JobStore) checkReplay(ctx context.Context, tx pgx.Tx, jobID string, att
 	return nil
 }
 
-// StreamEvents returns a channel that streams events for a job.
-// Replays historical events from the database, then streams real-time events.
-// The attempt parameter is accepted but ignored until phase 4: history for all
-// attempts is returned ordered by (attempt, sequence).
-func (s *JobStore) StreamEvents(ctx context.Context, caller store.Caller, jobID string, _ int32, fromSequence int64, fromTimestamp int64, eventFilter []jobv1.EventType) (<-chan *jobv1.JobEvent, error) {
+// streamPageSize is the maximum number of event rows read per stream poll query.
+const streamPageSize = 100
+
+// StreamEvents streams the events of one attempt of a job, then follows the attempt
+// until it closes. See store.JobStore.StreamEvents for the contract.
+func (s *JobStore) StreamEvents(ctx context.Context, caller store.Caller, req store.StreamRequest, send func(*store.StreamResponse) error) error {
 	// Streams are only served while the store is started. wg.Add happens under the
 	// read lock so Stop cannot begin waiting between the check and the Add.
 	s.lcMu.RLock()
 	if s.state != stateStarted {
 		s.lcMu.RUnlock()
-		return nil, errors.New("job store is not running")
+		return errors.New("job store is not running")
 	}
 	lifeCtx := s.lifeCtx
 	s.wg.Add(1)
 	s.lcMu.RUnlock()
-
-	// Verify job exists in the caller's org
-	job, err := s.getJobByID(ctx, caller.OrgID, jobID)
-	if err != nil {
-		s.wg.Done()
-		return nil, err
-	}
-	if job == nil {
-		s.wg.Done()
-		return nil, store.ErrJobNotFound
-	}
+	defer s.wg.Done()
 
 	// streamCtx ends when either the request ctx or the store lifecycle ctx ends.
 	streamCtx, cancelStream := context.WithCancel(ctx)
+	defer cancelStream()
 	stopAfter := context.AfterFunc(lifeCtx, cancelStream)
+	defer stopAfter()
 
-	// Create event channel
-	eventCh := make(chan *jobv1.JobEvent, 100)
+	err := s.runStream(streamCtx, caller, req, send)
+	if err == nil {
+		return nil
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if lifeCtx.Err() != nil {
+		return fmt.Errorf("%w: job store stopping", store.ErrUnavailable)
+	}
+	return err
+}
 
-	// Register stream
-	s.registerEventStream(jobID, eventCh)
+// jobStreamState is the job row state observed by a stream poll.
+type jobStreamState struct {
+	state   jobv1.JobState
+	attempt int32
+}
 
-	// Create filter map for efficient lookup
-	filterMap := make(map[jobv1.EventType]bool)
-	for _, et := range eventFilter {
-		filterMap[et] = true
+// closed reports whether the given attempt can no longer produce events.
+func (j jobStreamState) closed(attempt int32) bool {
+	switch {
+	case j.attempt > attempt:
+		return true
+	case j.attempt == attempt:
+		return j.state != jobv1.JobState_JOB_STATE_RUNNING
+	default:
+		switch j.state {
+		case jobv1.JobState_JOB_STATE_COMPLETED, jobv1.JobState_JOB_STATE_FAILED, jobv1.JobState_JOB_STATE_CANCELLED:
+			return true
+		}
+		return false
+	}
+}
+
+// observeJob reads the job's current state and attempt, scoped to the caller's org.
+func (s *JobStore) observeJob(ctx context.Context, orgID uuid.UUID, jobID string) (jobStreamState, error) {
+	qctx, cancel := s.withQueryTimeout(ctx)
+	defer cancel()
+
+	var js jobStreamState
+	err := s.pool.QueryRow(qctx,
+		`SELECT state, attempt FROM jobs WHERE org_id = $1 AND job_id = $2`,
+		orgID, jobID).Scan(&js.state, &js.attempt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return js, store.ErrJobNotFound
+		}
+		return js, mapPostgresError(err)
+	}
+	return js, nil
+}
+
+func (s *JobStore) runStream(ctx context.Context, caller store.Caller, req store.StreamRequest, send func(*store.StreamResponse) error) error {
+	if req.Attempt < 0 {
+		return fmt.Errorf("%w: attempt must not be negative", store.ErrInvalidArgument)
+	}
+	if _, err := uuid.Parse(req.JobID); err != nil {
+		return store.ErrJobNotFound
 	}
 
-	// Start goroutine for historical replay and streaming
-	go func() {
-		defer s.wg.Done()
-		defer cancelStream()
-		defer stopAfter()
-		// This goroutine is the sole closer of eventCh. Deregistering under the write
-		// lock first guarantees fanoutEvent never sends on a closed channel.
-		defer close(eventCh)
-		defer s.deregisterEventStream(jobID, eventCh)
+	js, err := s.observeJob(ctx, caller.OrgID, req.JobID)
+	if err != nil {
+		return err
+	}
 
-		// Historical replay
-		query := `
-			SELECT sequence, timestamp, event_type, event_payload
-			FROM job_events
-			WHERE job_id = $1
-		`
+	// Attempt 1 is the first attempt even before the first dequeue (jobs.attempt is 0).
+	latest := max(int32(1), js.attempt)
+	attempt := req.Attempt
+	if attempt == 0 {
+		attempt = latest
+	}
+	if attempt > latest {
+		return fmt.Errorf("%w: attempt %d does not exist (latest is %d)", store.ErrInvalidArgument, attempt, latest)
+	}
 
-		var conditions []string
-		var args = []any{jobID}
-		argIdx := 2
+	filter := make(map[jobv1.EventType]struct{}, len(req.EventFilter))
+	for _, et := range req.EventFilter {
+		filter[et] = struct{}{}
+	}
 
-		if fromSequence > 0 {
-			conditions = append(conditions, fmt.Sprintf("AND sequence >= $%d", argIdx))
-			args = append(args, fromSequence)
-			argIdx++
-		}
+	if err := send(&store.StreamResponse{Attempt: attempt, JobState: js.state, AttemptClosed: js.closed(attempt)}); err != nil {
+		return err
+	}
 
-		if fromTimestamp > 0 {
-			conditions = append(conditions, fmt.Sprintf("AND EXTRACT(EPOCH FROM timestamp) * 1000 >= $%d", argIdx))
-			args = append(args, fromTimestamp)
-		}
+	cursor := max(req.FromSequence, 1)
+	timer := time.NewTimer(s.cfg.StreamPollInterval)
+	defer timer.Stop()
 
-		var queryBuilder strings.Builder
-		queryBuilder.WriteString(query)
-		for _, cond := range conditions {
-			queryBuilder.WriteString(" ")
-			queryBuilder.WriteString(cond)
-		}
-		queryBuilder.WriteString(" ORDER BY attempt ASC, sequence ASC")
-		query = queryBuilder.String()
-
-		rows, err := s.pool.Query(streamCtx, query, args...)
+	for {
+		// Observe the job before reading events: if the attempt is closed here, every
+		// event it will ever have is already visible to the page query below.
+		js, err := s.observeJob(ctx, caller.OrgID, req.JobID)
 		if err != nil {
-			log.Error().Err(err).Str("job_id", jobID).Msg("Failed to query historical events")
-			return
+			return err
 		}
-		defer rows.Close()
+		closed := js.closed(attempt)
 
-		for rows.Next() {
-			var sequence int64
-			var timestamp time.Time
-			var eventType int32
-			var eventPayload []byte
+		events, next, rows, err := s.streamPage(ctx, req, attempt, cursor, filter)
+		if err != nil {
+			return err
+		}
+		cursor = next
 
-			err := rows.Scan(&sequence, &timestamp, &eventType, &eventPayload)
-			if err != nil {
-				log.Error().Err(err).Msg("Failed to scan event row")
-				continue
-			}
-
-			// Apply event type filter
-			if len(filterMap) > 0 && !filterMap[jobv1.EventType(eventType)] {
-				continue
-			}
-
-			// Unmarshal event
-			event := &jobv1.JobEvent{}
-			if err := util.UnmarshalProto(eventPayload, event); err != nil {
-				log.Error().Err(err).Msg("Failed to unmarshal event")
-				continue
-			}
-
-			// Send event (non-blocking)
-			select {
-			case eventCh <- event:
-				// Sent successfully
-			case <-ctx.Done():
-				return
-			default:
-				log.Warn().Str("job_id", jobID).Int64("sequence", sequence).Msg("Event channel full during replay")
+		for _, event := range events {
+			if err := send(&store.StreamResponse{Event: event, Attempt: attempt, JobState: js.state}); err != nil {
+				return err
 			}
 		}
 
-		log.Debug().Str("job_id", jobID).Msg("Historical replay complete, streaming real-time events")
+		if rows >= streamPageSize {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			continue
+		}
 
-		// Wait for context cancellation (real-time events come via fanout)
-		<-streamCtx.Done()
-	}()
+		if closed {
+			return send(&store.StreamResponse{Attempt: attempt, JobState: js.state, AttemptClosed: true})
+		}
 
-	return eventCh, nil
+		timer.Reset(s.cfg.StreamPollInterval)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+// streamPage reads one page of events at or after cursor. It returns the matching
+// events, the next cursor (past every scanned row, including filtered ones) and the
+// number of rows scanned.
+func (s *JobStore) streamPage(ctx context.Context, req store.StreamRequest, attempt int32, cursor int64, filter map[jobv1.EventType]struct{}) ([]*jobv1.JobEvent, int64, int, error) {
+	qctx, cancel := s.withQueryTimeout(ctx)
+	defer cancel()
+
+	query := `
+		SELECT sequence, end_sequence, event_type, event_payload
+		FROM job_events
+		WHERE job_id = $1 AND attempt = $2 AND end_sequence >= $3`
+	args := []any{req.JobID, attempt, cursor}
+	if req.FromTimestamp > 0 {
+		query += ` AND timestamp >= to_timestamp($4::bigint / 1000.0)`
+		args = append(args, req.FromTimestamp)
+	}
+	query += fmt.Sprintf(` ORDER BY sequence LIMIT %d`, streamPageSize)
+
+	rows, err := s.pool.Query(qctx, query, args...)
+	if err != nil {
+		return nil, cursor, 0, mapPostgresError(err)
+	}
+	defer rows.Close()
+
+	var events []*jobv1.JobEvent
+	count := 0
+	for rows.Next() {
+		var sequence, endSequence int64
+		var eventType int32
+		var payload []byte
+		if err := rows.Scan(&sequence, &endSequence, &eventType, &payload); err != nil {
+			return nil, cursor, 0, fmt.Errorf("failed to scan event row: %w", err)
+		}
+		count++
+		cursor = endSequence + 1
+
+		if len(filter) > 0 {
+			if _, ok := filter[jobv1.EventType(eventType)]; !ok {
+				continue
+			}
+		}
+
+		event := &jobv1.JobEvent{}
+		if err := util.UnmarshalProto(payload, event); err != nil {
+			return nil, cursor, 0, fmt.Errorf("failed to unmarshal event %d: %w", sequence, err)
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, cursor, 0, mapPostgresError(err)
+	}
+
+	return events, cursor, count, nil
 }
 
 // Helper methods
@@ -1199,77 +1264,4 @@ func (s *JobStore) withQueryTimeout(ctx context.Context) (context.Context, conte
 	}
 	// If QueryTimeoutSeconds is 0, use a reasonable default
 	return context.WithTimeout(ctx, 10*time.Second)
-}
-
-// getJobByID retrieves a job by its job_id, scoped to the caller's org.
-// Returns store.ErrJobNotFound if the job is absent or belongs to another org.
-func (s *JobStore) getJobByID(ctx context.Context, orgID uuid.UUID, jobID string) (*jobv1.Job, error) {
-	query := `
-		SELECT job_id, state, created_at, updated_at,
-		       job_params, execution_config, attempt, max_attempts
-		FROM jobs
-		WHERE org_id = $1 AND job_id = $2
-	`
-
-	job, err := scanJob(s.pool.QueryRow(ctx, query, orgID, jobID))
-	if err != nil {
-		return nil, err
-	}
-	if job == nil {
-		return nil, store.ErrJobNotFound
-	}
-
-	return job, nil
-}
-
-// fanoutEvent sends an event to all active stream channels for a job.
-// Uses non-blocking sends to prevent slow consumers from blocking.
-func (s *JobStore) fanoutEvent(jobID string, event *jobv1.JobEvent) {
-	// Hold the read lock while sending so deregister+close cannot interleave.
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	for _, ch := range s.eventStreams[jobID] {
-		select {
-		case ch <- event:
-			// Event sent successfully
-		default:
-			// Channel full, drop event (non-blocking)
-			log.Warn().
-				Str("job_id", jobID).
-				Int64("sequence", event.Sequence).
-				Msg("Event channel full, dropping event")
-		}
-	}
-}
-
-// registerEventStream adds a channel to receive events for a job.
-func (s *JobStore) registerEventStream(jobID string, ch chan *jobv1.JobEvent) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.eventStreams[jobID] = append(s.eventStreams[jobID], ch)
-	log.Debug().Str("job_id", jobID).Int("stream_count", len(s.eventStreams[jobID])).Msg("Registered event stream")
-}
-
-// deregisterEventStream removes a channel from receiving events for a job.
-func (s *JobStore) deregisterEventStream(jobID string, ch chan *jobv1.JobEvent) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	streams := s.eventStreams[jobID]
-	for i, stream := range streams {
-		if stream == ch {
-			// Remove channel from slice
-			s.eventStreams[jobID] = append(streams[:i], streams[i+1:]...)
-			break
-		}
-	}
-
-	// Clean up empty stream lists
-	if len(s.eventStreams[jobID]) == 0 {
-		delete(s.eventStreams, jobID)
-	}
-
-	log.Debug().Str("job_id", jobID).Msg("Deregistered event stream")
 }

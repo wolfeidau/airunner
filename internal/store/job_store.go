@@ -67,13 +67,33 @@ type JobStore interface {
 	// Event streaming
 	PublishEvents(ctx context.Context, caller Caller, taskToken string, events []*jobv1.JobEvent) (*PublishResult, error)
 
-	// StreamEvents replays and follows events for a job. The attempt parameter is
-	// accepted but ignored until phase 4; all attempts are returned ordered by (attempt, sequence).
-	StreamEvents(ctx context.Context, caller Caller, jobID string, attempt int32, fromSequence int64, fromTimestamp int64, eventFilter []jobv1.EventType) (<-chan *jobv1.JobEvent, error)
+	// StreamEvents streams one attempt of a job: an initial status message, then the
+	// attempt's events in sequence order, then a final status with AttemptClosed set.
+	// It is synchronous: send is called from the caller's goroutine, and a send error
+	// aborts the stream and is returned as-is. It returns nil after the final closed
+	// status, ctx.Err() if ctx ends, and ErrUnavailable if the store stops.
+	StreamEvents(ctx context.Context, caller Caller, req StreamRequest, send func(*StreamResponse) error) error
 
 	// Lifecycle
 	Start() error
 	Stop() error
+}
+
+// StreamRequest selects the attempt and starting point of an event stream.
+type StreamRequest struct {
+	JobID         string
+	Attempt       int32 // 0 resolves to the latest started attempt, or waits for attempt 1
+	FromSequence  int64
+	FromTimestamp int64 // unix milliseconds
+	EventFilter   []jobv1.EventType
+}
+
+// StreamResponse is one stream message. Event is nil for status-only responses.
+type StreamResponse struct {
+	Event         *jobv1.JobEvent
+	Attempt       int32
+	JobState      jobv1.JobState
+	AttemptClosed bool
 }
 
 // JobWithToken represents a job with its associated task token

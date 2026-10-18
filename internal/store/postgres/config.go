@@ -29,6 +29,9 @@ type JobStoreConfig struct {
 
 	// LeaseReaperInterval is how often expired leases are reclaimed. Default: 5s.
 	LeaseReaperInterval time.Duration
+
+	// StreamPollInterval is how often an event stream polls for new events. Default: 500ms.
+	StreamPollInterval time.Duration
 }
 
 // Validate checks that the configuration is valid.
@@ -49,6 +52,10 @@ func (c *JobStoreConfig) Validate() error {
 		return fmt.Errorf("lease reaper interval must be positive")
 	}
 
+	if c.StreamPollInterval <= 0 {
+		return fmt.Errorf("stream poll interval must be positive")
+	}
+
 	return nil
 }
 
@@ -60,6 +67,10 @@ func (c *JobStoreConfig) ApplyDefaults() {
 
 	if c.LeaseReaperInterval == 0 {
 		c.LeaseReaperInterval = 5 * time.Second
+	}
+
+	if c.StreamPollInterval == 0 {
+		c.StreamPollInterval = 500 * time.Millisecond
 	}
 
 	if c.DefaultMaxAttempts == 0 {

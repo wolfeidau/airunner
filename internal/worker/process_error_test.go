@@ -20,8 +20,6 @@ func TestHandleEventProcessError(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Skip("known bug: handleEvent drops consolestream.ProcessError events; fixed in phase 1 of specs/job-lifecycle-tenancy-redesign-plan.md")
-
 			je, got := newCollectingExecutor(t)
 			defer func() { require.NoError(t, je.batcher.Stop(context.Background())) }()
 

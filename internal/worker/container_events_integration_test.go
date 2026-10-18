@@ -11,8 +11,6 @@ import (
 )
 
 func TestContainerEventsRemoveAfterProcessEnd(t *testing.T) {
-	t.Skip("known bug: executeContainer returns on ProcessEnd so CONTAINER_REMOVE is never published; fixed in phase 1 of specs/job-lifecycle-tenancy-redesign-plan.md")
-
 	je, got := newCollectingExecutor(t)
 
 	job := &jobv1.Job{

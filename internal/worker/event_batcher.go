@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -31,6 +32,12 @@ import (
 // Call Stop(ctx) to gracefully shutdown. This flushes pending items and stops the timer.
 // After Stop(), AddOutput and AddEvent will return errors. Stop() is idempotent and
 // safe to call multiple times concurrently.
+//
+// Sticky Errors:
+// If a timer-driven flush fails, the events in that batch are lost and no caller is
+// waiting to receive the error. The first such error is stored and returned (wrapped)
+// by every subsequent AddOutput, AddEvent and Flush call. Stop still attempts a final
+// flush and returns the sticky error joined with any final flush error.
 type EventBatcher struct {
 	mu sync.Mutex
 
@@ -52,6 +59,9 @@ type EventBatcher struct {
 	flushTimer *time.Timer
 	stopCh     chan struct{}
 	stopOnce   sync.Once // Ensures Stop() is idempotent
+
+	// First error from a timer-driven flush, returned by later calls
+	stickyErr error
 
 	// Callback for publishing batches
 	onFlush func(context.Context, *jobv1.JobEvent) error
@@ -133,6 +143,10 @@ func NewEventBatcherWithContext(config *jobv1.ExecutionConfig, onFlush func(cont
 func (eb *EventBatcher) AddOutput(ctx context.Context, output []byte, streamType jobv1.StreamType) error {
 	eb.mu.Lock()
 	defer eb.mu.Unlock()
+
+	if eb.stickyErr != nil {
+		return fmt.Errorf("event batcher failed: %w", eb.stickyErr)
+	}
 
 	// Check if batcher is stopped
 	select {
@@ -216,6 +230,10 @@ func (eb *EventBatcher) AddEvent(ctx context.Context, event *jobv1.JobEvent) err
 	eb.mu.Lock()
 	defer eb.mu.Unlock()
 
+	if eb.stickyErr != nil {
+		return fmt.Errorf("event batcher failed: %w", eb.stickyErr)
+	}
+
 	// Check if batcher is stopped
 	select {
 	case <-eb.stopCh:
@@ -247,6 +265,10 @@ func (eb *EventBatcher) Flush(ctx context.Context) error {
 	eb.mu.Lock()
 	defer eb.mu.Unlock()
 
+	if eb.stickyErr != nil {
+		return fmt.Errorf("event batcher failed: %w", eb.stickyErr)
+	}
+
 	if len(eb.buffer) == 0 {
 		return nil
 	}
@@ -258,7 +280,7 @@ func (eb *EventBatcher) Flush(ctx context.Context) error {
 // The context is used for the final flush operation.
 // Stop is idempotent and safe to call multiple times concurrently.
 func (eb *EventBatcher) Stop(ctx context.Context) error {
-	var flushErr error
+	var flushErr, stickyErr error
 
 	// CRITICAL FIX: Use sync.Once to ensure Stop is idempotent
 	eb.stopOnce.Do(func() {
@@ -286,9 +308,10 @@ func (eb *EventBatcher) Stop(ctx context.Context) error {
 		if len(eb.buffer) > 0 {
 			flushErr = eb.flushLocked(ctx, "shutdown")
 		}
+		stickyErr = eb.stickyErr
 	})
 
-	return flushErr
+	return errors.Join(stickyErr, flushErr)
 }
 
 // flushLocked flushes the current buffer and publishes a batch event
@@ -394,7 +417,10 @@ func (eb *EventBatcher) startFlushTimer() {
 			ctx := context.Background()
 			if err := eb.flushLocked(ctx, "timer"); err != nil {
 				log.Error().Err(err).Msg("Failed to flush batch on timer")
-				// Continue - don't fail the whole operation
+				// Remember the first failure so later calls and Stop report the lost batch
+				if eb.stickyErr == nil {
+					eb.stickyErr = err
+				}
 			}
 		}
 	})

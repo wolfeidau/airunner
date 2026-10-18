@@ -96,7 +96,13 @@ func TestEventBatcherMaxBytes(t *testing.T) {
 }
 
 func TestEventBatcherTimer(t *testing.T) {
+	var mu sync.Mutex
 	publishedEvents := make([]*jobv1.JobEvent, 0)
+	snapshot := func() []*jobv1.JobEvent {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]*jobv1.JobEvent(nil), publishedEvents...)
+	}
 
 	batcher := NewEventBatcher(
 		&jobv1.ExecutionConfig{
@@ -108,6 +114,8 @@ func TestEventBatcherTimer(t *testing.T) {
 			},
 		},
 		func(event *jobv1.JobEvent) error {
+			mu.Lock()
+			defer mu.Unlock()
 			publishedEvents = append(publishedEvents, event)
 			return nil
 		},
@@ -116,14 +124,14 @@ func TestEventBatcherTimer(t *testing.T) {
 	// Add one output
 	ctx := context.Background()
 	require.NoError(t, batcher.AddOutput(ctx, []byte("line1\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
-	require.Empty(t, publishedEvents, "Should not publish immediately")
+	require.Empty(t, snapshot(), "Should not publish immediately")
 
 	// Wait for timer to fire
 	time.Sleep(1500 * time.Millisecond)
 
-	require.Len(t, publishedEvents, 1, "Should publish after timer fires")
+	require.Len(t, snapshot(), 1, "Should publish after timer fires")
 
-	event := publishedEvents[0]
+	event := snapshot()[0]
 	batch := event.GetOutputBatch()
 	require.Len(t, batch.Outputs, 1)
 
@@ -801,4 +809,41 @@ func TestEventBatcherOversizedOutput(t *testing.T) {
 	})
 
 	require.NoError(t, batcher.Stop(ctx))
+}
+
+func TestEventBatcherStickyTimerError(t *testing.T) {
+	var failing atomic.Bool
+	failing.Store(true)
+	var calls atomic.Int32
+
+	batcher := NewEventBatcher(
+		&jobv1.ExecutionConfig{
+			Batching: &jobv1.BatchingConfig{
+				FlushIntervalSeconds:   1,
+				MaxBatchSize:           100,
+				MaxBatchBytes:          1000000,
+				PlaybackIntervalMillis: 50,
+			},
+		},
+		func(event *jobv1.JobEvent) error {
+			calls.Add(1)
+			if failing.Load() {
+				return errors.New("wal write failed")
+			}
+			return nil
+		},
+	)
+
+	ctx := context.Background()
+	require.NoError(t, batcher.AddOutput(ctx, []byte("line1\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
+
+	// Wait for the timer flush to run (and fail)
+	require.Eventually(t, func() bool { return calls.Load() >= 1 }, 5*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool {
+		return batcher.AddOutput(ctx, []byte("line2\n"), jobv1.StreamType_STREAM_TYPE_STDOUT) != nil
+	}, 5*time.Second, 10*time.Millisecond)
+
+	require.ErrorContains(t, batcher.AddEvent(ctx, &jobv1.JobEvent{}), "wal write failed")
+	require.ErrorContains(t, batcher.Flush(ctx), "wal write failed")
+	require.ErrorContains(t, batcher.Stop(ctx), "wal write failed")
 }

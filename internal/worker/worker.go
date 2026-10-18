@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
 	"time"
 
 	"connectrpc.com/connect"
@@ -50,7 +51,7 @@ func NewJobExecutor(eventStream *connect.ClientStreamForClient[jobv1.PublishJobE
 	}
 }
 
-func (je *JobExecutor) Execute(ctx context.Context, job *jobv1.Job) error {
+func (je *JobExecutor) Execute(ctx context.Context, job *jobv1.Job) (err error) {
 	// Validate job parameters
 	if job == nil {
 		return fmt.Errorf("job is nil")
@@ -61,11 +62,13 @@ func (je *JobExecutor) Execute(ctx context.Context, job *jobv1.Job) error {
 
 	log.Info().Str("job_id", job.JobId).Msg("Starting job execution")
 
-	// Ensure batcher is stopped and flushes any remaining events
+	// Ensure batcher is stopped and flushes any remaining events; a failure here
+	// means events were not recorded, so it fails the execution
 	defer func() {
 		if je.batcher != nil {
-			if err := je.batcher.Stop(ctx); err != nil {
-				log.Error().Err(err).Msg("Failed to stop event batcher")
+			if stopErr := je.batcher.Stop(ctx); stopErr != nil {
+				log.Error().Err(stopErr).Msg("Failed to stop event batcher")
+				err = errors.Join(err, fmt.Errorf("failed to record job events: %w", stopErr))
 			}
 		}
 	}()
@@ -132,45 +135,60 @@ func (je *JobExecutor) Execute(ctx context.Context, job *jobv1.Job) error {
 // executeDirect executes a direct process
 func (je *JobExecutor) executeDirect(ctx context.Context, job *jobv1.Job, flushInterval time.Duration) error {
 	process := je.createDirectProcess(job, flushInterval)
-
-	for event, err := range process.ExecuteAndStream(ctx) {
-		if err != nil {
-			return je.handleStreamError(err, job.JobId)
-		}
-
-		if err := je.handleEvent(event, job.JobId); err != nil {
-			log.Error().Err(err).Str("job_id", job.JobId).Msg("Failed to handle event")
-			return fmt.Errorf("event handling failed: %w", err)
-		}
-
-		if end, ok := event.Event.(*consolestream.ProcessEnd); ok {
-			return processEndError(end)
-		}
-	}
-
-	return errors.New("failed job execution")
+	return je.consumeEvents(process.ExecuteAndStream(ctx), job.JobId)
 }
 
 // executeContainer executes a container process
 func (je *JobExecutor) executeContainer(ctx context.Context, job *jobv1.Job, flushInterval time.Duration) error {
 	process := je.createContainerProcess(ctx, job, flushInterval)
+	return je.consumeEvents(process.ExecuteAndStream(ctx), job.JobId)
+}
 
-	for event, err := range process.ExecuteAndStream(ctx) {
+// consumeEvents drains the event sequence until the iterator finishes.
+// It keeps consuming after ProcessEnd so events emitted later (for example
+// ContainerRemove) are recorded. Iterator and event handling errors stop
+// consumption immediately.
+func (je *JobExecutor) consumeEvents(seq iter.Seq2[consolestream.Event, error], jobID string) error {
+	var (
+		endErr     error
+		endSeen    bool
+		firstProcE *consolestream.ProcessError
+	)
+
+	for event, err := range seq {
 		if err != nil {
-			return je.handleStreamError(err, job.JobId)
+			return je.handleStreamError(err, jobID)
 		}
 
-		if err := je.handleEvent(event, job.JobId); err != nil {
-			log.Error().Err(err).Str("job_id", job.JobId).Msg("Failed to handle event")
-			return fmt.Errorf("event handling failed: %w", err)
+		if herr := je.handleEvent(event, jobID); herr != nil {
+			log.Error().Err(herr).Str("job_id", jobID).Msg("Failed to handle event")
+			return fmt.Errorf("event handling failed: %w", herr)
 		}
 
-		if end, ok := event.Event.(*consolestream.ProcessEnd); ok {
-			return processEndError(end)
+		switch e := event.Event.(type) {
+		case *consolestream.ProcessEnd:
+			endErr = processEndError(e)
+			endSeen = true
+		case *consolestream.ProcessError:
+			if firstProcE == nil {
+				firstProcE = e
+			}
 		}
 	}
 
-	return errors.New("failed job execution")
+	if firstProcE != nil {
+		var procErr error
+		if firstProcE.Error != nil {
+			procErr = fmt.Errorf("%s: %w", firstProcE.Message, firstProcE.Error)
+		} else {
+			procErr = errors.New(firstProcE.Message)
+		}
+		return errors.Join(procErr, endErr)
+	}
+	if !endSeen {
+		return errors.New("process ended without a ProcessEnd event")
+	}
+	return endErr
 }
 
 // createDirectProcess creates a standard process execution
@@ -246,18 +264,25 @@ func (je *JobExecutor) handleEvent(event consolestream.Event, jobID string) erro
 
 	case *consolestream.OutputData:
 		// Buffer output through batcher for batching and unified sequencing
-		if err := je.batcher.AddOutput(context.Background(), e.Data, 0); err != nil {
-			log.Error().Err(err).Str("job_id", jobID).Msg("Failed to buffer output event")
-			// Continue - output events are best-effort
-		}
-		return nil
+		return je.addOutputChunks(e.Data, jobID)
 
 	case *consolestream.ProcessEnd:
 		// Flush any buffered outputs before ProcessEnd
 		if err := je.batcher.Flush(context.Background()); err != nil {
 			log.Error().Err(err).Msg("Failed to flush batch before process end event")
+			return fmt.Errorf("failed to flush batch before process end event: %w", err)
 		}
 		return je.publishProcessEndEvent(e)
+
+	case *consolestream.ProcessError:
+		msg := e.Message
+		if e.Error != nil {
+			if msg != "" {
+				msg += ": "
+			}
+			msg += e.Error.Error()
+		}
+		return je.publishErrorEvent(msg)
 
 	case *consolestream.HeartbeatEvent:
 		// Drop heartbeat events for now - they're sent every flush interval
@@ -297,17 +322,34 @@ func (je *JobExecutor) handleEvent(event consolestream.Event, jobID string) erro
 func (je *JobExecutor) handleStreamError(err error, jobID string) error {
 	log.Error().Err(err).Str("job_id", jobID).Msg("Job execution failed")
 
+	result := fmt.Errorf("job execution failed: %w", err)
+
 	// Flush any buffered outputs first
 	if flushErr := je.batcher.Flush(context.Background()); flushErr != nil {
 		log.Error().Err(flushErr).Msg("Failed to flush batch before error event")
+		result = errors.Join(result, fmt.Errorf("failed to flush batch before error event: %w", flushErr))
 	}
 
-	// Attempt to publish error event - if this fails, log but continue to return original error
 	if publishErr := je.publishErrorEvent(err.Error()); publishErr != nil {
 		log.Error().Err(publishErr).Msg("Failed to publish error event after job failure")
+		result = errors.Join(result, publishErr)
 	}
 
-	return fmt.Errorf("job execution failed: %w", err)
+	return result
+}
+
+// addOutputChunks buffers data through the batcher, splitting it into chunks of at
+// most maxSingleOutputBytes so the batcher's single-output guard is never hit.
+func (je *JobExecutor) addOutputChunks(data []byte, jobID string) error {
+	for len(data) > 0 {
+		n := min(len(data), maxSingleOutputBytes)
+		if err := je.batcher.AddOutput(context.Background(), data[:n], 0); err != nil {
+			log.Error().Err(err).Str("job_id", jobID).Msg("Failed to buffer output event")
+			return fmt.Errorf("failed to buffer output: %w", err)
+		}
+		data = data[n:]
+	}
+	return nil
 }
 
 func (je *JobExecutor) publishProcessStartEvent(event *consolestream.ProcessStart) error {

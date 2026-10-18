@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 	jobstore "github.com/wolfeidau/airunner/internal/store"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func contractReq(requestID, queue, command string) *jobv1.EnqueueJobRequest {
@@ -105,7 +106,7 @@ func TestContract_OrgIsolation(t *testing.T) {
 	// A token from one org cannot be used by another.
 	_, err = js.UpdateJobVisibility(ctx, other.Worker, jobs[0].TaskToken, 60)
 	require.ErrorIs(t, err, jobstore.ErrLeaseLost)
-	err = js.CompleteJob(ctx, other.Worker, jobs[0].TaskToken, &jobv1.JobResult{JobId: jobs[0].Job.JobId, Success: true})
+	err = js.CompleteJob(ctx, other.Worker, jobs[0].TaskToken, &jobv1.JobResult{JobId: jobs[0].Job.JobId, Success: true}, 0)
 	require.ErrorIs(t, err, jobstore.ErrLeaseLost)
 }
 
@@ -230,9 +231,9 @@ func TestContract_PublishStampsAttempt(t *testing.T) {
 	require.Len(t, jobs, 1)
 
 	res, err := js.PublishEvents(ctx, fx.Worker, jobs[0].TaskToken, []*jobv1.JobEvent{
-		{Sequence: 1, EventType: jobv1.EventType_EVENT_TYPE_PROCESS_START},
-		{Sequence: 2, EventType: jobv1.EventType_EVENT_TYPE_OUTPUT_BATCH, EventData: &jobv1.JobEvent_OutputBatch{
-			OutputBatch: &jobv1.OutputBatchEvent{StartSequence: 2, EndSequence: 5},
+		{Sequence: 1, Timestamp: timestamppb.Now(), EventType: jobv1.EventType_EVENT_TYPE_PROCESS_START},
+		{Sequence: 2, Timestamp: timestamppb.Now(), EventType: jobv1.EventType_EVENT_TYPE_OUTPUT_BATCH, EventData: &jobv1.JobEvent_OutputBatch{
+			OutputBatch: &jobv1.OutputBatchEvent{StartSequence: 2, EndSequence: 5, Outputs: outputItems(4)},
 		}},
 	})
 	require.NoError(t, err)

@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // enqueueAndDequeue creates one job and returns its ID and task token.
@@ -127,6 +128,7 @@ func TestLifecycle_ConcurrentPublishStreamAndStop(t *testing.T) {
 		for seq := int64(1); seq <= 300 && time.Now().Before(deadline); seq++ {
 			_, _ = js.PublishEvents(ctx, fx.Worker, token, []*jobv1.JobEvent{{
 				Sequence:  seq,
+				Timestamp: timestamppb.Now(),
 				EventType: jobv1.EventType_EVENT_TYPE_OUTPUT,
 				EventData: &jobv1.JobEvent_Output{Output: &jobv1.OutputEvent{Output: []byte("x")}},
 			}})

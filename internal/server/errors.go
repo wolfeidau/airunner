@@ -40,6 +40,8 @@ func toConnectError(err error) error {
 		return connect.NewError(connect.CodeDeadlineExceeded, err)
 	case errors.Is(err, context.Canceled):
 		return connect.NewError(connect.CodeCanceled, err)
+	case errors.Is(err, store.ErrUnavailable):
+		return connect.NewError(connect.CodeUnavailable, err)
 	}
 
 	log.Error().Err(err).Msg("Unhandled error in RPC handler")

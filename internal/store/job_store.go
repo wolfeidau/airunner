@@ -18,6 +18,9 @@ var (
 
 	// ErrInvalidArgument indicates the request failed validation.
 	ErrInvalidArgument = errors.New("invalid argument")
+	// ErrUnavailable indicates a transient storage failure (lock or statement
+	// timeout, serialization conflict, lost connection); the caller may retry.
+	ErrUnavailable = errors.New("storage temporarily unavailable")
 
 	// ErrLeaseLost indicates the task token no longer holds a valid lease.
 	ErrLeaseLost = errors.New("lease lost")
@@ -51,7 +54,9 @@ type JobStore interface {
 
 	// UpdateJobVisibility renews the lease and returns the effective timeout in seconds.
 	UpdateJobVisibility(ctx context.Context, caller Caller, taskToken string, timeoutSeconds int) (int32, error)
-	CompleteJob(ctx context.Context, caller Caller, taskToken string, result *jobv1.JobResult) error
+	// CompleteJob records the result. finalEventSequence must equal the attempt's
+	// last committed event sequence.
+	CompleteJob(ctx context.Context, caller Caller, taskToken string, result *jobv1.JobResult, finalEventSequence int64) error
 	ListJobs(ctx context.Context, caller Caller, req *jobv1.ListJobsRequest) (*jobv1.ListJobsResponse, error)
 
 	// ReleaseJob returns a job back to the queue, resetting its state to SCHEDULED.

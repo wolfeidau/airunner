@@ -17,6 +17,7 @@ import (
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 	"github.com/wolfeidau/airunner/internal/store"
 	"github.com/wolfeidau/airunner/internal/util"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -104,6 +105,13 @@ func (s *JobStore) Start() error {
 	go func() {
 		defer s.wg.Done()
 		s.monitorConnectionPool(lifeCtx)
+	}()
+
+	// Start lease reaper goroutine
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.runReaper(lifeCtx)
 	}()
 
 	return nil
@@ -430,15 +438,94 @@ func (s *JobStore) DequeueJobs(ctx context.Context, caller store.Caller, queue s
 	return results, nil
 }
 
-// UpdateJobVisibility extends the visibility timeout for a job and returns the
-// effective timeout in seconds. The receipt handle does NOT change (matches AWS SQS behavior).
-// The queue is taken from the task token and verified against the job row.
+// SQL fragments shared by release and reaping: a job that has used every attempt fails
+// with a reason, otherwise it returns to SCHEDULED with an empty result.
+const (
+	nextStateSQL = `CASE WHEN attempt < max_attempts THEN 1 ELSE 4 END`
+	exhaustedSQL = `CASE WHEN attempt < max_attempts THEN NULL
+		ELSE jsonb_build_object('job_id', jobs.job_id, 'reason', 'delivery attempts exhausted') END`
+)
+
+// fenceTimeoutSQL bounds lock waits and statements inside a fenced transaction.
+const fenceTimeoutSQL = `SET LOCAL lock_timeout = '5s'; SET LOCAL statement_timeout = '5s'`
+
+// leaseRow is the locked job row a fenced operation runs against.
+type leaseRow struct {
+	attempt           int32
+	lastEventSequence int64
+	// operationTime is sampled once with clock_timestamp() after the row lock is held.
+	// now() would be frozen at transaction start and could predate a long lock wait.
+	operationTime time.Time
+}
+
+// lockLease starts a READ COMMITTED transaction, locks the job row and verifies that the
+// caller holds a live lease for the token. Any mismatch returns store.ErrLeaseLost with a
+// generic message. On success the caller owns the returned transaction and must commit it
+// (a deferred Rollback after Commit is a no-op). On error the transaction is already rolled back.
+func (s *JobStore) lockLease(ctx context.Context, caller store.Caller, tt *taskToken) (pgx.Tx, *leaseRow, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return nil, nil, mapPostgresError(err)
+	}
+
+	row, err := lockLeaseRow(ctx, tx, caller, tt)
+	if err != nil {
+		_ = tx.Rollback(context.WithoutCancel(ctx))
+		return nil, nil, err
+	}
+
+	return tx, row, nil
+}
+
+func lockLeaseRow(ctx context.Context, tx pgx.Tx, caller store.Caller, tt *taskToken) (*leaseRow, error) {
+	if _, err := tx.Exec(ctx, fenceTimeoutSQL); err != nil {
+		return nil, mapPostgresError(err)
+	}
+
+	var (
+		state, attempt, maxAttempts int32
+		queue                       string
+		receipt, leasedBy           *string
+		visibilityUntil             *time.Time
+		lastSeq                     int64
+	)
+	err := tx.QueryRow(ctx, `
+		SELECT state, queue, receipt_handle::text, leased_by::text, visibility_until,
+		       attempt, max_attempts, last_event_sequence
+		FROM jobs
+		WHERE org_id = $1 AND job_id = $2
+		FOR UPDATE
+	`, caller.OrgID, tt.JobID).Scan(&state, &queue, &receipt, &leasedBy, &visibilityUntil, &attempt, &maxAttempts, &lastSeq)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("%w: no matching lease", store.ErrLeaseLost)
+		}
+		return nil, mapPostgresError(err)
+	}
+
+	var opTime time.Time
+	if err := tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&opTime); err != nil {
+		return nil, mapPostgresError(err)
+	}
+
+	if state != int32(jobv1.JobState_JOB_STATE_RUNNING) ||
+		receipt == nil || *receipt != tt.ReceiptHandle ||
+		queue != tt.Queue ||
+		leasedBy == nil || *leasedBy != caller.PrincipalID.String() ||
+		visibilityUntil == nil || !visibilityUntil.After(opTime) {
+		return nil, fmt.Errorf("%w: no matching lease", store.ErrLeaseLost)
+	}
+
+	return &leaseRow{attempt: attempt, lastEventSequence: lastSeq, operationTime: opTime}, nil
+}
+
+// UpdateJobVisibility extends the lease and returns the effective timeout in seconds.
+// The receipt handle does NOT change (matches AWS SQS behavior). The new expiry is
+// measured from the fenced operation time.
 func (s *JobStore) UpdateJobVisibility(ctx context.Context, caller store.Caller, taskToken string, timeoutSeconds int) (int32, error) {
-	// Apply query timeout
 	queryCtx, cancel := s.withQueryTimeout(ctx)
 	defer cancel()
 
-	// Decode and verify task token
 	tt, err := s.decodeTaskToken(taskToken)
 	if err != nil {
 		log.Warn().Err(err).Msg("Invalid task token")
@@ -449,32 +536,24 @@ func (s *JobStore) UpdateJobVisibility(ctx context.Context, caller store.Caller,
 		timeoutSeconds = defaultVisibilityTimeoutSeconds
 	}
 
-	// Update visibility timeout (receipt_handle stays the same); state 2 = RUNNING
-	query := `
-		UPDATE jobs
-		SET
-			visibility_until = NOW() + $1 * INTERVAL '1 second',
-			updated_at = NOW()
-		WHERE org_id = $2
-		  AND job_id = $3
-		  AND receipt_handle = $4::UUID
-		  AND queue = $5
-		  AND state = 2
-	`
+	tx, row, err := s.lockLease(queryCtx, caller, tt)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(queryCtx)) }()
 
-	result, err := s.pool.Exec(queryCtx, query,
-		timeoutSeconds,
-		caller.OrgID,
-		tt.JobID,
-		tt.ReceiptHandle,
-		tt.Queue,
-	)
+	_, err = tx.Exec(queryCtx, `
+		UPDATE jobs
+		SET visibility_until = $1::timestamptz + $2 * INTERVAL '1 second',
+		    updated_at = $1
+		WHERE org_id = $3 AND job_id = $4
+	`, row.operationTime, timeoutSeconds, caller.OrgID, tt.JobID)
 	if err != nil {
 		return 0, mapPostgresError(err)
 	}
 
-	if result.RowsAffected() == 0 {
-		return 0, fmt.Errorf("%w: no matching lease", store.ErrLeaseLost)
+	if err := tx.Commit(queryCtx); err != nil {
+		return 0, mapPostgresError(err)
 	}
 
 	log.Debug().
@@ -486,13 +565,13 @@ func (s *JobStore) UpdateJobVisibility(ctx context.Context, caller store.Caller,
 }
 
 // CompleteJob marks a job as completed or failed and removes it from the queue.
+// finalEventSequence must equal the attempt's last committed event sequence, otherwise
+// the job is left RUNNING and store.ErrInvalidArgument is returned.
 // Clears the receipt_handle, visibility_until and leased_by fields together.
-func (s *JobStore) CompleteJob(ctx context.Context, caller store.Caller, taskToken string, result *jobv1.JobResult) error {
-	// Apply query timeout
+func (s *JobStore) CompleteJob(ctx context.Context, caller store.Caller, taskToken string, result *jobv1.JobResult, finalEventSequence int64) error {
 	queryCtx, cancel := s.withQueryTimeout(ctx)
 	defer cancel()
 
-	// Decode and verify task token
 	tt, err := s.decodeTaskToken(taskToken)
 	if err != nil {
 		log.Warn().Err(err).Msg("Invalid task token")
@@ -503,26 +582,34 @@ func (s *JobStore) CompleteJob(ctx context.Context, caller store.Caller, taskTok
 		return fmt.Errorf("%w: result is required", store.ErrInvalidArgument)
 	}
 
-	// Verify job ID matches
 	if result.JobId != tt.JobID {
 		return fmt.Errorf("%w: token job_id=%s, result job_id=%s",
 			store.ErrJobIDMismatch, tt.JobID, result.JobId)
 	}
 
-	// Determine final state
 	finalState := jobv1.JobState_JOB_STATE_COMPLETED
 	if !result.Success {
 		finalState = jobv1.JobState_JOB_STATE_FAILED
 	}
 
-	// Marshal result to JSON for JSONB column
 	resultJSON, err := util.MarshalProtoJSON(result)
 	if err != nil {
 		return fmt.Errorf("failed to marshal result: %w", err)
 	}
 
-	// Update job state and clear the lease (3=COMPLETED, 4=FAILED; state 2 = RUNNING)
-	query := `
+	tx, row, err := s.lockLease(queryCtx, caller, tt)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(queryCtx)) }()
+
+	if finalEventSequence != row.lastEventSequence {
+		return fmt.Errorf("%w: final_event_sequence=%d does not match last committed sequence=%d",
+			store.ErrInvalidArgument, finalEventSequence, row.lastEventSequence)
+	}
+
+	// 3=COMPLETED, 4=FAILED
+	_, err = tx.Exec(queryCtx, `
 		UPDATE jobs
 		SET
 			state = CASE WHEN $1::BOOLEAN THEN 3 ELSE 4 END,
@@ -530,26 +617,15 @@ func (s *JobStore) CompleteJob(ctx context.Context, caller store.Caller, taskTok
 			receipt_handle = NULL,
 			leased_by = NULL,
 			result = $2,
-			updated_at = NOW()
-		WHERE org_id = $3
-		  AND job_id = $4
-		  AND receipt_handle = $5::UUID
-		  AND state = 2
-	`
-
-	execResult, err := s.pool.Exec(queryCtx, query,
-		result.Success,
-		resultJSON,
-		caller.OrgID,
-		tt.JobID,
-		tt.ReceiptHandle,
-	)
+			updated_at = $3
+		WHERE org_id = $4 AND job_id = $5
+	`, result.Success, resultJSON, row.operationTime, caller.OrgID, tt.JobID)
 	if err != nil {
 		return mapPostgresError(err)
 	}
 
-	if execResult.RowsAffected() == 0 {
-		return fmt.Errorf("%w: no matching lease", store.ErrLeaseLost)
+	if err := tx.Commit(queryCtx); err != nil {
+		return mapPostgresError(err)
 	}
 
 	log.Info().
@@ -564,43 +640,39 @@ func (s *JobStore) CompleteJob(ctx context.Context, caller store.Caller, taskTok
 // ReleaseJob returns a job back to the queue in SCHEDULED state, or fails it when
 // no attempts remain. Clears the receipt_handle, visibility_until and leased_by fields together.
 func (s *JobStore) ReleaseJob(ctx context.Context, caller store.Caller, taskToken string) error {
-	// Apply query timeout
 	queryCtx, cancel := s.withQueryTimeout(ctx)
 	defer cancel()
 
-	// Decode and verify task token
 	tt, err := s.decodeTaskToken(taskToken)
 	if err != nil {
 		log.Warn().Err(err).Msg("Invalid task token")
 		return err
 	}
 
-	// Update job back to SCHEDULED (1) unless attempts are exhausted, then FAILED (4); state 2 = RUNNING
-	query := `
+	tx, row, err := s.lockLease(queryCtx, caller, tt)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(queryCtx)) }()
+
+	// 1=SCHEDULED unless attempts are exhausted, then 4=FAILED
+	_, err = tx.Exec(queryCtx, `
 		UPDATE jobs
 		SET
-			state = CASE WHEN attempt < max_attempts THEN 1 ELSE 4 END,
+			state = `+nextStateSQL+`,
+			result = `+exhaustedSQL+`,
 			visibility_until = NULL,
 			receipt_handle = NULL,
 			leased_by = NULL,
-			updated_at = NOW()
-		WHERE org_id = $1
-		  AND job_id = $2
-		  AND receipt_handle = $3::UUID
-		  AND state = 2
-	`
-
-	result, err := s.pool.Exec(queryCtx, query,
-		caller.OrgID,
-		tt.JobID,
-		tt.ReceiptHandle,
-	)
+			updated_at = $1
+		WHERE org_id = $2 AND job_id = $3
+	`, row.operationTime, caller.OrgID, tt.JobID)
 	if err != nil {
 		return mapPostgresError(err)
 	}
 
-	if result.RowsAffected() == 0 {
-		return fmt.Errorf("%w: no matching lease", store.ErrLeaseLost)
+	if err := tx.Commit(queryCtx); err != nil {
+		return mapPostgresError(err)
 	}
 
 	log.Info().
@@ -608,6 +680,82 @@ func (s *JobStore) ReleaseJob(ctx context.Context, caller store.Caller, taskToke
 		Msg("Released job back to queue")
 
 	return nil
+}
+
+// ReapExpired reclaims up to limit RUNNING jobs whose lease has expired, returning them
+// to SCHEDULED or failing them when no attempts remain. Rows locked by an in-flight fenced
+// operation are skipped and picked up by a later sweep. It returns the number reclaimed.
+func (s *JobStore) ReapExpired(ctx context.Context, limit int) (int, error) {
+	queryCtx, cancel := s.withQueryTimeout(ctx)
+	defer cancel()
+
+	tag, err := s.pool.Exec(queryCtx, `
+		WITH expired AS (
+			SELECT job_id
+			FROM jobs
+			WHERE state = 2 AND visibility_until <= clock_timestamp()
+			ORDER BY visibility_until, job_id
+			LIMIT $1
+			FOR UPDATE SKIP LOCKED
+		)
+		UPDATE jobs
+		SET
+			state = `+nextStateSQL+`,
+			result = `+exhaustedSQL+`,
+			visibility_until = NULL,
+			receipt_handle = NULL,
+			leased_by = NULL,
+			updated_at = clock_timestamp()
+		FROM expired
+		WHERE jobs.job_id = expired.job_id
+	`, limit)
+	if err != nil {
+		return 0, mapPostgresError(err)
+	}
+
+	return int(tag.RowsAffected()), nil
+}
+
+const (
+	reaperBatchSize  = 100
+	reaperMaxBatches = 10
+)
+
+// runReaper sweeps expired leases every LeaseReaperInterval until ctx ends.
+func (s *JobStore) runReaper(ctx context.Context) {
+	ticker := time.NewTicker(s.cfg.LeaseReaperInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			s.reapTick(ctx)
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// reapTick runs up to reaperMaxBatches batches, stopping early on a short batch.
+func (s *JobStore) reapTick(ctx context.Context) {
+	total := 0
+	for range reaperMaxBatches {
+		n, err := s.ReapExpired(ctx, reaperBatchSize)
+		total += n
+		if err != nil {
+			if ctx.Err() == nil {
+				log.Error().Err(err).Msg("Failed to reap expired leases")
+			}
+			break
+		}
+		if n < reaperBatchSize {
+			break
+		}
+	}
+
+	if total > 0 {
+		log.Info().Int("reclaimed", total).Msg("Reclaimed expired leases")
+	}
 }
 
 // ListJobs returns jobs in the caller's org matching the filter criteria.
@@ -700,120 +848,159 @@ func (s *JobStore) ListJobs(ctx context.Context, caller store.Caller, req *jobv1
 	}, nil
 }
 
-// PublishEvents persists events to the database and fanouts to active streams.
-// Events are stamped with the job's current attempt. Contiguity and lease fencing
-// are not enforced yet (phase 4).
+// preparedEvent is a validated event ready to be stored.
+type preparedEvent struct {
+	event   *jobv1.JobEvent
+	start   int64
+	end     int64
+	payload []byte
+}
+
+// prepareEvents validates events against the leased attempt, stamps the attempt and
+// computes each event's covered range and deterministic payload.
+func prepareEvents(events []*jobv1.JobEvent, attempt int32) ([]preparedEvent, error) {
+	prepared := make([]preparedEvent, 0, len(events))
+	for i, event := range events {
+		if event.Attempt != 0 && event.Attempt != attempt {
+			return nil, fmt.Errorf("%w: event %d attempt=%d does not match leased attempt=%d",
+				store.ErrInvalidArgument, i, event.Attempt, attempt)
+		}
+		if event.Timestamp == nil {
+			return nil, fmt.Errorf("%w: event %d is missing a timestamp", store.ErrInvalidArgument, i)
+		}
+		if event.Sequence <= 0 {
+			return nil, fmt.Errorf("%w: event %d has invalid sequence %d", store.ErrInvalidArgument, i, event.Sequence)
+		}
+
+		// An output batch covers [start_sequence, end_sequence]; other events cover one sequence.
+		end := event.Sequence
+		if ob := event.GetOutputBatch(); ob != nil {
+			end = ob.EndSequence
+			if ob.StartSequence != event.Sequence || end < ob.StartSequence ||
+				int64(len(ob.Outputs)) != end-ob.StartSequence+1 {
+				return nil, fmt.Errorf("%w: event %d output batch range [%d,%d] does not match sequence=%d outputs=%d",
+					store.ErrInvalidArgument, i, ob.StartSequence, end, event.Sequence, len(ob.Outputs))
+			}
+		}
+
+		event.Attempt = attempt
+		payload, err := proto.MarshalOptions{Deterministic: true}.Marshal(event)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal event: %w", err)
+		}
+		if len(payload) > maxEventPayloadBytes {
+			return nil, fmt.Errorf("%w: event size=%d exceeds limit=%d",
+				store.ErrEventTooLarge, len(payload), maxEventPayloadBytes)
+		}
+
+		prepared = append(prepared, preparedEvent{event: event, start: event.Sequence, end: end, payload: payload})
+	}
+
+	return prepared, nil
+}
+
+// PublishEvents persists events under the caller's live lease and fans them out to active streams.
+// The whole request is validated and applied in one fenced transaction: events must extend the
+// attempt's committed sequence without gaps, and a replay of already stored events is accepted
+// only if it matches them exactly. The acknowledgement is returned only after commit.
 func (s *JobStore) PublishEvents(ctx context.Context, caller store.Caller, taskToken string, events []*jobv1.JobEvent) (*store.PublishResult, error) {
 	if len(events) == 0 {
 		return &store.PublishResult{}, nil
 	}
 
-	// Apply query timeout
 	queryCtx, cancel := s.withQueryTimeout(ctx)
 	defer cancel()
 
-	// Decode and verify task token
 	tt, err := s.decodeTaskToken(taskToken)
 	if err != nil {
 		log.Warn().Err(err).Msg("Invalid task token")
 		return nil, err
 	}
 
-	// Verify job exists in the caller's org and read its current attempt.
-	// phase 4: fence on receipt/leaser and RUNNING state instead of org + existence only.
-	var attempt int32
-	err = s.pool.QueryRow(queryCtx,
-		`SELECT attempt FROM jobs WHERE org_id = $1 AND job_id = $2`,
-		caller.OrgID, tt.JobID,
-	).Scan(&attempt)
+	tx, row, err := s.lockLease(queryCtx, caller, tt)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, fmt.Errorf("%w: no matching lease", store.ErrLeaseLost)
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(queryCtx)) }()
+
+	prepared, err := prepareEvents(events, row.attempt)
+	if err != nil {
+		return nil, err
+	}
+
+	last := row.lastEventSequence
+	var acked int64
+	var inserted []*jobv1.JobEvent
+
+	for i, p := range prepared {
+		switch {
+		case p.start == last+1:
+			_, err := tx.Exec(queryCtx, `
+				INSERT INTO job_events (job_id, attempt, sequence, end_sequence, timestamp, event_type, event_payload)
+				VALUES ($1, $2, $3, $4, $5, $6, $7)
+			`, tt.JobID, row.attempt, p.start, p.end, p.event.Timestamp.AsTime(), p.event.EventType, p.payload)
+			if err != nil {
+				return nil, mapPostgresError(fmt.Errorf("failed to insert event %d: %w", i, err))
+			}
+			last = p.end
+			inserted = append(inserted, p.event)
+		case p.start <= last:
+			if err := s.checkReplay(queryCtx, tx, tt.JobID, row.attempt, i, p); err != nil {
+				return nil, err
+			}
+		default:
+			return nil, fmt.Errorf("%w: event %d starts at sequence %d but next expected is %d",
+				store.ErrInvalidArgument, i, p.start, last+1)
 		}
+		acked = max(acked, p.end)
+	}
+
+	if last != row.lastEventSequence {
+		if _, err := tx.Exec(queryCtx,
+			`UPDATE jobs SET last_event_sequence = $1 WHERE org_id = $2 AND job_id = $3`,
+			last, caller.OrgID, tt.JobID); err != nil {
+			return nil, mapPostgresError(err)
+		}
+	}
+
+	if err := tx.Commit(queryCtx); err != nil {
 		return nil, mapPostgresError(err)
-	}
-	if attempt == 0 {
-		return nil, fmt.Errorf("%w: job has no leased attempt", store.ErrLeaseLost)
-	}
-
-	// Stamp attempt, validate event sizes and set timestamps
-	now := time.Now()
-	for _, event := range events {
-		event.Attempt = attempt
-		if event.Timestamp == nil {
-			event.Timestamp = timestamppb.New(now)
-		}
-
-		// Validate event size
-		eventBytes, err := util.MarshalProto(event)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal event: %w", err)
-		}
-
-		if len(eventBytes) > maxEventPayloadBytes {
-			return nil, fmt.Errorf("%w: event size=%d exceeds limit=%d",
-				store.ErrEventTooLarge, len(eventBytes), maxEventPayloadBytes)
-		}
-	}
-
-	// Batch insert events
-	query := `
-		INSERT INTO job_events (job_id, attempt, sequence, end_sequence, timestamp, event_type, event_payload)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		ON CONFLICT (job_id, attempt, sequence) DO NOTHING
-	`
-
-	batch := &pgx.Batch{}
-	var maxCovered int64
-
-	for _, event := range events {
-		eventPayload, err := util.MarshalProto(event)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal event: %w", err)
-		}
-
-		// An output batch covers [sequence, end_sequence]; other events cover one sequence
-		endSequence := event.Sequence
-		if ob := event.GetOutputBatch(); ob != nil && ob.EndSequence > endSequence {
-			endSequence = ob.EndSequence
-		}
-		maxCovered = max(maxCovered, endSequence)
-
-		batch.Queue(query,
-			tt.JobID,
-			attempt,
-			event.Sequence,
-			endSequence,
-			event.Timestamp.AsTime(),
-			event.EventType,
-			eventPayload,
-		)
-	}
-
-	// Execute batch
-	batchResults := s.pool.SendBatch(queryCtx, batch)
-	defer batchResults.Close()
-
-	// Check for errors
-	for i := range len(events) {
-		_, err := batchResults.Exec()
-		if err != nil {
-			return nil, mapPostgresError(fmt.Errorf("failed to insert event %d: %w", i, err))
-		}
 	}
 
 	log.Debug().
 		Str("job_id", tt.JobID).
-		Int32("attempt", attempt).
+		Int32("attempt", row.attempt).
 		Int("event_count", len(events)).
+		Int("inserted", len(inserted)).
 		Msg("Published events")
 
-	// Fanout to active streams
-	for _, event := range events {
+	for _, event := range inserted {
 		s.fanoutEvent(tt.JobID, event)
 	}
 
-	return &store.PublishResult{Attempt: attempt, AcknowledgedThroughSequence: maxCovered}, nil
+	return &store.PublishResult{Attempt: row.attempt, AcknowledgedThroughSequence: acked}, nil
+}
+
+// checkReplay verifies an event at or below the committed sequence matches the stored row exactly.
+func (s *JobStore) checkReplay(ctx context.Context, tx pgx.Tx, jobID string, attempt int32, idx int, p preparedEvent) error {
+	var storedEnd int64
+	var storedPayload []byte
+	err := tx.QueryRow(ctx, `
+		SELECT end_sequence, event_payload FROM job_events
+		WHERE job_id = $1 AND attempt = $2 AND sequence = $3
+	`, jobID, attempt, p.start).Scan(&storedEnd, &storedPayload)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("%w: event %d sequence %d overlaps committed events", store.ErrInvalidArgument, idx, p.start)
+		}
+		return mapPostgresError(err)
+	}
+
+	if storedEnd != p.end || !bytes.Equal(storedPayload, p.payload) {
+		return fmt.Errorf("%w: event %d sequence %d differs from the committed event", store.ErrConflict, idx, p.start)
+	}
+
+	return nil
 }
 
 // StreamEvents returns a channel that streams events for a job.

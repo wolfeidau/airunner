@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestIntegration_BasicJobLifecycle(t *testing.T) {
@@ -98,7 +99,7 @@ func TestIntegration_BasicJobLifecycle(t *testing.T) {
 			ExitCode: 0,
 		}
 
-		err = store.CompleteJob(ctx, fx.Worker, jobs[0].TaskToken, result)
+		err = store.CompleteJob(ctx, fx.Worker, jobs[0].TaskToken, result, 0)
 		require.NoError(t, err)
 
 		t.Logf("Completed job: %s", jobs[0].Job.JobId)
@@ -143,7 +144,7 @@ func TestIntegration_BasicJobLifecycle(t *testing.T) {
 			JobId:   jobs[0].Job.JobId,
 			Success: true,
 		}
-		err = store.CompleteJob(ctx, fx.Worker, jobs[0].TaskToken, result)
+		err = store.CompleteJob(ctx, fx.Worker, jobs[0].TaskToken, result, 0)
 		require.NoError(t, err)
 	})
 
@@ -185,7 +186,7 @@ func TestIntegration_BasicJobLifecycle(t *testing.T) {
 			JobId:   jobs2[0].Job.JobId,
 			Success: true,
 		}
-		err = store.CompleteJob(ctx, fx.Worker, jobs2[0].TaskToken, result)
+		err = store.CompleteJob(ctx, fx.Worker, jobs2[0].TaskToken, result, 0)
 		require.NoError(t, err)
 	})
 
@@ -247,6 +248,7 @@ func TestIntegration_BasicJobLifecycle(t *testing.T) {
 		events := []*jobv1.JobEvent{
 			{
 				Sequence:  1,
+				Timestamp: timestamppb.Now(),
 				EventType: jobv1.EventType_EVENT_TYPE_PROCESS_START,
 				EventData: &jobv1.JobEvent_ProcessStart{
 					ProcessStart: &jobv1.ProcessStartEvent{
@@ -256,6 +258,7 @@ func TestIntegration_BasicJobLifecycle(t *testing.T) {
 			},
 			{
 				Sequence:  2,
+				Timestamp: timestamppb.Now(),
 				EventType: jobv1.EventType_EVENT_TYPE_OUTPUT,
 				EventData: &jobv1.JobEvent_Output{
 					Output: &jobv1.OutputEvent{
@@ -265,6 +268,7 @@ func TestIntegration_BasicJobLifecycle(t *testing.T) {
 			},
 			{
 				Sequence:  3,
+				Timestamp: timestamppb.Now(),
 				EventType: jobv1.EventType_EVENT_TYPE_PROCESS_END,
 				EventData: &jobv1.JobEvent_ProcessEnd{
 					ProcessEnd: &jobv1.ProcessEndEvent{
@@ -320,7 +324,7 @@ func TestIntegration_BasicJobLifecycle(t *testing.T) {
 			JobId:   jobID,
 			Success: true,
 		}
-		err = store.CompleteJob(ctx, fx.Worker, jobs[0].TaskToken, result)
+		err = store.CompleteJob(ctx, fx.Worker, jobs[0].TaskToken, result, 3)
 		require.NoError(t, err)
 	})
 }

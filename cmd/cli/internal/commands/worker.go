@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -27,7 +28,7 @@ type WorkerCmd struct {
 	Queue             string        `help:"Queue name to process" default:"default"`
 	Credential        string        `help:"Credential name (uses default if not specified)"`
 	ClientTimeout     time.Duration `help:"Client timeout in seconds" default:"5m"`
-	VisibilityTimeout int32         `help:"Visibility timeout in seconds" default:"300"`
+	VisibilityTimeout int32         `help:"Visibility timeout in seconds (30-3600)" default:"300"`
 }
 
 func (w *WorkerCmd) Run(ctx context.Context, globals *Globals) error {
@@ -150,8 +151,9 @@ func (w *WorkerCmd) processJob(ctx context.Context, clients *client.Clients) (bo
 		return true, errors.New("no command specified")
 	}
 
-	// Create WAL for durable event persistence
-	jobWAL, err := wal.NewWAL(wal.DefaultConfig(), job.JobId)
+	// Create WAL for durable event persistence. The WAL is per attempt: a redelivered
+	// attempt starts a fresh sequence space and must never resend another attempt's records.
+	jobWAL, err := wal.NewWAL(wal.DefaultConfig(), fmt.Sprintf("%s-%d", job.JobId, job.Attempt))
 	if err != nil {
 		return true, fmt.Errorf("failed to create WAL: %w", err)
 	}
@@ -234,8 +236,9 @@ func (w *WorkerCmd) processJob(ctx context.Context, clients *client.Clients) (bo
 
 	// Complete the job with the result
 	completeReq := &jobv1.CompleteJobRequest{
-		TaskToken: taskToken,
-		JobResult: jobResult,
+		TaskToken:          taskToken,
+		JobResult:          jobResult,
+		FinalEventSequence: sender.acknowledgedThrough(),
 	}
 
 	if _, err := clients.Job.CompleteJob(ctx, connect.NewRequest(completeReq)); err != nil {
@@ -248,8 +251,12 @@ func (w *WorkerCmd) processJob(ctx context.Context, clients *client.Clients) (bo
 }
 
 func (w *WorkerCmd) extendVisibilityTimeout(ctx context.Context, clients *client.Clients, taskToken string) {
-	// Extend timeout every 60 seconds (well before the default 300s timeout)
-	ticker := time.NewTicker(60 * time.Second)
+	// Renew at a third of the visibility timeout so a lease survives two missed renewals.
+	interval := time.Duration(w.VisibilityTimeout) * time.Second / 3
+	if interval <= 0 {
+		interval = 100 * time.Second // matches the 300s server default
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
@@ -301,13 +308,29 @@ func addJitter(base time.Duration, jitterFactor float64) time.Duration {
 type grpcEventSender struct {
 	clients   *client.Clients
 	taskToken string
+
+	mu           sync.Mutex
+	ackedThrough int64 // highest AcknowledgedThroughSequence received
 }
 
 // Send implements wal.EventSender
 func (s *grpcEventSender) Send(ctx context.Context, events []*jobv1.JobEvent) error {
-	_, err := s.clients.Events.PublishJobEvents(ctx, connect.NewRequest(&jobv1.PublishJobEventsRequest{
+	resp, err := s.clients.Events.PublishJobEvents(ctx, connect.NewRequest(&jobv1.PublishJobEventsRequest{
 		TaskToken: s.taskToken,
 		Events:    events,
 	}))
-	return err
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.ackedThrough = max(s.ackedThrough, resp.Msg.AcknowledgedThroughSequence)
+	s.mu.Unlock()
+	return nil
+}
+
+// acknowledgedThrough returns the highest sequence acknowledged by the server.
+func (s *grpcEventSender) acknowledgedThrough() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ackedThrough
 }

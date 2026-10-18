@@ -42,7 +42,11 @@ func mapPostgresError(err error) error {
 
 	case pgerrcode.SerializationFailure, pgerrcode.DeadlockDetected:
 		// Retryable transaction errors
-		return fmt.Errorf("transaction conflict (retryable): %w", err)
+		return fmt.Errorf("%w: transaction conflict: %w", store.ErrUnavailable, err)
+
+	case pgerrcode.LockNotAvailable:
+		// lock_timeout expired while waiting for a job row lock
+		return fmt.Errorf("%w: lock timeout: %w", store.ErrUnavailable, err)
 
 	case pgerrcode.ConnectionException,
 		pgerrcode.ConnectionDoesNotExist,
@@ -50,23 +54,23 @@ func mapPostgresError(err error) error {
 		pgerrcode.CannotConnectNow,
 		pgerrcode.SQLClientUnableToEstablishSQLConnection:
 		// Connection errors
-		return fmt.Errorf("database connection error: %w", err)
+		return fmt.Errorf("%w: database connection error: %w", store.ErrUnavailable, err)
 
 	case pgerrcode.AdminShutdown,
 		pgerrcode.CrashShutdown:
 		// Server unavailable
-		return fmt.Errorf("database server unavailable: %w", err)
+		return fmt.Errorf("%w: database server unavailable: %w", store.ErrUnavailable, err)
 
 	case pgerrcode.QueryCanceled:
-		// Context cancellation or timeout
-		return fmt.Errorf("query canceled: %w", err)
+		// statement_timeout expired or the query was cancelled
+		return fmt.Errorf("%w: query canceled: %w", store.ErrUnavailable, err)
 
 	case pgerrcode.InsufficientResources,
 		pgerrcode.DiskFull,
 		pgerrcode.OutOfMemory,
 		pgerrcode.TooManyConnections:
 		// Resource errors (throttling-like)
-		return fmt.Errorf("database resource limit: %w", err)
+		return fmt.Errorf("%w: database resource limit: %w", store.ErrUnavailable, err)
 
 	default:
 		// Unknown error - wrap with PostgreSQL error details

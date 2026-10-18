@@ -2,11 +2,21 @@ package server
 
 import (
 	"context"
+	"fmt"
 
 	"connectrpc.com/connect"
 	v1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 	"github.com/wolfeidau/airunner/api/gen/proto/go/job/v1/jobv1connect"
 	"github.com/wolfeidau/airunner/internal/store"
+	"google.golang.org/protobuf/proto"
+)
+
+// Unary publish limits, checked before the store is called.
+const (
+	// maxPublishEvents is the maximum number of events in one PublishJobEvents request.
+	maxPublishEvents = 50
+	// maxPublishBytes is the maximum encoded size of one PublishJobEvents request (1 MiB).
+	maxPublishBytes = 1 << 20
 )
 
 type JobEventServer struct {
@@ -65,6 +75,15 @@ func (s *JobEventServer) PublishJobEvents(ctx context.Context, req *connect.Requ
 	caller, err := callerFromContext(ctx)
 	if err != nil {
 		return nil, err
+	}
+
+	if len(req.Msg.Events) > maxPublishEvents {
+		return nil, connect.NewError(connect.CodeResourceExhausted,
+			fmt.Errorf("too many events: %d exceeds limit of %d", len(req.Msg.Events), maxPublishEvents))
+	}
+	if size := proto.Size(req.Msg); size > maxPublishBytes {
+		return nil, connect.NewError(connect.CodeResourceExhausted,
+			fmt.Errorf("request size %d bytes exceeds limit of %d", size, maxPublishBytes))
 	}
 
 	result, err := s.store.PublishEvents(ctx, caller, req.Msg.TaskToken, req.Msg.Events)

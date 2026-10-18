@@ -224,6 +224,22 @@ func (m *Model) Reason(h JobHandle) string {
 	return ""
 }
 
+// Deadline returns the lease deadline of a running job.
+func (m *Model) Deadline(h JobHandle) (int64, bool) {
+	if j, ok := m.jobs[h]; ok && j.state == Running {
+		return j.deadline, true
+	}
+	return 0, false
+}
+
+// LastSequence returns the highest committed event sequence of the job's current attempt.
+func (m *Model) LastSequence(h JobHandle) int64 {
+	if j, ok := m.jobs[h]; ok {
+		return j.lastSeq
+	}
+	return 0
+}
+
 // List returns handles in (org, queue) in creation order.
 func (m *Model) List(org OrgID, queue string) []JobHandle {
 	var out []JobHandle

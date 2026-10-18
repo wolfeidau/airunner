@@ -70,6 +70,7 @@ func TestCompleteJobWorkflow(t *testing.T) {
 	// Send a start event
 	startEvent := &jobv1.JobEvent{
 		Sequence:  1,
+		Timestamp: timestamppb.Now(),
 		EventType: jobv1.EventType_EVENT_TYPE_PROCESS_START,
 		EventData: &jobv1.JobEvent_ProcessStart{
 			ProcessStart: &jobv1.ProcessStartEvent{
@@ -98,7 +99,8 @@ func TestCompleteJobWorkflow(t *testing.T) {
 
 	// 5. Complete the job
 	completeReq := &jobv1.CompleteJobRequest{
-		TaskToken: taskToken,
+		TaskToken:          taskToken,
+		FinalEventSequence: 1,
 		JobResult: &jobv1.JobResult{
 			JobId:       jobID,
 			Success:     true,

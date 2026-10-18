@@ -50,6 +50,9 @@ type ServerCmd struct {
 	NoAuth  bool `help:"disable authentication for API endpoints (development only)" default:"false" env:"AIRUNNER_NO_AUTH"`
 	Tracing bool `help:"enable tracing" default:"false" env:"AIRUNNER_TRACING"`
 
+	// LeaseReaperInterval is how often expired job leases are reaped.
+	LeaseReaperInterval time.Duration `help:"interval between expired lease reaper runs" default:"5s" env:"AIRUNNER_LEASE_REAPER_INTERVAL"`
+
 	// Store configuration
 	PostgresStore PostgresStoreFlags `embed:"" prefix:"postgres-"`
 	Execution     ExecutionFlags     `embed:"" prefix:"execution-"`
@@ -160,7 +163,8 @@ func (c *ServerCmd) Run(globals *Globals) error {
 			},
 			HeartbeatIntervalSeconds: c.Execution.HeartbeatInterval,
 		},
-		DefaultMaxAttempts: c.PostgresStore.DefaultMaxAttempts,
+		DefaultMaxAttempts:  c.PostgresStore.DefaultMaxAttempts,
+		LeaseReaperInterval: c.LeaseReaperInterval,
 	}
 
 	jobStore, err := postgresstore.NewJobStore(pool, jobStoreCfg)

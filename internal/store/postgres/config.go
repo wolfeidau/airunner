@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"fmt"
+	"time"
 
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 )
@@ -25,6 +26,9 @@ type JobStoreConfig struct {
 	// Default: 10 seconds
 	// Set to 0 to use context timeouts only (no additional timeout)
 	QueryTimeoutSeconds int32
+
+	// LeaseReaperInterval is how often expired leases are reclaimed. Default: 5s.
+	LeaseReaperInterval time.Duration
 }
 
 // Validate checks that the configuration is valid.
@@ -41,6 +45,10 @@ func (c *JobStoreConfig) Validate() error {
 		return fmt.Errorf("default max attempts must be between 1 and %d", maxAttemptsLimit)
 	}
 
+	if c.LeaseReaperInterval <= 0 {
+		return fmt.Errorf("lease reaper interval must be positive")
+	}
+
 	return nil
 }
 
@@ -48,6 +56,10 @@ func (c *JobStoreConfig) Validate() error {
 func (c *JobStoreConfig) ApplyDefaults() {
 	if c.QueryTimeoutSeconds == 0 {
 		c.QueryTimeoutSeconds = 10 // 10 seconds
+	}
+
+	if c.LeaseReaperInterval == 0 {
+		c.LeaseReaperInterval = 5 * time.Second
 	}
 
 	if c.DefaultMaxAttempts == 0 {

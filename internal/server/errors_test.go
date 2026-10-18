@@ -25,6 +25,7 @@ func TestToConnectError(t *testing.T) {
 		{"job not found", store.ErrJobNotFound, connect.CodeNotFound},
 		{"lease lost", store.ErrLeaseLost, connect.CodeFailedPrecondition},
 		{"conflict", store.ErrConflict, connect.CodeAlreadyExists},
+		{"unavailable", store.ErrUnavailable, connect.CodeUnavailable},
 		{"deadline", context.DeadlineExceeded, connect.CodeDeadlineExceeded},
 		{"canceled", context.Canceled, connect.CodeCanceled},
 		{"wrapped lease lost", fmt.Errorf("op: %w", fmt.Errorf("%w: detail", store.ErrLeaseLost)), connect.CodeFailedPrecondition},

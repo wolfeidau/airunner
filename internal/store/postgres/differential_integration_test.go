@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"slices"
 	"testing"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/wolfeidau/airunner/internal/models"
 	jobstore "github.com/wolfeidau/airunner/internal/store"
 	"github.com/wolfeidau/airunner/internal/store/storetest"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 var (
@@ -29,23 +31,28 @@ var (
 // then run: go test -tags integration -run TestDifferentialReplay -replay.histories=0 ./internal/store/postgres/
 var regressionSeeds []int64
 
-// replayLeaseSeconds keeps wall-clock lease expiry out of phase 2 histories.
-const replayLeaseSeconds = 3600
+// replayTimeScale maps one model time unit to real seconds. The generator uses
+// integer offsets, so any live lease is at least one unit (3s) from expiry, which
+// keeps it valid for the duration of one store call even under -race. An offset of
+// zero (Now == deadline) is the exact expiry boundary and is expired in both worlds.
+const replayTimeScale = 3
 
-// replayEnabled is the phase 2 command set.
+// replayEnabled is the phase 4a command set.
 //
 // Disabled kinds and the phase that enables each:
 //
-//	Renew                    phase 4 (lease fencing and renewal)
-//	Release                  phase 4
-//	Expire                   phase 4 (reaper)
-//	Publish                  phase 4 (contiguous, idempotent event publish)
-//	stale-token operations   phase 4 (OnlyValidTokens is dropped, enabling stale/wrong-holder tokens)
-//	Cancel                   phase 6
+//	Cancel   phase 6
+//
+// Stale-receipt, wrong-holder, wrong-org, unknown-job and at-deadline token
+// operations are enabled (OnlyValidTokens is false).
 var replayEnabled = map[storetest.CommandKind]bool{
 	storetest.KindEnqueue:  true,
 	storetest.KindAcquire:  true,
+	storetest.KindRenew:    true,
+	storetest.KindRelease:  true,
 	storetest.KindComplete: true,
+	storetest.KindPublish:  true,
+	storetest.KindExpire:   true,
 	storetest.KindList:     true,
 }
 
@@ -117,10 +124,14 @@ func (e *replayEnv) caller(t *testing.T, c storetest.Caller) jobstore.Caller {
 	}
 	// The generator's idempotent-retry path can pair a principal with the other
 	// org (an unrealizable identity). Authentication derives the org, so use the
-	// org's real ID with the named principal's real ID.
-	org, ok1 := e.orgs[c.Org]
-	pid, ok2 := e.byPrin[c.Principal]
-	require.True(t, ok1 && ok2, "no real identity for model caller %+v", c)
+	// org's real ID with the named principal's real ID. A principal that exists
+	// nowhere (the generator's "wrong worker") gets a random real ID.
+	org, ok := e.orgs[c.Org]
+	require.True(t, ok, "no real org for model caller %+v", c)
+	pid, ok := e.byPrin[c.Principal]
+	if !ok {
+		pid = uuid.New()
+	}
 	return jobstore.Caller{OrgID: org, PrincipalID: pid}
 }
 
@@ -131,21 +142,26 @@ type outcome struct {
 	Acquired []storetest.Acquired // Receipt left empty: real tokens are opaque
 	Handles  []storetest.JobHandle
 	Handle   storetest.JobHandle
+	Attempt  int   // Publish
+	Ack      int64 // Publish
 	Err      error
 }
 
 func (o outcome) String() string {
-	return fmt.Sprintf("{kind=%s acquired=%v handles=%v handle=%q err=%v}", o.Kind, o.Acquired, o.Handles, o.Handle, o.Err)
+	return fmt.Sprintf("{kind=%s acquired=%v handles=%v handle=%q attempt=%d ack=%d err=%v}", o.Kind, o.Acquired, o.Handles, o.Handle, o.Attempt, o.Ack, o.Err)
 }
 
 // classify maps a store error to an outcome kind.
 //   - ErrConflict -> Conflict.
 //   - ErrInvalidArgument -> Invalid.
 //   - ErrLeaseLost -> LeaseLost.
+//   - ErrJobNotFound -> NotFound.
 func classify(err error) storetest.OutcomeKind {
 	switch {
 	case err == nil:
 		return storetest.OK
+	case errors.Is(err, jobstore.ErrJobNotFound):
+		return storetest.NotFound
 	case errors.Is(err, jobstore.ErrConflict):
 		return storetest.Conflict
 	case errors.Is(err, jobstore.ErrInvalidArgument):
@@ -154,6 +170,86 @@ func classify(err error) storetest.OutcomeKind {
 		return storetest.LeaseLost
 	}
 	return storetest.OutcomeKind(-1)
+}
+
+// cmdNow returns the model time a command executes at.
+func cmdNow(cmd storetest.Command) (int64, bool) {
+	switch c := cmd.(type) {
+	case storetest.Acquire:
+		return c.Now, true
+	case storetest.Renew:
+		return c.Now, true
+	case storetest.Release:
+		return c.Now, true
+	case storetest.Complete:
+		return c.Now, true
+	case storetest.Publish:
+		return c.Now, true
+	case storetest.Expire:
+		return c.Now, true
+	}
+	return 0, false
+}
+
+// alignDeadlines maps the model clock onto the database: every job the model
+// reports Running gets visibility_until = clock_timestamp() + (deadline - now).
+func (e *replayEnv) alignDeadlines(t *testing.T, model *storetest.Model, now int64) {
+	t.Helper()
+	var ids []string
+	var secs []float64
+	for h, id := range e.handles {
+		if dl, ok := model.Deadline(h); ok {
+			ids = append(ids, id)
+			secs = append(secs, float64((dl-now)*replayTimeScale))
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	_, err := e.js.pool.Exec(context.Background(), `
+		UPDATE jobs SET visibility_until = clock_timestamp() + make_interval(secs => d.secs)
+		FROM unnest($1::text[], $2::float8[]) AS d(id, secs)
+		WHERE jobs.job_id = d.id::uuid AND jobs.state = 2`, ids, secs)
+	require.NoError(t, err)
+}
+
+// tokenFor returns the task token and job ID for a model handle and receipt.
+// Receipts the store issued map to their real token. Anything else (unknown job,
+// never-issued receipt) becomes a validly signed token for a nonexistent job or
+// a random receipt, which the store must reject as a lost lease.
+func (e *replayEnv) tokenFor(h storetest.JobHandle, r storetest.Receipt) (token, jobID string) {
+	realID, known := e.handles[h]
+	if !known {
+		jobID = uuid.NewString()
+		return e.js.encodeTaskToken(jobID, "q-1", uuid.NewString()), jobID
+	}
+	if tok, ok := e.tokens[r]; ok {
+		return tok, realID
+	}
+	return e.js.encodeTaskToken(realID, "q-1", uuid.NewString()), realID
+}
+
+// eventFor builds the output batch for a model record. Timestamp and payload
+// derive only from the record and handle, so identical retries are byte-identical.
+func eventFor(h storetest.JobHandle, r storetest.Record) *jobv1.JobEvent {
+	hash := fnv.New32a()
+	_, _ = fmt.Fprintf(hash, "%s|%d|%d|%s", h, r.Sequence, r.EndSequence, r.ContentHash)
+	ts := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(hash.Sum32()) * time.Millisecond)
+
+	var outputs []*jobv1.OutputItem
+	for i := r.Sequence; i <= r.EndSequence; i++ {
+		outputs = append(outputs, &jobv1.OutputItem{Output: []byte(fmt.Sprintf("%s#%d", r.ContentHash, i))})
+	}
+	return &jobv1.JobEvent{
+		Sequence:  r.Sequence,
+		Timestamp: timestamppb.New(ts),
+		EventType: jobv1.EventType_EVENT_TYPE_OUTPUT_BATCH,
+		EventData: &jobv1.JobEvent_OutputBatch{OutputBatch: &jobv1.OutputBatchEvent{
+			StartSequence: r.Sequence,
+			EndSequence:   r.EndSequence,
+			Outputs:       outputs,
+		}},
+	}
 }
 
 func (e *replayEnv) step(t *testing.T, cmd storetest.Command, expect storetest.Outcome) outcome {
@@ -206,10 +302,36 @@ func (e *replayEnv) step(t *testing.T, cmd storetest.Command, expect storetest.O
 		}
 		return out
 
+	case storetest.Renew:
+		token, _ := e.tokenFor(c.Handle, c.Receipt)
+		_, err := e.js.UpdateJobVisibility(ctx, e.caller(t, c.Caller), token, int(c.Lease)*replayTimeScale)
+		return outcome{Kind: classify(err), Err: err}
+
+	case storetest.Release:
+		token, _ := e.tokenFor(c.Handle, c.Receipt)
+		err := e.js.ReleaseJob(ctx, e.caller(t, c.Caller), token)
+		return outcome{Kind: classify(err), Err: err}
+
 	case storetest.Complete:
-		token, ok := e.tokens[c.Receipt]
-		require.True(t, ok, "no real token for receipt %q", c.Receipt)
-		err := e.js.CompleteJob(ctx, e.caller(t, c.Caller), token, &jobv1.JobResult{JobId: e.handles[c.Handle], Success: c.Success})
+		token, jobID := e.tokenFor(c.Handle, c.Receipt)
+		err := e.js.CompleteJob(ctx, e.caller(t, c.Caller), token, &jobv1.JobResult{JobId: jobID, Success: c.Success}, c.FinalSequence)
+		return outcome{Kind: classify(err), Err: err}
+
+	case storetest.Publish:
+		token, _ := e.tokenFor(c.Handle, c.Receipt)
+		events := make([]*jobv1.JobEvent, 0, len(c.Events))
+		for _, r := range c.Events {
+			events = append(events, eventFor(c.Handle, r))
+		}
+		res, err := e.js.PublishEvents(ctx, e.caller(t, c.Caller), token, events)
+		out := outcome{Kind: classify(err), Err: err}
+		if err == nil {
+			out.Attempt, out.Ack = int(res.Attempt), res.AcknowledgedThroughSequence
+		}
+		return out
+
+	case storetest.Expire:
+		_, err := e.js.ReapExpired(ctx, 1_000_000)
 		return outcome{Kind: classify(err), Err: err}
 
 	case storetest.List:
@@ -224,22 +346,31 @@ func (e *replayEnv) step(t *testing.T, cmd storetest.Command, expect storetest.O
 		slices.Reverse(out.Handles) // ListJobs is newest first; the model is creation order
 		return out
 	}
-	t.Fatalf("command kind %T is not enabled in phase 2", cmd)
+	t.Fatalf("command kind %T is not enabled in the replay", cmd)
 	return outcome{}
 }
 
+// storeView is the store-side projection compared against the model.
+type storeView struct {
+	storetest.JobView
+	LastSeq   int64
+	Exhausted bool
+}
+
 // views reads the normalized view of every known job directly from Postgres.
-func (e *replayEnv) views(t *testing.T) map[storetest.JobHandle]storetest.JobView {
+func (e *replayEnv) views(t *testing.T) map[storetest.JobHandle]storeView {
 	t.Helper()
 	ids := make([]string, 0, len(e.handles))
 	for _, id := range e.handles {
 		ids = append(ids, id)
 	}
 	rows, err := e.js.pool.Query(context.Background(),
-		`SELECT job_id, org_id, state, attempt, max_attempts, leased_by FROM jobs WHERE job_id = ANY($1)`, ids)
+		`SELECT job_id, org_id, state, attempt, max_attempts, leased_by, last_event_sequence,
+		        COALESCE(result->>'reason', '') = 'delivery attempts exhausted'
+		 FROM jobs WHERE job_id = ANY($1)`, ids)
 	require.NoError(t, err)
 	defer rows.Close()
-	out := map[storetest.JobHandle]storetest.JobView{}
+	out := map[storetest.JobHandle]storeView{}
 	for rows.Next() {
 		var (
 			id            string
@@ -247,13 +378,15 @@ func (e *replayEnv) views(t *testing.T) map[storetest.JobHandle]storetest.JobVie
 			state         int
 			attempt, maxA int
 			leasedBy      *uuid.UUID
+			lastSeq       int64
+			exhausted     bool
 		)
-		require.NoError(t, rows.Scan(&id, &org, &state, &attempt, &maxA, &leasedBy))
+		require.NoError(t, rows.Scan(&id, &org, &state, &attempt, &maxA, &leasedBy, &lastSeq, &exhausted))
 		v := storetest.JobView{State: storetest.State(state), Attempt: attempt, MaxAttempts: maxA, Org: e.orgByID[org]}
 		if leasedBy != nil {
 			v.LeasePrincipal = e.prinMod[*leasedBy]
 		}
-		out[e.byReal[id]] = v
+		out[e.byReal[id]] = storeView{JobView: v, LastSeq: lastSeq, Exhausted: exhausted}
 	}
 	require.NoError(t, rows.Err())
 	return out
@@ -262,13 +395,15 @@ func (e *replayEnv) views(t *testing.T) map[storetest.JobHandle]storetest.JobVie
 func replayHistory(t *testing.T, js *JobStore, seed int64) {
 	cmds := storetest.Generate(seed, *replayLength, storetest.GenOptions{
 		Enabled:         replayEnabled,
-		OnlyValidTokens: true,
-		Lease:           replayLeaseSeconds,
+		OnlyValidTokens: false,
 	})
 	env := newReplayEnv(t, js)
 	model := storetest.New()
 
 	for i, cmd := range cmds {
+		if now, ok := cmdNow(cmd); ok {
+			env.alignDeadlines(t, model, now)
+		}
 		want := model.Apply(cmd)
 		got := env.step(t, cmd, want)
 
@@ -301,6 +436,10 @@ func replayHistory(t *testing.T, js *JobStore, seed int64) {
 				if !slices.Equal(mw, sw) {
 					fail("acquired handles/attempts", mw, sw)
 				}
+			case storetest.Publish:
+				if got.Attempt != want.Attempt || got.Ack != want.AckThrough {
+					fail("publish attempt/ack", [2]int64{int64(want.Attempt), want.AckThrough}, [2]int64{int64(got.Attempt), got.Ack})
+				}
 			case storetest.List:
 				if !slices.Equal(want.Handles, got.Handles) {
 					fail("list handles", want.Handles, got.Handles)
@@ -314,8 +453,14 @@ func replayHistory(t *testing.T, js *JobStore, seed int64) {
 			if !ok {
 				fail("model lost job "+string(h), nil, nil)
 			}
-			if sv[h] != mv {
-				fail("job view "+string(h), mv, sv[h])
+			if sv[h].JobView != mv {
+				fail("job view "+string(h), mv, sv[h].JobView)
+			}
+			if want := model.LastSequence(h); sv[h].LastSeq != want {
+				fail("last_event_sequence "+string(h), want, sv[h].LastSeq)
+			}
+			if want := model.Reason(h) == "exhausted"; sv[h].Exhausted != want {
+				fail("exhausted reason "+string(h), want, sv[h].Exhausted)
 			}
 		}
 		if len(sv) != len(env.handles) {
@@ -331,6 +476,9 @@ func TestDifferentialReplay(t *testing.T) {
 	// One database for the whole test; each history creates its own orgs and
 	// principals, and every store call is org-scoped, so histories are isolated.
 	js, _ := setupStore(t)
+	// Stop the background reaper: expiry must happen only at the model's Expire
+	// commands. The pool stays open, so ReapExpired and all fenced calls still work.
+	require.NoError(t, js.Stop())
 
 	seeds := make([]int64, 0, *replayHistories+len(regressionSeeds))
 	for s := int64(1); s <= int64(*replayHistories); s++ {

@@ -847,3 +847,66 @@ func TestEventBatcherStickyTimerError(t *testing.T) {
 	require.ErrorContains(t, batcher.Flush(ctx), "wal write failed")
 	require.ErrorContains(t, batcher.Stop(ctx), "wal write failed")
 }
+
+// TestEventBatcherContiguousRanges verifies that the sequence ranges covered by
+// published events (single sequence for plain events, [start, end] for output
+// batches) form 1..N with no gaps or overlaps, and that each batch event's
+// Sequence equals its StartSequence.
+func TestEventBatcherContiguousRanges(t *testing.T) {
+	var published []*jobv1.JobEvent
+	batcher := NewEventBatcher(
+		&jobv1.ExecutionConfig{
+			Batching: &jobv1.BatchingConfig{
+				FlushIntervalSeconds:   10,
+				MaxBatchSize:           3, // force multiple batches
+				MaxBatchBytes:          1000000,
+				PlaybackIntervalMillis: 50,
+			},
+		},
+		func(event *jobv1.JobEvent) error {
+			published = append(published, event)
+			return nil
+		},
+	)
+	ctx := context.Background()
+	out := func() {
+		require.NoError(t, batcher.AddOutput(ctx, []byte("line\n"), jobv1.StreamType_STREAM_TYPE_STDOUT))
+	}
+
+	require.NoError(t, batcher.AddEvent(ctx, &jobv1.JobEvent{
+		EventType: jobv1.EventType_EVENT_TYPE_PROCESS_START,
+		EventData: &jobv1.JobEvent_ProcessStart{ProcessStart: &jobv1.ProcessStartEvent{}},
+	}))
+	for range 7 { // two full batches (3+3) plus one pending
+		out()
+	}
+	require.NoError(t, batcher.AddEvent(ctx, &jobv1.JobEvent{
+		EventType: jobv1.EventType_EVENT_TYPE_HEARTBEAT,
+		EventData: &jobv1.JobEvent_Heartbeat{Heartbeat: &jobv1.HeartbeatEvent{ProcessAlive: true}},
+	}))
+	for range 2 {
+		out()
+	}
+	require.NoError(t, batcher.AddEvent(ctx, &jobv1.JobEvent{
+		EventType: jobv1.EventType_EVENT_TYPE_PROCESS_END,
+		EventData: &jobv1.JobEvent_ProcessEnd{ProcessEnd: &jobv1.ProcessEndEvent{}},
+	}))
+	require.NoError(t, batcher.Stop(ctx))
+
+	next := int64(1)
+	batches := 0
+	for _, ev := range published {
+		if ob := ev.GetOutputBatch(); ob != nil {
+			batches++
+			require.Equal(t, ob.StartSequence, ev.Sequence, "batch event sequence must equal start_sequence")
+			require.Equal(t, next, ob.StartSequence, "gap or overlap before batch")
+			require.Len(t, ob.Outputs, int(ob.EndSequence-ob.StartSequence+1), "outputs must cover start..end")
+			next = ob.EndSequence + 1
+			continue
+		}
+		require.Equal(t, next, ev.Sequence, "gap or overlap before event")
+		next++
+	}
+	require.GreaterOrEqual(t, batches, 4)
+	require.Equal(t, int64(1+7+1+2+1+1), next, "ranges must cover 1..N exactly")
+}

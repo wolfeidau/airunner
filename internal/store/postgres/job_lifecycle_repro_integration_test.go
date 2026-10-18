@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 	jobstore "github.com/wolfeidau/airunner/internal/store"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func reproEnqueue(t *testing.T, ctx context.Context, store *JobStore, caller jobstore.Caller, requestID, queue string) {
@@ -29,7 +30,6 @@ func reproEnqueue(t *testing.T, ctx context.Context, store *JobStore, caller job
 }
 
 func TestRepro_ExpiredLeaseIsRedelivered(t *testing.T) {
-	t.Skip("known bug: expired leases are never redelivered; fixed in phase 4 of specs/job-lifecycle-tenancy-redesign-plan.md")
 	ctx := context.Background()
 	store, fx := setupStore(t)
 
@@ -39,18 +39,21 @@ func TestRepro_ExpiredLeaseIsRedelivered(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, first, 1)
 
-	var second []*jobstore.JobWithToken
-	require.Eventually(t, func() bool {
-		second, err = store.DequeueJobs(ctx, fx.Worker, "repro-expired", 1, 300)
-		return err == nil && len(second) == 1
-	}, 15*time.Second, 500*time.Millisecond, "job with expired lease should be redelivered")
+	// The reaper loop is covered separately; sweep directly once the 1s lease has expired.
+	time.Sleep(1200 * time.Millisecond)
+	n, err := store.ReapExpired(ctx, 100)
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+
+	second, err := store.DequeueJobs(ctx, fx.Worker, "repro-expired", 1, 300)
+	require.NoError(t, err)
+	require.Len(t, second, 1)
 
 	require.Equal(t, first[0].Job.JobId, second[0].Job.JobId)
 	require.NotEqual(t, first[0].TaskToken, second[0].TaskToken)
 }
 
 func TestRepro_StaleTokenCannotPublishEvents(t *testing.T) {
-	t.Skip("known bug: stale token can publish events; fixed in phase 4 of specs/job-lifecycle-tenancy-redesign-plan.md")
 	ctx := context.Background()
 	store, fx := setupStore(t)
 
@@ -61,15 +64,16 @@ func TestRepro_StaleTokenCannotPublishEvents(t *testing.T) {
 	require.Len(t, jobs, 1)
 	token := jobs[0].TaskToken
 
-	err = store.CompleteJob(ctx, fx.Worker, token, &jobv1.JobResult{JobId: jobs[0].Job.JobId, Success: true})
+	err = store.CompleteJob(ctx, fx.Worker, token, &jobv1.JobResult{JobId: jobs[0].Job.JobId, Success: true}, 0)
 	require.NoError(t, err)
 
 	_, err = store.PublishEvents(ctx, fx.Worker, token, []*jobv1.JobEvent{{
 		Sequence:  1,
+		Timestamp: timestamppb.Now(),
 		EventType: jobv1.EventType_EVENT_TYPE_OUTPUT,
 		EventData: &jobv1.JobEvent_Output{Output: &jobv1.OutputEvent{Output: []byte("late")}},
 	}})
-	require.Error(t, err, "publishing with a token for a completed job must be rejected")
+	require.ErrorIs(t, err, jobstore.ErrLeaseLost, "publishing with a token for a completed job must be rejected")
 }
 
 func TestRepro_DequeueIndexPredicateMatchesScheduledState(t *testing.T) {

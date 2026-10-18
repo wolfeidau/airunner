@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/rand/v2"
 	"time"
 
@@ -21,6 +22,45 @@ const (
 	// Actual interval will have jitter applied (±25%) to prevent thundering herd.
 	dequeuePollingInterval = 500 * time.Millisecond
 )
+
+// Visibility timeout limits, enforced at the RPC boundary only. The store accepts
+// any positive value so tests can use short durations.
+const (
+	defaultVisibilityTimeoutSeconds = 300
+	minVisibilityTimeoutSeconds     = 30
+	maxVisibilityTimeoutSeconds     = 3600
+
+	// releaseTimeout bounds each release issued after a dequeue delivery failure.
+	releaseTimeout = 5 * time.Second
+)
+
+// validateVisibilityTimeout applies the default for 0 and rejects values outside
+// [minVisibilityTimeoutSeconds, maxVisibilityTimeoutSeconds].
+func validateVisibilityTimeout(seconds int32) (int, error) {
+	if seconds == 0 {
+		return defaultVisibilityTimeoutSeconds, nil
+	}
+	if seconds < minVisibilityTimeoutSeconds || seconds > maxVisibilityTimeoutSeconds {
+		return 0, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("visibility_timeout_seconds must be between %d and %d", minVisibilityTimeoutSeconds, maxVisibilityTimeoutSeconds))
+	}
+	return int(seconds), nil
+}
+
+// releaseUnsent releases jobs that could not be delivered to the worker. Each release
+// uses a fresh context detached from the (likely cancelled) request context.
+func (s *JobServer) releaseUnsent(ctx context.Context, caller store.Caller, jobs []*store.JobWithToken) {
+	for _, j := range jobs {
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
+		err := s.store.ReleaseJob(cctx, caller, j.TaskToken)
+		cancel()
+		if err != nil {
+			log.Error().Err(err).Str("job_id", j.Job.JobId).Msg("Failed to release job after stream error")
+		} else {
+			log.Warn().Str("job_id", j.Job.JobId).Msg("Released job back to queue after stream failure")
+		}
+	}
+}
 
 var _ jobv1connect.JobServiceHandler = &JobServer{}
 
@@ -66,9 +106,9 @@ func (s *JobServer) DequeueJob(ctx context.Context, req *connect.Request[v1.Dequ
 		maxJobs = 1
 	}
 
-	timeoutSeconds := int(req.Msg.VisibilityTimeoutSeconds)
-	if timeoutSeconds <= 0 {
-		timeoutSeconds = 300 // 5 minutes default
+	timeoutSeconds, err := validateVisibilityTimeout(req.Msg.VisibilityTimeoutSeconds)
+	if err != nil {
+		return err
 	}
 
 	// Polling with jitter to prevent thundering herd
@@ -80,7 +120,7 @@ func (s *JobServer) DequeueJob(ctx context.Context, req *connect.Request[v1.Dequ
 		}
 
 		// Send jobs if found
-		for _, jobWithToken := range jobs {
+		for i, jobWithToken := range jobs {
 			resp := &v1.DequeueJobResponse{
 				Job:       jobWithToken.Job,
 				TaskToken: jobWithToken.TaskToken,
@@ -88,13 +128,9 @@ func (s *JobServer) DequeueJob(ctx context.Context, req *connect.Request[v1.Dequ
 				VisibilityTimeoutSeconds: jobWithToken.VisibilityTimeoutSeconds,
 			}
 			if err := stream.Send(resp); err != nil {
-				// Release the job back to the queue so it can be picked up by another worker
-				// This prevents jobs from being stuck in RUNNING state until visibility timeout
-				if releaseErr := s.store.ReleaseJob(ctx, caller, jobWithToken.TaskToken); releaseErr != nil {
-					log.Error().Err(releaseErr).Str("job_id", jobWithToken.Job.JobId).Msg("Failed to release job after stream error")
-				} else {
-					log.Warn().Str("job_id", jobWithToken.Job.JobId).Msg("Released job back to queue after stream failure")
-				}
+				// Release the failed job and all remaining unsent jobs so they are not
+				// stuck in RUNNING until the visibility timeout expires.
+				s.releaseUnsent(ctx, caller, jobs[i:])
 				return toConnectError(err)
 			}
 		}
@@ -116,9 +152,9 @@ func (s *JobServer) DequeueJob(ctx context.Context, req *connect.Request[v1.Dequ
 }
 
 func (s *JobServer) UpdateJob(ctx context.Context, req *connect.Request[v1.UpdateJobRequest]) (*connect.Response[v1.UpdateJobResponse], error) {
-	timeoutSeconds := int(req.Msg.VisibilityTimeoutSeconds)
-	if timeoutSeconds <= 0 {
-		timeoutSeconds = 300 // 5 minutes default
+	timeoutSeconds, err := validateVisibilityTimeout(req.Msg.VisibilityTimeoutSeconds)
+	if err != nil {
+		return nil, err
 	}
 
 	caller, err := callerFromContext(ctx)
@@ -140,7 +176,7 @@ func (s *JobServer) CompleteJob(ctx context.Context, req *connect.Request[v1.Com
 		return nil, err
 	}
 
-	err = s.store.CompleteJob(ctx, caller, req.Msg.TaskToken, req.Msg.JobResult)
+	err = s.store.CompleteJob(ctx, caller, req.Msg.TaskToken, req.Msg.JobResult, req.Msg.FinalEventSequence)
 	if err != nil {
 		return nil, toConnectError(err)
 	}

@@ -35,6 +35,7 @@ type WorkerCmd struct {
 	ClientTimeout     time.Duration `help:"Client timeout in seconds" default:"5m"`
 	VisibilityTimeout int32         `help:"Visibility timeout in seconds (30-3600)" default:"300"`
 	KeepFailedWAL     time.Duration `help:"Keep discarded or stale WALs in the failed directory for this long (0 disables)" default:"0" env:"AIRUNNER_KEEP_FAILED_WAL"`
+	ArchiveRetention  time.Duration `help:"Delete archived WALs older than this at startup (0 keeps them)" default:"168h" env:"AIRUNNER_ARCHIVE_RETENTION"`
 	Tracing           bool          `help:"enable tracing and metrics export (OTEL_* env)" env:"AIRUNNER_TRACING"`
 
 	metrics *telemetry.WorkerMetrics // nil records nothing
@@ -121,6 +122,10 @@ func (w *WorkerCmd) Run(ctx context.Context, globals *Globals) error {
 		log.Error().Err(err).Msg("Failed to clean up stale WALs")
 	}
 	log.Info().Interface("report", report).Msg("Stale WAL cleanup finished")
+
+	if err := wal.CleanupArchive(w.walConfig().ArchiveDir, w.ArchiveRetention); err != nil {
+		log.Error().Err(err).Msg("Failed to clean up archived WALs")
+	}
 
 	bkoffStrategy := backoff.NewExponentialBackOff()
 	bkoffStrategy.InitialInterval = 1 * time.Second
@@ -229,8 +234,9 @@ func (w *WorkerCmd) runJob(ctx context.Context, clients *client.Clients, walCfg 
 		return fmt.Errorf("failed to start WAL sender: %w", err)
 	}
 
-	// Renew the lease until the job settles. When the controller aborts, execCtx is
-	// cancelled and console-stream terminates the process group (SIGTERM, SIGKILL after 5s).
+	// Renew the lease until the job settles. When the controller aborts or the WAL sender
+	// is first to see lease loss or cancellation on publish, execCtx is cancelled and
+	// console-stream terminates the process group (SIGTERM, SIGKILL after 5s).
 	accepted := time.Duration(dequeued.VisibilityTimeoutSeconds) * time.Second
 	if accepted <= 0 {
 		accepted = time.Duration(w.VisibilityTimeout) * time.Second
@@ -245,6 +251,25 @@ func (w *WorkerCmd) runJob(ctx context.Context, clients *client.Clients, walCfg 
 	go func() {
 		select {
 		case <-ctrl.Done():
+			cancelExec()
+		case <-jobWAL.Failed():
+			walErr := jobWAL.Err()
+			if !errors.Is(walErr, wal.ErrLeaseLost) {
+				// Permanent publish failure: let execution finish, the job then fails in finish().
+				select {
+				case <-ctrl.Done():
+					cancelExec()
+				case <-execCtx.Done():
+				}
+				return
+			}
+			logger := log.With().Str("job_id", job.JobId).Int32("attempt", job.Attempt).Logger()
+			if isCancelled(walErr) {
+				logger.Info().Msg("job cancelled; stopping execution")
+			} else {
+				logger.Warn().Err(walErr).Msg("lease lost on publish; stopping execution")
+			}
+			ctrl.Stop()
 			cancelExec()
 		case <-execCtx.Done():
 		}
@@ -307,7 +332,11 @@ func (r *jobRun) finish(ctx context.Context, executeErr error) error {
 	}
 
 	if err := r.complete(ctx, executeErr); err != nil {
-		r.discard()
+		// The server may have committed the completion; keep the WAL for diagnosis.
+		log.Warn().Err(err).Str("job_id", r.job.JobId).Msg("complete response lost; WAL kept in failed/ for diagnosis")
+		if derr := r.wal.Discard(true); derr != nil {
+			log.Error().Err(derr).Str("job_id", r.job.JobId).Msg("Failed to discard WAL")
+		}
 		return err
 	}
 	r.archive(ctx)

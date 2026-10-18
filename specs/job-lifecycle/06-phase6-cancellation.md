@@ -15,7 +15,7 @@ The proto defined `CancelJob` from phase 2, but the handler returned Unimplement
 - [ ] `CancelJob` moves SCHEDULED and RUNNING jobs to CANCELLED under the job row lock.
 - [ ] Cancel is idempotent. A finished job (COMPLETED or FAILED) returns FailedPrecondition, and another org's job returns NotFound.
 - [ ] After a cancel, every fenced call from the old lease fails with FailedPrecondition and `Airunner-Lease-Reason: cancelled`.
-- [ ] A connected worker detects cancellation on its next renewal, terminates the command, discards its WAL and never completes or releases the job.
+- [ ] A connected worker detects cancellation on its next publish or renewal, terminates the command, discards its WAL and never completes or releases the job.
 - [ ] `airunner-cli cancel <job-id>` and a dashboard Cancel button are available.
 - [ ] Differential replay includes cancel histories.
 
@@ -44,10 +44,10 @@ Cancel takes the same `FOR UPDATE` row lock, with the same 5s lock bound, as pub
 | Step | Behaviour |
 |---|---|
 | Signal | `lockLeaseRow` returns `store.ErrJobCancelled`, which wraps `ErrLeaseLost`. The server maps it to FailedPrecondition and sets the Connect error metadata `Airunner-Lease-Reason: cancelled` (`internal/leasereason`). No proto change |
-| Detection | Renewal maps the header to `lease.ErrCancelled` (wraps `lease.ErrLost`). The controller aborts immediately and cancels the execution context. A publish or complete that sees the header is treated the same way |
+| Detection | Renewal maps the header to `lease.ErrCancelled` (wraps `lease.ErrLost`). The controller aborts immediately and cancels the execution context. A publish that sees the header stops execution immediately: the worker watches the sender's sticky lease-lost error, stops the controller and cancels the execution context. A complete that sees it abandons the job |
 | Termination | console-stream sends SIGTERM to the process group, then SIGKILL after 5s; containers stop with a 2s grace |
 | Cleanup | No complete, no release. The WAL is discarded (kept in `failed/` with `--keep-failed-wal`), and the job is logged as "job cancelled" |
-| Bound (connected) | Detection takes at most the maximum jittered renewal interval plus one bounded RPC, about `1.25 × timeout/3 + 5s`. Shutdown adds up to the 5s termination grace. With the default 300s visibility timeout that is about 135s worst case; with 30s it is about 22.5s |
+| Bound (connected) | A job producing output is detected at its next publish, within the 2s event batch flush plus one RPC. A silent job is detected at its next renewal: at most the maximum jittered renewal interval plus one bounded RPC, about `1.25 × timeout/3 + 5s`. Shutdown adds up to the 5s termination grace. With the default 300s visibility timeout the silent worst case is about 135s; with 30s it is about 22.5s |
 | Partitioned | The worker can't see the cancel. The local lease deadline from [phase 4b](04b-phase4b-worker-durability.md) stops it instead, and the server already fences every write |
 
 Commands with external side effects still need idempotency keys or downstream concurrency controls. Cancellation stops future work; it can't undo work already done.

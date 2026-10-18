@@ -325,7 +325,7 @@ The executor ([internal/worker/worker.go](../../internal/worker/worker.go)) drai
 
 **Discard.** `Discard(keep)` cancels any in-flight send, then deletes the file, or moves it to `failed/` when `keep` is set.
 
-**Archive.** After a confirmed completion the worker stops the WAL and archives it to `~/.airunner/archive/<job>-<attempt>.wal.zst` (zstd). Nothing prunes the archive; see [Known gaps](README.md#known-gaps).
+**Archive.** After a confirmed completion the worker stops the WAL and archives it to `~/.airunner/archive/<job>-<attempt>.wal.zst` (zstd). At startup the worker deletes archives older than `--archive-retention` (default 168h; 0 keeps them).
 
 **Loss boundary.** Committed events survive worker loss. Events never acknowledged are lost when the lease expires or the worker disk is lost. Recovering them would need a separate authorized, attempt-scoped upload API, which is out of scope. This replaces the tokenless orphan upload proposed in [wal-execution-isolation.md](../wal-execution-isolation.md).
 
@@ -364,7 +364,7 @@ The executor ([internal/worker/worker.go](../../internal/worker/worker.go)) drai
 | Flush times out after `min(30s, Remaining())` with records pending | Stop renewal, do not complete, discard the WAL. Expiry redelivers, deliberately re-running a finished command rather than completing with an incomplete log |
 | All records acknowledged | `CompleteJob` with `final_event_sequence = Acked()`, then archive the WAL |
 | `CompleteJob` returns FailedPrecondition | Treat as lease lost (cancelled if the header says so) |
-| `CompleteJob` fails for another reason | Discard the WAL (kept in `failed/` only with `--keep-failed-wal`). The worker never re-executes because of it |
+| `CompleteJob` fails for another reason | The server may have committed the completion, so move the WAL to `failed/` for diagnosis regardless of `--keep-failed-wal`. `CleanupStale` prunes it on the next start (immediately when the flag is 0, otherwise after the window). The worker never re-executes because of it |
 
 A worker that has lost its lease never completes or releases the job. Cancelled jobs are logged as "job cancelled".
 
@@ -504,9 +504,9 @@ Detail: [06-phase6-cancellation.md](06-phase6-cancellation.md).
 | Aspect | Behaviour |
 |---|---|
 | Signal | `lockLeaseRow` returns `ErrJobCancelled`; the server sets `Airunner-Lease-Reason: cancelled` on the FailedPrecondition |
-| Detection | The next renewal maps the header to `lease.ErrCancelled`. The controller aborts and cancels the execution context. A publish or complete that sees the header is treated the same way |
+| Detection | Whichever call reaches the server first. A renewal maps the header to `lease.ErrCancelled` and the controller aborts. A publish that sees it sets the sender's sticky lease-lost error, and the worker stops the controller and cancels the execution context at once. A complete that sees it abandons the job |
 | Shutdown | SIGTERM to the process group, SIGKILL after 5s; containers stop with a 2s grace. No complete, no release. The WAL is discarded |
-| Connected bound | Detection takes at most the maximum jittered renewal interval plus one bounded RPC: about `1.25 x timeout/3 + 5s`. Shutdown adds up to 5s. 135s worst case at the 300s default, 22.5s at 30s |
+| Connected bound | A job producing output is detected at its next publish, within the event batch flush interval (2s) plus one publish. A silent job is detected at its next renewal: at most the maximum jittered renewal interval plus one bounded RPC, about `1.25 x timeout/3 + 5s` (135s at the 300s default, 22.5s at 30s). Shutdown adds up to 5s |
 | Partitioned | The worker cannot see the cancel. Its local lease deadline stops it, and the server already fences every write |
 | Interfaces | `JobService.CancelJob` (user, admin), `airunner-cli cancel <job-id>` (exit 0 for an already-cancelled job, 1 for a finished or missing job), a dashboard Cancel button |
 
@@ -579,7 +579,7 @@ All flags verified against `--help`. Server flags are on `airunner-server server
 | `--postgres-default-max-attempts` | `AIRUNNER_DEFAULT_MAX_ATTEMPTS` | 3 | 1 to 100 |
 | `--postgres-token-signing-secret` | `AIRUNNER_POSTGRES_TOKEN_SECRET` | none | At least 32 bytes. Required, including by `cleanup` |
 | `--postgres-conn-string` | `POSTGRES_CONNECTION_STRING` | none | Required |
-| `--postgres-auto-migrate` | `AIRUNNER_POSTGRES_AUTO_MIGRATE` | false | `server` only in effect |
+| `--postgres-auto-migrate` | `AIRUNNER_POSTGRES_AUTO_MIGRATE` | false | `server` only; `cleanup` rejects it |
 | `--job-retention-days` | `AIRUNNER_JOB_RETENTION_DAYS` | 90 | Must be positive |
 | `--events-retention-days` | `AIRUNNER_EVENTS_RETENTION_DAYS` | 30 | 0 keeps events until the job is deleted; must not exceed job retention |
 | `--retention-interval` | `AIRUNNER_RETENTION_INTERVAL` | 1h | 0 disables in-process retention and session sweeps |
@@ -590,6 +590,7 @@ All flags verified against `--help`. Server flags are on `airunner-server server
 | `cleanup --max-batches` | `AIRUNNER_CLEANUP_MAX_BATCHES` | 100 | Batches per category per run |
 | `worker --visibility-timeout` | none | 300 | 30 to 3600 seconds |
 | `worker --keep-failed-wal` | `AIRUNNER_KEEP_FAILED_WAL` | 0 | Duration; 0 disables |
+| `worker --archive-retention` | `AIRUNNER_ARCHIVE_RETENTION` | 168h | Duration; archives older than this are deleted at startup; 0 keeps them |
 | `monitor --attempt` | none | 0 | 0 selects the latest attempt |
 
 Fixed constants: reaper 10 batches of 100 rows; fenced lock and statement timeout 5s; store query timeout 10s; store stop timeout 10s; stream page 100 rows; publish limits 50 events and 1 MiB; sender batch 50 records and 900 KiB; final flush `min(30s, remaining budget)`; renewal RPC `min(5s, remaining budget)`.
@@ -627,17 +628,14 @@ The code is documented above. These are the places where it differs from the [re
 | Topic | Plan | As built |
 |---|---|---|
 | Default attempts flag | `--default-max-attempts` | `--postgres-default-max-attempts` (env `AIRUNNER_DEFAULT_MAX_ATTEMPTS`) |
-| Token secret flag | not named | `--postgres-token-signing-secret`. The startup error text says `--postgres-token-secret`, which is not a flag |
+| Token secret flag | not named | `--postgres-token-signing-secret` |
 | WAL metric | "WAL pending bytes" | `worker.wal.pending_records` (a count of records) |
 | First renewal | "On dequeue, immediately renew before executing" | The controller renews immediately but concurrently; execution does not wait for the first renewal. The initial budget is `start + accepted - margin` |
-| Lease loss seen by the sender | The sender's lease-loss error enters the worker abort path | The sender stops publishing at once, but execution is aborted only by the controller on its next renewal (or the watchdog). A [known gap](README.md#known-gaps) with a planned fix |
-| Lost `CompleteJob` response | "Keep the file as diagnostic data under the same pruning rule" | The WAL is discarded, and kept in `failed/` only when `--keep-failed-wal` is set |
-| Archive pruning | Archives are pruned | `wal.CleanupArchive` exists but nothing calls it |
 | Cancelled job and token checks | Cancel is an ordinary lease loss | A CANCELLED row returns `ErrJobCancelled` before receipt, queue and principal checks, so any token for that job learns "cancelled" (still scoped to the caller's org) |
 | Stream stall | "DeadlineExceeded after 30s without send progress" | A per-send write deadline through `http.ResponseController`; it also lifts the 5 minute `WriteTimeout` for event streams |
 | Unmapped store errors | Internal | `ErrUnavailable` maps to Unavailable; only unknown errors map to Internal |
 | Session sweep bounds | Not specified | 1,000 rows per statement, 10 statements per pass in-process; `cleanup` uses `--max-batches` |
 | Retention default | "30 days" for events | 30 days applies only when both retention values are unset in the store config; the server flags always set both explicitly (defaults 90 and 30) |
-| `cleanup` flags | Not specified | Accepts the server's `--postgres-*` flags including `--postgres-auto-migrate`, which it ignores |
+| `cleanup` flags | Not specified | Accepts the server's `--postgres-*` connection, secret and attempts flags; `--postgres-auto-migrate` is server-only |
 
 [← README](README.md) | [Phase 1 →](01-phase1-worker-events.md) | [Runbook](operations-runbook.md)

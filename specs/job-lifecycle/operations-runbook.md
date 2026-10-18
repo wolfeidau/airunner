@@ -141,20 +141,20 @@ FROM jobs
 WHERE job_id = '<job-uuid>';
 ```
 
-State 5 means the server side is done. The worker learns at its next renewal.
+State 5 means the server side is done. The worker learns at its next publish or renewal, whichever comes first.
 
 | Case | Bound |
 |---|---|
-| Connected worker | Up to `1.25 x timeout/3 + 5s` to detect, plus up to 5s for SIGTERM to SIGKILL. About 135s at the 300s default, about 22.5s at 30s |
+| Connected worker, producing output | About 2s (event batch flush) plus one publish RPC to detect, plus up to 5s for SIGTERM to SIGKILL |
+| Connected worker, silent | Up to `1.25 x timeout/3 + 5s` to detect, plus up to 5s for SIGTERM to SIGKILL. About 135s at the 300s default, about 22.5s at 30s |
 | Partitioned worker | The local lease deadline (`timeout` minus `max(2s, timeout/10)` after the last confirmed renewal) |
 | Scheduled job | Immediate: it is never dequeued |
 
 **Action**
 
 1. Wait for the bound for the job's `visibility-timeout` before escalating.
-2. Check the worker log for `lease aborted` with `lease cancelled` and then `job cancelled`.
-3. Known gap: after a cancel, the sender may see the lease loss first and stop publishing, but execution stops only at the next renewal. See [Known gaps](README.md#known-gaps).
-4. If the worker is unreachable, the job is already fenced; stop the process or host directly.
+2. Check the worker log for `job cancelled; stopping execution` (publish saw it) or `lease aborted` with `lease cancelled` (renewal saw it), then `job cancelled`.
+3. If the worker is unreachable, the job is already fenced; stop the process or host directly.
 
 ## Retention backlog and scheduling cleanup
 
@@ -260,9 +260,10 @@ Worker WALs live on the worker host under `~/.airunner/wal` (there is no flag to
 
 | Event | Result |
 |---|---|
-| Lease lost, budget exhausted, cancel, permanent publish error, flush timeout, completion error | Deleted, or moved to `failed/` if `--keep-failed-wal` is set |
+| Lease lost, budget exhausted, cancel, permanent publish error, flush timeout | Deleted, or moved to `failed/` if `--keep-failed-wal` is set |
+| `CompleteJob` failed without a lease-loss answer (response lost) | Always moved to `failed/` (log: `complete response lost; WAL kept in failed/ for diagnosis`). Pruned on the next start under the `--keep-failed-wal` rule |
 | Confirmed completion | Archived |
-| Worker restart | `CleanupStale` deletes (or moves to `failed/`) every WAL it can lock, logs `Cleaned up stale WAL` with job, attempt and pending count, and prunes `failed/` by age |
+| Worker restart | `CleanupStale` deletes (or moves to `failed/`) every WAL it can lock, logs `Cleaned up stale WAL` with job, attempt and pending count, and prunes `failed/` by age. Archives older than `--archive-retention` are deleted |
 
 Keeping failed WALs for a day:
 
@@ -286,10 +287,10 @@ Grep the worker log for: `WAL publishing stopped` (sticky error), `Recreating st
 
 Interpreting a pending count: in `Cleaned up stale WAL` it is an upper bound, because sent status is held in memory and a crashed WAL looks fully pending.
 
-**Archive growth.** Archives are never pruned automatically. Prune them from cron on the worker host:
+**Archive growth.** The worker deletes archives older than `--archive-retention` (default 168h) at startup; 0 keeps them. A long-running worker prunes only when it restarts. To keep 30 days:
 
 ```bash
-find ~/.airunner/archive -name '*.wal.zst' -mtime +30 -delete
+airunner-cli worker --archive-retention=720h
 ```
 
 Metrics: `worker.wal.pending_records`, `worker.wal.failed_deleted`, `worker.publish.retries`, `worker.publish.ack_latency`.

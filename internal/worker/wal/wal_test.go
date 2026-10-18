@@ -48,7 +48,6 @@ func TestNewWAL(t *testing.T) {
 	cfg := &WALConfig{
 		WALDir:        walDir,
 		ArchiveDir:    archiveDir,
-		RetentionDays: 30,
 		FlushInterval: 100 * time.Millisecond,
 		RetryBackoff: BackoffConfig{
 			InitialInterval: 100 * time.Millisecond,
@@ -78,7 +77,6 @@ func TestWAL_Append(t *testing.T) {
 	cfg := &WALConfig{
 		WALDir:        walDir,
 		ArchiveDir:    archiveDir,
-		RetentionDays: 30,
 		FlushInterval: 100 * time.Millisecond,
 		RetryBackoff: BackoffConfig{
 			InitialInterval: 100 * time.Millisecond,
@@ -117,7 +115,6 @@ func TestWAL_StartStop(t *testing.T) {
 	cfg := &WALConfig{
 		WALDir:        walDir,
 		ArchiveDir:    archiveDir,
-		RetentionDays: 30,
 		FlushInterval: 100 * time.Millisecond,
 		RetryBackoff: BackoffConfig{
 			InitialInterval: 100 * time.Millisecond,
@@ -186,7 +183,6 @@ func TestWAL_Archive(t *testing.T) {
 	cfg := &WALConfig{
 		WALDir:        walDir,
 		ArchiveDir:    archiveDir,
-		RetentionDays: 30,
 		FlushInterval: 100 * time.Millisecond,
 		RetryBackoff: BackoffConfig{
 			InitialInterval: 100 * time.Millisecond,
@@ -292,7 +288,7 @@ func TestCleanupArchive(t *testing.T) {
 	require.NoError(t, os.Chtimes(oldFile, oldTime, oldTime))
 
 	// Run cleanup with 30-day retention
-	err := CleanupArchive(archiveDir, 30)
+	err := CleanupArchive(archiveDir, 30*24*time.Hour)
 	require.NoError(t, err)
 
 	// Old file should be deleted
@@ -305,6 +301,19 @@ func TestCleanupArchive(t *testing.T) {
 
 	// Non-WAL file should still exist
 	_, err = os.Stat(nonWALFile)
+	require.NoError(t, err)
+}
+
+func TestCleanupArchive_ZeroDisables(t *testing.T) {
+	archiveDir := t.TempDir()
+	oldFile := filepath.Join(archiveDir, "old-job.wal.zst")
+	//nolint:gosec // Test files can use 0644 permissions
+	require.NoError(t, os.WriteFile(oldFile, []byte("old data"), 0644))
+	oldTime := time.Now().AddDate(0, 0, -400)
+	require.NoError(t, os.Chtimes(oldFile, oldTime, oldTime))
+
+	require.NoError(t, CleanupArchive(archiveDir, 0))
+	_, err := os.Stat(oldFile)
 	require.NoError(t, err)
 }
 
@@ -348,7 +357,6 @@ func TestDefaultConfig(t *testing.T) {
 
 	assert.NotEmpty(t, cfg.WALDir)
 	assert.NotEmpty(t, cfg.ArchiveDir)
-	assert.Equal(t, 30, cfg.RetentionDays)
 	assert.Equal(t, 100*time.Millisecond, cfg.FlushInterval)
 	assert.True(t, cfg.ArchiveOnComplete)
 	assert.Equal(t, 1*time.Second, cfg.RetryBackoff.InitialInterval)

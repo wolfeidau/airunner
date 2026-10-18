@@ -42,7 +42,7 @@ direnv exec . goreman -f Procfile.dev start  # server (--no-auth, --postgres-aut
 
 **CLI reference** (verify with `--help`; flags change):
 ```bash
-airunner-cli worker  [--server=URL] [--queue=NAME] [--credential=NAME] [--visibility-timeout=SECONDS] [--keep-failed-wal=DURATION] [--tracing]
+airunner-cli worker  [--server=URL] [--queue=NAME] [--credential=NAME] [--visibility-timeout=SECONDS] [--keep-failed-wal=DURATION] [--archive-retention=DURATION] [--tracing]
 airunner-cli submit  [--server=URL] [--queue=NAME] [--monitor] [--config=FILE] [--command=CMD] [--args=...] <repository>
 airunner-cli monitor [--server=URL] [--from-sequence=N] [--attempt=N] <job-id>
 airunner-cli list    [--server=URL] [--queue=NAME] [--state=STATE] [--page=N] [--page-size=N] [--watch]
@@ -124,7 +124,7 @@ make clean         # Clean build artifacts and coverage files
 - No writes through a stale lease. Committed events survive worker loss
 - Unacknowledged WAL records are lost if the lease is lost or the worker disk is lost
 - A job completes only after its whole log is committed (`final_event_sequence` equals the last committed sequence)
-- Cancellation stops a connected worker within about 1.25 x timeout/3 + 5s RPC + 5s grace; a partitioned worker stops at its local lease deadline
+- Cancellation stops a connected worker at its next publish (about 2s while it produces output) or renewal (about 1.25 x timeout/3 + 5s RPC), plus 5s grace; a partitioned worker stops at its local lease deadline
 
 Details: `specs/job-lifecycle/00-architecture.md`. Operations: `specs/job-lifecycle/operations-runbook.md`.
 

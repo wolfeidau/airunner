@@ -232,6 +232,54 @@ func TestSender_LeaseLostReturnsImmediately(t *testing.T) {
 	assert.Less(t, time.Since(start), time.Second)
 }
 
+func TestSender_FailedClosedOnLeaseLost(t *testing.T) {
+	r := newReceiver()
+	r.script = append(r.script, func(*fakeReceiver, []*jobv1.JobEvent) (Ack, error) {
+		return Ack{}, fmt.Errorf("rpc: %w", ErrLeaseLost)
+	})
+	w := startWAL(t, testCfg(t), r)
+	appendSeqs(t, w, 1)
+	select {
+	case <-w.Failed():
+	case <-time.After(5 * time.Second):
+		t.Fatal("Failed not closed after lease loss")
+	}
+	require.ErrorIs(t, w.Err(), ErrLeaseLost)
+}
+
+func TestSender_FailedClosedOnPermanent(t *testing.T) {
+	r := newReceiver()
+	r.script = append(r.script, func(*fakeReceiver, []*jobv1.JobEvent) (Ack, error) {
+		return Ack{}, fmt.Errorf("bad request: %w", ErrPermanent)
+	})
+	w := startWAL(t, testCfg(t), r)
+	appendSeqs(t, w, 1)
+	select {
+	case <-w.Failed():
+	case <-time.After(5 * time.Second):
+		t.Fatal("Failed not closed after permanent error")
+	}
+	require.ErrorIs(t, w.Err(), ErrPermanent)
+}
+
+func TestSender_FailedOpenDuringTransientRetries(t *testing.T) {
+	r := newReceiver()
+	for i := 0; i < 3; i++ {
+		r.script = append(r.script, func(*fakeReceiver, []*jobv1.JobEvent) (Ack, error) {
+			return Ack{}, context.DeadlineExceeded
+		})
+	}
+	w := startWAL(t, testCfg(t), r)
+	appendSeqs(t, w, 1)
+	require.NoError(t, flush(t, w))
+	select {
+	case <-w.Failed():
+		t.Fatal("Failed closed by transient errors")
+	default:
+	}
+	require.NoError(t, w.Err())
+}
+
 func TestSender_PermanentIsSticky(t *testing.T) {
 	r := newReceiver()
 	r.script = append(r.script, func(*fakeReceiver, []*jobv1.JobEvent) (Ack, error) {

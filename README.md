@@ -89,7 +89,7 @@ Job flow:
 4. The worker renews the lease about every timeout/3 and stops at its local lease deadline if it cannot.
 5. On exit the worker completes the job. The server accepts completion only when `final_event_sequence` equals the last committed sequence. The job becomes `COMPLETED` or `FAILED`.
 6. The reaper (every 5s by default) returns expired leases to `SCHEDULED`, or to `FAILED` when attempts are exhausted.
-7. `cancel` moves a job to `CANCELLED`. A connected worker notices at its next renewal and stops.
+7. `cancel` moves a job to `CANCELLED`. A connected worker notices at its next publish or renewal and stops.
 
 `monitor` streams events by polling (500ms by default), pinned to one attempt (`--attempt`, 0 selects the latest). The stream ends when the attempt closes.
 
@@ -100,7 +100,7 @@ Job flow:
 - Committed events survive worker loss.
 - Unacknowledged WAL records are lost if the lease is lost or the worker disk is lost.
 - A job completes only after its whole log is committed.
-- Cancellation stops a connected worker within about 1.25 x timeout/3 + 5s RPC + 5s grace. A partitioned worker stops at its local lease deadline.
+- Cancellation stops a connected worker at its next publish (about 2s while it produces output) or renewal (about 1.25 x timeout/3 + 5s RPC), plus 5s grace. A partitioned worker stops at its local lease deadline.
 
 Design and phase specs: [specs/job-lifecycle/README.md](specs/job-lifecycle/README.md) and [00-architecture.md](specs/job-lifecycle/00-architecture.md).
 

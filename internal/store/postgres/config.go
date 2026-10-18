@@ -17,9 +17,9 @@ type JobStoreConfig struct {
 	// when not specified in the EnqueueJob request.
 	DefaultExecutionConfig *jobv1.ExecutionConfig
 
-	// EventsTTLDays configures how many days events should be retained.
-	// 0 means no expiration (events kept indefinitely).
-	EventsTTLDays int32
+	// DefaultMaxAttempts is the maximum delivery attempts applied to jobs that
+	// do not request one. Default: 3, valid range 1-100.
+	DefaultMaxAttempts int32
 
 	// QueryTimeoutSeconds is the maximum time a query can run before timing out.
 	// Default: 10 seconds
@@ -37,6 +37,10 @@ func (c *JobStoreConfig) Validate() error {
 		return fmt.Errorf("token signing secret must be at least 32 bytes")
 	}
 
+	if c.DefaultMaxAttempts < 1 || c.DefaultMaxAttempts > maxAttemptsLimit {
+		return fmt.Errorf("default max attempts must be between 1 and %d", maxAttemptsLimit)
+	}
+
 	return nil
 }
 
@@ -44,6 +48,10 @@ func (c *JobStoreConfig) Validate() error {
 func (c *JobStoreConfig) ApplyDefaults() {
 	if c.QueryTimeoutSeconds == 0 {
 		c.QueryTimeoutSeconds = 10 // 10 seconds
+	}
+
+	if c.DefaultMaxAttempts == 0 {
+		c.DefaultMaxAttempts = 3
 	}
 
 	// Apply default execution config if not provided

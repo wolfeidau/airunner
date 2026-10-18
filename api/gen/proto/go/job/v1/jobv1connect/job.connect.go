@@ -45,6 +45,8 @@ const (
 	JobServiceCompleteJobProcedure = "/job.v1.JobService/CompleteJob"
 	// JobServiceListJobsProcedure is the fully-qualified name of the JobService's ListJobs RPC.
 	JobServiceListJobsProcedure = "/job.v1.JobService/ListJobs"
+	// JobServiceCancelJobProcedure is the fully-qualified name of the JobService's CancelJob RPC.
+	JobServiceCancelJobProcedure = "/job.v1.JobService/CancelJob"
 	// JobEventsServiceStreamJobEventsProcedure is the fully-qualified name of the JobEventsService's
 	// StreamJobEvents RPC.
 	JobEventsServiceStreamJobEventsProcedure = "/job.v1.JobEventsService/StreamJobEvents"
@@ -65,6 +67,8 @@ type JobServiceClient interface {
 	CompleteJob(context.Context, *connect.Request[v1.CompleteJobRequest]) (*connect.Response[v1.CompleteJobResponse], error)
 	// ListJobs retrieves a list of jobs
 	ListJobs(context.Context, *connect.Request[v1.ListJobsRequest]) (*connect.Response[v1.ListJobsResponse], error)
+	// CancelJob cancels a scheduled or running job
+	CancelJob(context.Context, *connect.Request[v1.CancelJobRequest]) (*connect.Response[v1.CancelJobResponse], error)
 }
 
 // NewJobServiceClient constructs a client for the job.v1.JobService service. By default, it uses
@@ -108,6 +112,12 @@ func NewJobServiceClient(httpClient connect.HTTPClient, baseURL string, opts ...
 			connect.WithSchema(jobServiceMethods.ByName("ListJobs")),
 			connect.WithClientOptions(opts...),
 		),
+		cancelJob: connect.NewClient[v1.CancelJobRequest, v1.CancelJobResponse](
+			httpClient,
+			baseURL+JobServiceCancelJobProcedure,
+			connect.WithSchema(jobServiceMethods.ByName("CancelJob")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -118,6 +128,7 @@ type jobServiceClient struct {
 	updateJob   *connect.Client[v1.UpdateJobRequest, v1.UpdateJobResponse]
 	completeJob *connect.Client[v1.CompleteJobRequest, v1.CompleteJobResponse]
 	listJobs    *connect.Client[v1.ListJobsRequest, v1.ListJobsResponse]
+	cancelJob   *connect.Client[v1.CancelJobRequest, v1.CancelJobResponse]
 }
 
 // EnqueueJob calls job.v1.JobService.EnqueueJob.
@@ -145,6 +156,11 @@ func (c *jobServiceClient) ListJobs(ctx context.Context, req *connect.Request[v1
 	return c.listJobs.CallUnary(ctx, req)
 }
 
+// CancelJob calls job.v1.JobService.CancelJob.
+func (c *jobServiceClient) CancelJob(ctx context.Context, req *connect.Request[v1.CancelJobRequest]) (*connect.Response[v1.CancelJobResponse], error) {
+	return c.cancelJob.CallUnary(ctx, req)
+}
+
 // JobServiceHandler is an implementation of the job.v1.JobService service.
 type JobServiceHandler interface {
 	// EnqueueJob queues a new job
@@ -157,6 +173,8 @@ type JobServiceHandler interface {
 	CompleteJob(context.Context, *connect.Request[v1.CompleteJobRequest]) (*connect.Response[v1.CompleteJobResponse], error)
 	// ListJobs retrieves a list of jobs
 	ListJobs(context.Context, *connect.Request[v1.ListJobsRequest]) (*connect.Response[v1.ListJobsResponse], error)
+	// CancelJob cancels a scheduled or running job
+	CancelJob(context.Context, *connect.Request[v1.CancelJobRequest]) (*connect.Response[v1.CancelJobResponse], error)
 }
 
 // NewJobServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -196,6 +214,12 @@ func NewJobServiceHandler(svc JobServiceHandler, opts ...connect.HandlerOption) 
 		connect.WithSchema(jobServiceMethods.ByName("ListJobs")),
 		connect.WithHandlerOptions(opts...),
 	)
+	jobServiceCancelJobHandler := connect.NewUnaryHandler(
+		JobServiceCancelJobProcedure,
+		svc.CancelJob,
+		connect.WithSchema(jobServiceMethods.ByName("CancelJob")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/job.v1.JobService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case JobServiceEnqueueJobProcedure:
@@ -208,6 +232,8 @@ func NewJobServiceHandler(svc JobServiceHandler, opts ...connect.HandlerOption) 
 			jobServiceCompleteJobHandler.ServeHTTP(w, r)
 		case JobServiceListJobsProcedure:
 			jobServiceListJobsHandler.ServeHTTP(w, r)
+		case JobServiceCancelJobProcedure:
+			jobServiceCancelJobHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -237,12 +263,16 @@ func (UnimplementedJobServiceHandler) ListJobs(context.Context, *connect.Request
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("job.v1.JobService.ListJobs is not implemented"))
 }
 
+func (UnimplementedJobServiceHandler) CancelJob(context.Context, *connect.Request[v1.CancelJobRequest]) (*connect.Response[v1.CancelJobResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("job.v1.JobService.CancelJob is not implemented"))
+}
+
 // JobEventsServiceClient is a client for the job.v1.JobEventsService service.
 type JobEventsServiceClient interface {
 	// StreamJobEvents streams job events for a specific job
 	StreamJobEvents(context.Context, *connect.Request[v1.StreamJobEventsRequest]) (*connect.ServerStreamForClient[v1.StreamJobEventsResponse], error)
-	// PublishJobEvents allows workers to publish job events
-	PublishJobEvents(context.Context) *connect.ClientStreamForClient[v1.PublishJobEventsRequest, v1.PublishJobEventsResponse]
+	// PublishJobEvents allows workers to publish a batch of job events
+	PublishJobEvents(context.Context, *connect.Request[v1.PublishJobEventsRequest]) (*connect.Response[v1.PublishJobEventsResponse], error)
 }
 
 // NewJobEventsServiceClient constructs a client for the job.v1.JobEventsService service. By
@@ -283,16 +313,16 @@ func (c *jobEventsServiceClient) StreamJobEvents(ctx context.Context, req *conne
 }
 
 // PublishJobEvents calls job.v1.JobEventsService.PublishJobEvents.
-func (c *jobEventsServiceClient) PublishJobEvents(ctx context.Context) *connect.ClientStreamForClient[v1.PublishJobEventsRequest, v1.PublishJobEventsResponse] {
-	return c.publishJobEvents.CallClientStream(ctx)
+func (c *jobEventsServiceClient) PublishJobEvents(ctx context.Context, req *connect.Request[v1.PublishJobEventsRequest]) (*connect.Response[v1.PublishJobEventsResponse], error) {
+	return c.publishJobEvents.CallUnary(ctx, req)
 }
 
 // JobEventsServiceHandler is an implementation of the job.v1.JobEventsService service.
 type JobEventsServiceHandler interface {
 	// StreamJobEvents streams job events for a specific job
 	StreamJobEvents(context.Context, *connect.Request[v1.StreamJobEventsRequest], *connect.ServerStream[v1.StreamJobEventsResponse]) error
-	// PublishJobEvents allows workers to publish job events
-	PublishJobEvents(context.Context, *connect.ClientStream[v1.PublishJobEventsRequest]) (*connect.Response[v1.PublishJobEventsResponse], error)
+	// PublishJobEvents allows workers to publish a batch of job events
+	PublishJobEvents(context.Context, *connect.Request[v1.PublishJobEventsRequest]) (*connect.Response[v1.PublishJobEventsResponse], error)
 }
 
 // NewJobEventsServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -308,7 +338,7 @@ func NewJobEventsServiceHandler(svc JobEventsServiceHandler, opts ...connect.Han
 		connect.WithSchema(jobEventsServiceMethods.ByName("StreamJobEvents")),
 		connect.WithHandlerOptions(opts...),
 	)
-	jobEventsServicePublishJobEventsHandler := connect.NewClientStreamHandler(
+	jobEventsServicePublishJobEventsHandler := connect.NewUnaryHandler(
 		JobEventsServicePublishJobEventsProcedure,
 		svc.PublishJobEvents,
 		connect.WithSchema(jobEventsServiceMethods.ByName("PublishJobEvents")),
@@ -333,6 +363,6 @@ func (UnimplementedJobEventsServiceHandler) StreamJobEvents(context.Context, *co
 	return connect.NewError(connect.CodeUnimplemented, errors.New("job.v1.JobEventsService.StreamJobEvents is not implemented"))
 }
 
-func (UnimplementedJobEventsServiceHandler) PublishJobEvents(context.Context, *connect.ClientStream[v1.PublishJobEventsRequest]) (*connect.Response[v1.PublishJobEventsResponse], error) {
+func (UnimplementedJobEventsServiceHandler) PublishJobEvents(context.Context, *connect.Request[v1.PublishJobEventsRequest]) (*connect.Response[v1.PublishJobEventsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("job.v1.JobEventsService.PublishJobEvents is not implemented"))
 }

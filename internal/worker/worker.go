@@ -7,7 +7,6 @@ import (
 	"iter"
 	"time"
 
-	"connectrpc.com/connect"
 	"github.com/rs/zerolog/log"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 	"github.com/wolfeidau/airunner/internal/git"
@@ -35,19 +34,17 @@ func processEndError(end *consolestream.ProcessEnd) error {
 }
 
 type JobExecutor struct {
-	eventStream *connect.ClientStreamForClient[jobv1.PublishJobEventsRequest, jobv1.PublishJobEventsResponse]
-	taskToken   string
-	pid         int32 // Process ID from ProcessStart event
-	batcher     *EventBatcher
+	taskToken string
+	pid       int32 // Process ID from ProcessStart event
+	batcher   *EventBatcher
 }
 
 // NewJobExecutor creates a JobExecutor with event batching support
 // The batcher is required for unified sequence numbering
-func NewJobExecutor(eventStream *connect.ClientStreamForClient[jobv1.PublishJobEventsRequest, jobv1.PublishJobEventsResponse], taskToken string, batcher *EventBatcher) *JobExecutor {
+func NewJobExecutor(taskToken string, batcher *EventBatcher) *JobExecutor {
 	return &JobExecutor{
-		eventStream: eventStream,
-		taskToken:   taskToken,
-		batcher:     batcher,
+		taskToken: taskToken,
+		batcher:   batcher,
 	}
 }
 

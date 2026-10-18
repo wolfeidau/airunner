@@ -298,6 +298,7 @@ type JobEvent struct {
 	//	*JobEvent_GitCloneError
 	//	*JobEvent_ProgramStatus
 	EventData     isJobEvent_EventData `protobuf_oneof:"event_data"`
+	Attempt       int32                `protobuf:"varint,20,opt,name=attempt,proto3" json:"attempt,omitempty"` // Job attempt that produced the event, stamped by the server
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -502,6 +503,13 @@ func (x *JobEvent) GetProgramStatus() *ProgramStatusEvent {
 		}
 	}
 	return nil
+}
+
+func (x *JobEvent) GetAttempt() int32 {
+	if x != nil {
+		return x.Attempt
+	}
+	return 0
 }
 
 type isJobEvent_EventData interface {
@@ -1814,9 +1822,11 @@ func (x *PublishJobEventsRequest) GetEvents() []*JobEvent {
 }
 
 type PublishJobEventsResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state                       protoimpl.MessageState `protogen:"open.v1"`
+	Attempt                     int32                  `protobuf:"varint,1,opt,name=attempt,proto3" json:"attempt,omitempty"`                                                                              // Attempt the events were recorded against
+	AcknowledgedThroughSequence int64                  `protobuf:"varint,2,opt,name=acknowledged_through_sequence,json=acknowledgedThroughSequence,proto3" json:"acknowledged_through_sequence,omitempty"` // Highest sequence covered by the committed request
+	unknownFields               protoimpl.UnknownFields
+	sizeCache                   protoimpl.SizeCache
 }
 
 func (x *PublishJobEventsResponse) Reset() {
@@ -1849,12 +1859,27 @@ func (*PublishJobEventsResponse) Descriptor() ([]byte, []int) {
 	return file_job_v1_job_proto_rawDescGZIP(), []int{21}
 }
 
+func (x *PublishJobEventsResponse) GetAttempt() int32 {
+	if x != nil {
+		return x.Attempt
+	}
+	return 0
+}
+
+func (x *PublishJobEventsResponse) GetAcknowledgedThroughSequence() int64 {
+	if x != nil {
+		return x.AcknowledgedThroughSequence
+	}
+	return 0
+}
+
 type StreamJobEventsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
 	FromSequence  int64                  `protobuf:"varint,2,opt,name=from_sequence,json=fromSequence,proto3" json:"from_sequence,omitempty"`                           // Optional: replay from specific sequence
 	FromTimestamp int64                  `protobuf:"varint,3,opt,name=from_timestamp,json=fromTimestamp,proto3" json:"from_timestamp,omitempty"`                        // Optional: replay from specific time
 	EventFilter   []EventType            `protobuf:"varint,4,rep,packed,name=event_filter,json=eventFilter,proto3,enum=job.v1.EventType" json:"event_filter,omitempty"` // Optional: filter specific event types
+	Attempt       int32                  `protobuf:"varint,5,opt,name=attempt,proto3" json:"attempt,omitempty"`                                                         // Optional: attempt to stream, 0 selects the latest attempt
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1917,11 +1942,21 @@ func (x *StreamJobEventsRequest) GetEventFilter() []EventType {
 	return nil
 }
 
+func (x *StreamJobEventsRequest) GetAttempt() int32 {
+	if x != nil {
+		return x.Attempt
+	}
+	return 0
+}
+
 type StreamJobEventsResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Event         *JobEvent              `protobuf:"bytes,1,opt,name=event,proto3" json:"event,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Event           *JobEvent              `protobuf:"bytes,1,opt,name=event,proto3" json:"event,omitempty"`
+	ResolvedAttempt int32                  `protobuf:"varint,2,opt,name=resolved_attempt,json=resolvedAttempt,proto3" json:"resolved_attempt,omitempty"` // Attempt the stream resolved to
+	JobState        JobState               `protobuf:"varint,3,opt,name=job_state,json=jobState,proto3,enum=job.v1.JobState" json:"job_state,omitempty"` // Job state when the response was produced
+	AttemptClosed   bool                   `protobuf:"varint,4,opt,name=attempt_closed,json=attemptClosed,proto3" json:"attempt_closed,omitempty"`       // True when no further events will be produced for the attempt
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *StreamJobEventsResponse) Reset() {
@@ -1961,12 +1996,34 @@ func (x *StreamJobEventsResponse) GetEvent() *JobEvent {
 	return nil
 }
 
+func (x *StreamJobEventsResponse) GetResolvedAttempt() int32 {
+	if x != nil {
+		return x.ResolvedAttempt
+	}
+	return 0
+}
+
+func (x *StreamJobEventsResponse) GetJobState() JobState {
+	if x != nil {
+		return x.JobState
+	}
+	return JobState_JOB_STATE_UNSPECIFIED
+}
+
+func (x *StreamJobEventsResponse) GetAttemptClosed() bool {
+	if x != nil {
+		return x.AttemptClosed
+	}
+	return false
+}
+
 // EnqueueJobRequest is the request message for EnqueueJob
 type EnqueueJobRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	RequestId     string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"` // Unique request id for the job enqueue idempotency
-	Queue         string                 `protobuf:"bytes,2,opt,name=queue,proto3" json:"queue,omitempty"`                          // Queue name to enqueue the job into
-	JobParams     *JobParams             `protobuf:"bytes,3,opt,name=job_params,json=jobParams,proto3" json:"job_params,omitempty"` // Parameters for the job to be enqueued
+	RequestId     string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`              // Unique request id for the job enqueue idempotency
+	Queue         string                 `protobuf:"bytes,2,opt,name=queue,proto3" json:"queue,omitempty"`                                       // Queue name to enqueue the job into
+	JobParams     *JobParams             `protobuf:"bytes,3,opt,name=job_params,json=jobParams,proto3" json:"job_params,omitempty"`              // Parameters for the job to be enqueued
+	MaxAttempts   *int32                 `protobuf:"varint,4,opt,name=max_attempts,json=maxAttempts,proto3,oneof" json:"max_attempts,omitempty"` // Maximum delivery attempts (1-100), server default when omitted
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2020,6 +2077,13 @@ func (x *EnqueueJobRequest) GetJobParams() *JobParams {
 		return x.JobParams
 	}
 	return nil
+}
+
+func (x *EnqueueJobRequest) GetMaxAttempts() int32 {
+	if x != nil && x.MaxAttempts != nil {
+		return *x.MaxAttempts
+	}
+	return 0
 }
 
 // EnqueueJobResponse is the response message for EnqueueJob
@@ -2146,11 +2210,12 @@ func (x *DequeueJobRequest) GetVisibilityTimeoutSeconds() int32 {
 
 // DequeueJobResponse is the response message for DequeueJob
 type DequeueJobResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Job           *Job                   `protobuf:"bytes,1,opt,name=job,proto3" json:"job,omitempty"`                              // The dequeued job
-	TaskToken     string                 `protobuf:"bytes,2,opt,name=task_token,json=taskToken,proto3" json:"task_token,omitempty"` // Token to acknowledge job completion
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state                    protoimpl.MessageState `protogen:"open.v1"`
+	Job                      *Job                   `protobuf:"bytes,1,opt,name=job,proto3" json:"job,omitempty"`                                                                              // The dequeued job
+	TaskToken                string                 `protobuf:"bytes,2,opt,name=task_token,json=taskToken,proto3" json:"task_token,omitempty"`                                                 // Token to acknowledge job completion
+	VisibilityTimeoutSeconds int32                  `protobuf:"varint,3,opt,name=visibility_timeout_seconds,json=visibilityTimeoutSeconds,proto3" json:"visibility_timeout_seconds,omitempty"` // Effective visibility timeout granted for the lease
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *DequeueJobResponse) Reset() {
@@ -2197,10 +2262,16 @@ func (x *DequeueJobResponse) GetTaskToken() string {
 	return ""
 }
 
-// UpdateJobResponse is the response message for UpdateJob
+func (x *DequeueJobResponse) GetVisibilityTimeoutSeconds() int32 {
+	if x != nil {
+		return x.VisibilityTimeoutSeconds
+	}
+	return 0
+}
+
+// UpdateJobRequest is the request message for UpdateJob
 type UpdateJobRequest struct {
 	state                    protoimpl.MessageState `protogen:"open.v1"`
-	Queue                    string                 `protobuf:"bytes,1,opt,name=queue,proto3" json:"queue,omitempty"`                                                                          // Queue name where the job is located, used for partitioning
 	TaskToken                string                 `protobuf:"bytes,2,opt,name=task_token,json=taskToken,proto3" json:"task_token,omitempty"`                                                 // Token to acknowledge job completion
 	VisibilityTimeoutSeconds int32                  `protobuf:"varint,3,opt,name=visibility_timeout_seconds,json=visibilityTimeoutSeconds,proto3" json:"visibility_timeout_seconds,omitempty"` // How long job stays invisible after update (default: 300s)
 	unknownFields            protoimpl.UnknownFields
@@ -2237,13 +2308,6 @@ func (*UpdateJobRequest) Descriptor() ([]byte, []int) {
 	return file_job_v1_job_proto_rawDescGZIP(), []int{28}
 }
 
-func (x *UpdateJobRequest) GetQueue() string {
-	if x != nil {
-		return x.Queue
-	}
-	return ""
-}
-
 func (x *UpdateJobRequest) GetTaskToken() string {
 	if x != nil {
 		return x.TaskToken
@@ -2260,9 +2324,10 @@ func (x *UpdateJobRequest) GetVisibilityTimeoutSeconds() int32 {
 
 // UpdateJobResponse is the response message for UpdateJob
 type UpdateJobResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state                    protoimpl.MessageState `protogen:"open.v1"`
+	VisibilityTimeoutSeconds int32                  `protobuf:"varint,1,opt,name=visibility_timeout_seconds,json=visibilityTimeoutSeconds,proto3" json:"visibility_timeout_seconds,omitempty"` // Effective visibility timeout granted for the lease
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *UpdateJobResponse) Reset() {
@@ -2293,6 +2358,13 @@ func (x *UpdateJobResponse) ProtoReflect() protoreflect.Message {
 // Deprecated: Use UpdateJobResponse.ProtoReflect.Descriptor instead.
 func (*UpdateJobResponse) Descriptor() ([]byte, []int) {
 	return file_job_v1_job_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *UpdateJobResponse) GetVisibilityTimeoutSeconds() int32 {
+	if x != nil {
+		return x.VisibilityTimeoutSeconds
+	}
+	return 0
 }
 
 // ListJobsRequest is the request message for ListJobs
@@ -2768,6 +2840,8 @@ type Job struct {
 	CreatedAt       *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`                   // Timestamp when the job was created
 	UpdatedAt       *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`                   // Timestamp when the job was last updated
 	ExecutionConfig *ExecutionConfig       `protobuf:"bytes,6,opt,name=execution_config,json=executionConfig,proto3" json:"execution_config,omitempty"` // Execution configuration for the job
+	Attempt         int32                  `protobuf:"varint,7,opt,name=attempt,proto3" json:"attempt,omitempty"`                                       // Number of delivery attempts consumed so far
+	MaxAttempts     int32                  `protobuf:"varint,8,opt,name=max_attempts,json=maxAttempts,proto3" json:"max_attempts,omitempty"`            // Maximum delivery attempts allowed
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -2844,13 +2918,28 @@ func (x *Job) GetExecutionConfig() *ExecutionConfig {
 	return nil
 }
 
+func (x *Job) GetAttempt() int32 {
+	if x != nil {
+		return x.Attempt
+	}
+	return 0
+}
+
+func (x *Job) GetMaxAttempts() int32 {
+	if x != nil {
+		return x.MaxAttempts
+	}
+	return 0
+}
+
 // CompleteJobRequest is the request message for CompleteJob
 type CompleteJobRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TaskToken     string                 `protobuf:"bytes,1,opt,name=task_token,json=taskToken,proto3" json:"task_token,omitempty"` // Token to acknowledge job completion
-	JobResult     *JobResult             `protobuf:"bytes,2,opt,name=job_result,json=jobResult,proto3" json:"job_result,omitempty"` // Result of the completed job
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	TaskToken          string                 `protobuf:"bytes,1,opt,name=task_token,json=taskToken,proto3" json:"task_token,omitempty"`                               // Token to acknowledge job completion
+	JobResult          *JobResult             `protobuf:"bytes,2,opt,name=job_result,json=jobResult,proto3" json:"job_result,omitempty"`                               // Result of the completed job
+	FinalEventSequence int64                  `protobuf:"varint,3,opt,name=final_event_sequence,json=finalEventSequence,proto3" json:"final_event_sequence,omitempty"` // Last event sequence published for the attempt, 0 if not reported
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *CompleteJobRequest) Reset() {
@@ -2895,6 +2984,13 @@ func (x *CompleteJobRequest) GetJobResult() *JobResult {
 		return x.JobResult
 	}
 	return nil
+}
+
+func (x *CompleteJobRequest) GetFinalEventSequence() int64 {
+	if x != nil {
+		return x.FinalEventSequence
+	}
+	return 0
 }
 
 // CompleteJobResponse is the response message for CompleteJob
@@ -3019,11 +3115,101 @@ func (x *JobResult) GetCompletedAt() *timestamppb.Timestamp {
 	return nil
 }
 
+// CancelJobRequest is the request message for CancelJob
+type CancelJobRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"` // Job to cancel
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CancelJobRequest) Reset() {
+	*x = CancelJobRequest{}
+	mi := &file_job_v1_job_proto_msgTypes[40]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CancelJobRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CancelJobRequest) ProtoMessage() {}
+
+func (x *CancelJobRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_job_v1_job_proto_msgTypes[40]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CancelJobRequest.ProtoReflect.Descriptor instead.
+func (*CancelJobRequest) Descriptor() ([]byte, []int) {
+	return file_job_v1_job_proto_rawDescGZIP(), []int{40}
+}
+
+func (x *CancelJobRequest) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+// CancelJobResponse is the response message for CancelJob
+type CancelJobResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	State         JobState               `protobuf:"varint,1,opt,name=state,proto3,enum=job.v1.JobState" json:"state,omitempty"` // State of the job after the request
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CancelJobResponse) Reset() {
+	*x = CancelJobResponse{}
+	mi := &file_job_v1_job_proto_msgTypes[41]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CancelJobResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CancelJobResponse) ProtoMessage() {}
+
+func (x *CancelJobResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_job_v1_job_proto_msgTypes[41]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CancelJobResponse.ProtoReflect.Descriptor instead.
+func (*CancelJobResponse) Descriptor() ([]byte, []int) {
+	return file_job_v1_job_proto_rawDescGZIP(), []int{41}
+}
+
+func (x *CancelJobResponse) GetState() JobState {
+	if x != nil {
+		return x.State
+	}
+	return JobState_JOB_STATE_UNSPECIFIED
+}
+
 var File_job_v1_job_proto protoreflect.FileDescriptor
 
 const file_job_v1_job_proto_rawDesc = "" +
 	"\n" +
-	"\x10job/v1/job.proto\x12\x06job.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe2\t\n" +
+	"\x10job/v1/job.proto\x12\x06job.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xfc\t\n" +
 	"\bJobEvent\x12\x1a\n" +
 	"\bsequence\x18\x01 \x01(\x03R\bsequence\x128\n" +
 	"\ttimestamp\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\ttimestamp\x120\n" +
@@ -3046,7 +3232,8 @@ const file_job_v1_job_proto_rawDesc = "" +
 	"\x0fgit_clone_start\x18\x10 \x01(\v2\x1a.job.v1.GitCloneStartEventH\x00R\rgitCloneStart\x12>\n" +
 	"\rgit_clone_end\x18\x11 \x01(\v2\x18.job.v1.GitCloneEndEventH\x00R\vgitCloneEnd\x12D\n" +
 	"\x0fgit_clone_error\x18\x12 \x01(\v2\x1a.job.v1.GitCloneErrorEventH\x00R\rgitCloneError\x12C\n" +
-	"\x0eprogram_status\x18\x13 \x01(\v2\x1a.job.v1.ProgramStatusEventH\x00R\rprogramStatusB\f\n" +
+	"\x0eprogram_status\x18\x13 \x01(\v2\x1a.job.v1.ProgramStatusEventH\x00R\rprogramStatus\x12\x18\n" +
+	"\aattempt\x18\x14 \x01(\x05R\aattemptB\f\n" +
 	"\n" +
 	"event_data\"`\n" +
 	"\x11ProcessStartEvent\x12\x10\n" +
@@ -3139,21 +3326,29 @@ const file_job_v1_job_proto_rawDesc = "" +
 	"\x17PublishJobEventsRequest\x12\x1d\n" +
 	"\n" +
 	"task_token\x18\x01 \x01(\tR\ttaskToken\x12(\n" +
-	"\x06events\x18\x02 \x03(\v2\x10.job.v1.JobEventR\x06events\"\x1a\n" +
-	"\x18PublishJobEventsResponse\"\xb1\x01\n" +
+	"\x06events\x18\x02 \x03(\v2\x10.job.v1.JobEventR\x06events\"x\n" +
+	"\x18PublishJobEventsResponse\x12\x18\n" +
+	"\aattempt\x18\x01 \x01(\x05R\aattempt\x12B\n" +
+	"\x1dacknowledged_through_sequence\x18\x02 \x01(\x03R\x1backnowledgedThroughSequence\"\xcb\x01\n" +
 	"\x16StreamJobEventsRequest\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12#\n" +
 	"\rfrom_sequence\x18\x02 \x01(\x03R\ffromSequence\x12%\n" +
 	"\x0efrom_timestamp\x18\x03 \x01(\x03R\rfromTimestamp\x124\n" +
-	"\fevent_filter\x18\x04 \x03(\x0e2\x11.job.v1.EventTypeR\veventFilter\"A\n" +
+	"\fevent_filter\x18\x04 \x03(\x0e2\x11.job.v1.EventTypeR\veventFilter\x12\x18\n" +
+	"\aattempt\x18\x05 \x01(\x05R\aattempt\"\xc2\x01\n" +
 	"\x17StreamJobEventsResponse\x12&\n" +
-	"\x05event\x18\x01 \x01(\v2\x10.job.v1.JobEventR\x05event\"z\n" +
+	"\x05event\x18\x01 \x01(\v2\x10.job.v1.JobEventR\x05event\x12)\n" +
+	"\x10resolved_attempt\x18\x02 \x01(\x05R\x0fresolvedAttempt\x12-\n" +
+	"\tjob_state\x18\x03 \x01(\x0e2\x10.job.v1.JobStateR\bjobState\x12%\n" +
+	"\x0eattempt_closed\x18\x04 \x01(\bR\rattemptClosed\"\xb3\x01\n" +
 	"\x11EnqueueJobRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x14\n" +
 	"\x05queue\x18\x02 \x01(\tR\x05queue\x120\n" +
 	"\n" +
-	"job_params\x18\x03 \x01(\v2\x11.job.v1.JobParamsR\tjobParams\"\x8e\x01\n" +
+	"job_params\x18\x03 \x01(\v2\x11.job.v1.JobParamsR\tjobParams\x12&\n" +
+	"\fmax_attempts\x18\x04 \x01(\x05H\x00R\vmaxAttempts\x88\x01\x01B\x0f\n" +
+	"\r_max_attempts\"\x8e\x01\n" +
 	"\x12EnqueueJobResponse\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x129\n" +
 	"\n" +
@@ -3162,17 +3357,18 @@ const file_job_v1_job_proto_rawDesc = "" +
 	"\x11DequeueJobRequest\x12\x14\n" +
 	"\x05queue\x18\x01 \x01(\tR\x05queue\x12\x19\n" +
 	"\bmax_jobs\x18\x02 \x01(\x05R\amaxJobs\x12<\n" +
-	"\x1avisibility_timeout_seconds\x18\x03 \x01(\x05R\x18visibilityTimeoutSeconds\"R\n" +
+	"\x1avisibility_timeout_seconds\x18\x03 \x01(\x05R\x18visibilityTimeoutSeconds\"\x90\x01\n" +
 	"\x12DequeueJobResponse\x12\x1d\n" +
 	"\x03job\x18\x01 \x01(\v2\v.job.v1.JobR\x03job\x12\x1d\n" +
 	"\n" +
-	"task_token\x18\x02 \x01(\tR\ttaskToken\"\x85\x01\n" +
-	"\x10UpdateJobRequest\x12\x14\n" +
-	"\x05queue\x18\x01 \x01(\tR\x05queue\x12\x1d\n" +
+	"task_token\x18\x02 \x01(\tR\ttaskToken\x12<\n" +
+	"\x1avisibility_timeout_seconds\x18\x03 \x01(\x05R\x18visibilityTimeoutSeconds\"|\n" +
+	"\x10UpdateJobRequest\x12\x1d\n" +
 	"\n" +
 	"task_token\x18\x02 \x01(\tR\ttaskToken\x12<\n" +
-	"\x1avisibility_timeout_seconds\x18\x03 \x01(\x05R\x18visibilityTimeoutSeconds\"\x13\n" +
-	"\x11UpdateJobResponse\"\x80\x01\n" +
+	"\x1avisibility_timeout_seconds\x18\x03 \x01(\x05R\x18visibilityTimeoutSecondsJ\x04\b\x01\x10\x02R\x05queue\"Q\n" +
+	"\x11UpdateJobResponse\x12<\n" +
+	"\x1avisibility_timeout_seconds\x18\x01 \x01(\x05R\x18visibilityTimeoutSeconds\"\x80\x01\n" +
 	"\x0fListJobsRequest\x12\x14\n" +
 	"\x05queue\x18\x01 \x01(\tR\x05queue\x12&\n" +
 	"\x05state\x18\x02 \x01(\x0e2\x10.job.v1.JobStateR\x05state\x12\x12\n" +
@@ -3219,7 +3415,7 @@ const file_job_v1_job_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xb0\x02\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xed\x02\n" +
 	"\x03Job\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x120\n" +
 	"\n" +
@@ -3229,12 +3425,15 @@ const file_job_v1_job_proto_rawDesc = "" +
 	"created_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
 	"updated_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12B\n" +
-	"\x10execution_config\x18\x06 \x01(\v2\x17.job.v1.ExecutionConfigR\x0fexecutionConfig\"e\n" +
+	"\x10execution_config\x18\x06 \x01(\v2\x17.job.v1.ExecutionConfigR\x0fexecutionConfig\x12\x18\n" +
+	"\aattempt\x18\a \x01(\x05R\aattempt\x12!\n" +
+	"\fmax_attempts\x18\b \x01(\x05R\vmaxAttempts\"\x97\x01\n" +
 	"\x12CompleteJobRequest\x12\x1d\n" +
 	"\n" +
 	"task_token\x18\x01 \x01(\tR\ttaskToken\x120\n" +
 	"\n" +
-	"job_result\x18\x02 \x01(\v2\x11.job.v1.JobResultR\tjobResult\"\x15\n" +
+	"job_result\x18\x02 \x01(\v2\x11.job.v1.JobResultR\tjobResult\x120\n" +
+	"\x14final_event_sequence\x18\x03 \x01(\x03R\x12finalEventSequence\"\x15\n" +
 	"\x13CompleteJobResponse\"\xf8\x01\n" +
 	"\tJobResult\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x18\n" +
@@ -3243,7 +3442,11 @@ const file_job_v1_job_proto_rawDesc = "" +
 	"\rerror_message\x18\x04 \x01(\tR\ferrorMessage\x129\n" +
 	"\n" +
 	"started_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt\x12=\n" +
-	"\fcompleted_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\vcompletedAt*Y\n" +
+	"\fcompleted_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\vcompletedAt\")\n" +
+	"\x10CancelJobRequest\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\";\n" +
+	"\x11CancelJobResponse\x12&\n" +
+	"\x05state\x18\x01 \x01(\x0e2\x10.job.v1.JobStateR\x05state*Y\n" +
 	"\n" +
 	"StreamType\x12\x1b\n" +
 	"\x17STREAM_TYPE_UNSPECIFIED\x10\x00\x12\x16\n" +
@@ -3278,7 +3481,7 @@ const file_job_v1_job_proto_rawDesc = "" +
 	"\x11JOB_STATE_RUNNING\x10\x02\x12\x17\n" +
 	"\x13JOB_STATE_COMPLETED\x10\x03\x12\x14\n" +
 	"\x10JOB_STATE_FAILED\x10\x04\x12\x17\n" +
-	"\x13JOB_STATE_CANCELLED\x10\x052\xeb\x02\n" +
+	"\x13JOB_STATE_CANCELLED\x10\x052\xaf\x03\n" +
 	"\n" +
 	"JobService\x12E\n" +
 	"\n" +
@@ -3287,10 +3490,11 @@ const file_job_v1_job_proto_rawDesc = "" +
 	"DequeueJob\x12\x19.job.v1.DequeueJobRequest\x1a\x1a.job.v1.DequeueJobResponse\"\x000\x01\x12B\n" +
 	"\tUpdateJob\x12\x18.job.v1.UpdateJobRequest\x1a\x19.job.v1.UpdateJobResponse\"\x00\x12H\n" +
 	"\vCompleteJob\x12\x1a.job.v1.CompleteJobRequest\x1a\x1b.job.v1.CompleteJobResponse\"\x00\x12?\n" +
-	"\bListJobs\x12\x17.job.v1.ListJobsRequest\x1a\x18.job.v1.ListJobsResponse\"\x002\xc5\x01\n" +
+	"\bListJobs\x12\x17.job.v1.ListJobsRequest\x1a\x18.job.v1.ListJobsResponse\"\x00\x12B\n" +
+	"\tCancelJob\x12\x18.job.v1.CancelJobRequest\x1a\x19.job.v1.CancelJobResponse\"\x002\xc3\x01\n" +
 	"\x10JobEventsService\x12V\n" +
-	"\x0fStreamJobEvents\x12\x1e.job.v1.StreamJobEventsRequest\x1a\x1f.job.v1.StreamJobEventsResponse\"\x000\x01\x12Y\n" +
-	"\x10PublishJobEvents\x12\x1f.job.v1.PublishJobEventsRequest\x1a .job.v1.PublishJobEventsResponse\"\x00(\x01B\x8c\x01\n" +
+	"\x0fStreamJobEvents\x12\x1e.job.v1.StreamJobEventsRequest\x1a\x1f.job.v1.StreamJobEventsResponse\"\x000\x01\x12W\n" +
+	"\x10PublishJobEvents\x12\x1f.job.v1.PublishJobEventsRequest\x1a .job.v1.PublishJobEventsResponse\"\x00B\x8c\x01\n" +
 	"\n" +
 	"com.job.v1B\bJobProtoP\x01Z;github.com/wolfeidau/airunner/api/gen/proto/go/job/v1;jobv1\xa2\x02\x03JXX\xaa\x02\x06Job.V1\xca\x02\x06Job\\V1\xe2\x02\x12Job\\V1\\GPBMetadata\xea\x02\aJob::V1b\x06proto3"
 
@@ -3307,7 +3511,7 @@ func file_job_v1_job_proto_rawDescGZIP() []byte {
 }
 
 var file_job_v1_job_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_job_v1_job_proto_msgTypes = make([]protoimpl.MessageInfo, 42)
+var file_job_v1_job_proto_msgTypes = make([]protoimpl.MessageInfo, 44)
 var file_job_v1_job_proto_goTypes = []any{
 	(StreamType)(0),                  // 0: job.v1.StreamType
 	(EventType)(0),                   // 1: job.v1.EventType
@@ -3353,13 +3557,15 @@ var file_job_v1_job_proto_goTypes = []any{
 	(*CompleteJobRequest)(nil),       // 41: job.v1.CompleteJobRequest
 	(*CompleteJobResponse)(nil),      // 42: job.v1.CompleteJobResponse
 	(*JobResult)(nil),                // 43: job.v1.JobResult
-	nil,                              // 44: job.v1.JobParams.EnvironmentEntry
-	nil,                              // 45: job.v1.JobParams.MetadataEntry
-	(*timestamppb.Timestamp)(nil),    // 46: google.protobuf.Timestamp
-	(*durationpb.Duration)(nil),      // 47: google.protobuf.Duration
+	(*CancelJobRequest)(nil),         // 44: job.v1.CancelJobRequest
+	(*CancelJobResponse)(nil),        // 45: job.v1.CancelJobResponse
+	nil,                              // 46: job.v1.JobParams.EnvironmentEntry
+	nil,                              // 47: job.v1.JobParams.MetadataEntry
+	(*timestamppb.Timestamp)(nil),    // 48: google.protobuf.Timestamp
+	(*durationpb.Duration)(nil),      // 49: google.protobuf.Duration
 }
 var file_job_v1_job_proto_depIdxs = []int32{
-	46, // 0: job.v1.JobEvent.timestamp:type_name -> google.protobuf.Timestamp
+	48, // 0: job.v1.JobEvent.timestamp:type_name -> google.protobuf.Timestamp
 	1,  // 1: job.v1.JobEvent.event_type:type_name -> job.v1.EventType
 	5,  // 2: job.v1.JobEvent.process_start:type_name -> job.v1.ProcessStartEvent
 	6,  // 3: job.v1.JobEvent.process_end:type_name -> job.v1.ProcessEndEvent
@@ -3377,60 +3583,64 @@ var file_job_v1_job_proto_depIdxs = []int32{
 	19, // 15: job.v1.JobEvent.git_clone_end:type_name -> job.v1.GitCloneEndEvent
 	20, // 16: job.v1.JobEvent.git_clone_error:type_name -> job.v1.GitCloneErrorEvent
 	21, // 17: job.v1.JobEvent.program_status:type_name -> job.v1.ProgramStatusEvent
-	46, // 18: job.v1.ProcessStartEvent.started_at:type_name -> google.protobuf.Timestamp
-	47, // 19: job.v1.ProcessEndEvent.run_duration:type_name -> google.protobuf.Duration
-	47, // 20: job.v1.HeartbeatEvent.elapsed_time:type_name -> google.protobuf.Duration
+	48, // 18: job.v1.ProcessStartEvent.started_at:type_name -> google.protobuf.Timestamp
+	49, // 19: job.v1.ProcessEndEvent.run_duration:type_name -> google.protobuf.Duration
+	49, // 20: job.v1.HeartbeatEvent.elapsed_time:type_name -> google.protobuf.Duration
 	0,  // 21: job.v1.OutputItem.stream_type:type_name -> job.v1.StreamType
 	11, // 22: job.v1.OutputBatchEvent.outputs:type_name -> job.v1.OutputItem
-	46, // 23: job.v1.ContainerCreateEvent.created_at:type_name -> google.protobuf.Timestamp
-	46, // 24: job.v1.ContainerRemoveEvent.removed_at:type_name -> google.protobuf.Timestamp
-	46, // 25: job.v1.ImagePullStartEvent.started_at:type_name -> google.protobuf.Timestamp
-	47, // 26: job.v1.ImagePullCompleteEvent.pull_duration:type_name -> google.protobuf.Duration
-	46, // 27: job.v1.GitCloneStartEvent.started_at:type_name -> google.protobuf.Timestamp
-	47, // 28: job.v1.GitCloneEndEvent.clone_duration:type_name -> google.protobuf.Duration
+	48, // 23: job.v1.ContainerCreateEvent.created_at:type_name -> google.protobuf.Timestamp
+	48, // 24: job.v1.ContainerRemoveEvent.removed_at:type_name -> google.protobuf.Timestamp
+	48, // 25: job.v1.ImagePullStartEvent.started_at:type_name -> google.protobuf.Timestamp
+	49, // 26: job.v1.ImagePullCompleteEvent.pull_duration:type_name -> google.protobuf.Duration
+	48, // 27: job.v1.GitCloneStartEvent.started_at:type_name -> google.protobuf.Timestamp
+	49, // 28: job.v1.GitCloneEndEvent.clone_duration:type_name -> google.protobuf.Duration
 	22, // 29: job.v1.ExecutionConfig.batching:type_name -> job.v1.BatchingConfig
 	4,  // 30: job.v1.PublishJobEventsRequest.events:type_name -> job.v1.JobEvent
 	1,  // 31: job.v1.StreamJobEventsRequest.event_filter:type_name -> job.v1.EventType
 	4,  // 32: job.v1.StreamJobEventsResponse.event:type_name -> job.v1.JobEvent
-	39, // 33: job.v1.EnqueueJobRequest.job_params:type_name -> job.v1.JobParams
-	46, // 34: job.v1.EnqueueJobResponse.created_at:type_name -> google.protobuf.Timestamp
-	3,  // 35: job.v1.EnqueueJobResponse.state:type_name -> job.v1.JobState
-	40, // 36: job.v1.DequeueJobResponse.job:type_name -> job.v1.Job
-	3,  // 37: job.v1.ListJobsRequest.state:type_name -> job.v1.JobState
-	40, // 38: job.v1.ListJobsResponse.jobs:type_name -> job.v1.Job
-	36, // 39: job.v1.ContainerConfig.mounts:type_name -> job.v1.ContainerMount
-	44, // 40: job.v1.JobParams.environment:type_name -> job.v1.JobParams.EnvironmentEntry
-	45, // 41: job.v1.JobParams.metadata:type_name -> job.v1.JobParams.MetadataEntry
-	2,  // 42: job.v1.JobParams.process_type:type_name -> job.v1.ProcessType
-	37, // 43: job.v1.JobParams.container:type_name -> job.v1.ContainerConfig
-	38, // 44: job.v1.JobParams.git_clone:type_name -> job.v1.GitCloneConfig
-	39, // 45: job.v1.Job.job_params:type_name -> job.v1.JobParams
-	3,  // 46: job.v1.Job.state:type_name -> job.v1.JobState
-	46, // 47: job.v1.Job.created_at:type_name -> google.protobuf.Timestamp
-	46, // 48: job.v1.Job.updated_at:type_name -> google.protobuf.Timestamp
-	23, // 49: job.v1.Job.execution_config:type_name -> job.v1.ExecutionConfig
-	43, // 50: job.v1.CompleteJobRequest.job_result:type_name -> job.v1.JobResult
-	46, // 51: job.v1.JobResult.started_at:type_name -> google.protobuf.Timestamp
-	46, // 52: job.v1.JobResult.completed_at:type_name -> google.protobuf.Timestamp
-	28, // 53: job.v1.JobService.EnqueueJob:input_type -> job.v1.EnqueueJobRequest
-	30, // 54: job.v1.JobService.DequeueJob:input_type -> job.v1.DequeueJobRequest
-	32, // 55: job.v1.JobService.UpdateJob:input_type -> job.v1.UpdateJobRequest
-	41, // 56: job.v1.JobService.CompleteJob:input_type -> job.v1.CompleteJobRequest
-	34, // 57: job.v1.JobService.ListJobs:input_type -> job.v1.ListJobsRequest
-	26, // 58: job.v1.JobEventsService.StreamJobEvents:input_type -> job.v1.StreamJobEventsRequest
-	24, // 59: job.v1.JobEventsService.PublishJobEvents:input_type -> job.v1.PublishJobEventsRequest
-	29, // 60: job.v1.JobService.EnqueueJob:output_type -> job.v1.EnqueueJobResponse
-	31, // 61: job.v1.JobService.DequeueJob:output_type -> job.v1.DequeueJobResponse
-	33, // 62: job.v1.JobService.UpdateJob:output_type -> job.v1.UpdateJobResponse
-	42, // 63: job.v1.JobService.CompleteJob:output_type -> job.v1.CompleteJobResponse
-	35, // 64: job.v1.JobService.ListJobs:output_type -> job.v1.ListJobsResponse
-	27, // 65: job.v1.JobEventsService.StreamJobEvents:output_type -> job.v1.StreamJobEventsResponse
-	25, // 66: job.v1.JobEventsService.PublishJobEvents:output_type -> job.v1.PublishJobEventsResponse
-	60, // [60:67] is the sub-list for method output_type
-	53, // [53:60] is the sub-list for method input_type
-	53, // [53:53] is the sub-list for extension type_name
-	53, // [53:53] is the sub-list for extension extendee
-	0,  // [0:53] is the sub-list for field type_name
+	3,  // 33: job.v1.StreamJobEventsResponse.job_state:type_name -> job.v1.JobState
+	39, // 34: job.v1.EnqueueJobRequest.job_params:type_name -> job.v1.JobParams
+	48, // 35: job.v1.EnqueueJobResponse.created_at:type_name -> google.protobuf.Timestamp
+	3,  // 36: job.v1.EnqueueJobResponse.state:type_name -> job.v1.JobState
+	40, // 37: job.v1.DequeueJobResponse.job:type_name -> job.v1.Job
+	3,  // 38: job.v1.ListJobsRequest.state:type_name -> job.v1.JobState
+	40, // 39: job.v1.ListJobsResponse.jobs:type_name -> job.v1.Job
+	36, // 40: job.v1.ContainerConfig.mounts:type_name -> job.v1.ContainerMount
+	46, // 41: job.v1.JobParams.environment:type_name -> job.v1.JobParams.EnvironmentEntry
+	47, // 42: job.v1.JobParams.metadata:type_name -> job.v1.JobParams.MetadataEntry
+	2,  // 43: job.v1.JobParams.process_type:type_name -> job.v1.ProcessType
+	37, // 44: job.v1.JobParams.container:type_name -> job.v1.ContainerConfig
+	38, // 45: job.v1.JobParams.git_clone:type_name -> job.v1.GitCloneConfig
+	39, // 46: job.v1.Job.job_params:type_name -> job.v1.JobParams
+	3,  // 47: job.v1.Job.state:type_name -> job.v1.JobState
+	48, // 48: job.v1.Job.created_at:type_name -> google.protobuf.Timestamp
+	48, // 49: job.v1.Job.updated_at:type_name -> google.protobuf.Timestamp
+	23, // 50: job.v1.Job.execution_config:type_name -> job.v1.ExecutionConfig
+	43, // 51: job.v1.CompleteJobRequest.job_result:type_name -> job.v1.JobResult
+	48, // 52: job.v1.JobResult.started_at:type_name -> google.protobuf.Timestamp
+	48, // 53: job.v1.JobResult.completed_at:type_name -> google.protobuf.Timestamp
+	3,  // 54: job.v1.CancelJobResponse.state:type_name -> job.v1.JobState
+	28, // 55: job.v1.JobService.EnqueueJob:input_type -> job.v1.EnqueueJobRequest
+	30, // 56: job.v1.JobService.DequeueJob:input_type -> job.v1.DequeueJobRequest
+	32, // 57: job.v1.JobService.UpdateJob:input_type -> job.v1.UpdateJobRequest
+	41, // 58: job.v1.JobService.CompleteJob:input_type -> job.v1.CompleteJobRequest
+	34, // 59: job.v1.JobService.ListJobs:input_type -> job.v1.ListJobsRequest
+	44, // 60: job.v1.JobService.CancelJob:input_type -> job.v1.CancelJobRequest
+	26, // 61: job.v1.JobEventsService.StreamJobEvents:input_type -> job.v1.StreamJobEventsRequest
+	24, // 62: job.v1.JobEventsService.PublishJobEvents:input_type -> job.v1.PublishJobEventsRequest
+	29, // 63: job.v1.JobService.EnqueueJob:output_type -> job.v1.EnqueueJobResponse
+	31, // 64: job.v1.JobService.DequeueJob:output_type -> job.v1.DequeueJobResponse
+	33, // 65: job.v1.JobService.UpdateJob:output_type -> job.v1.UpdateJobResponse
+	42, // 66: job.v1.JobService.CompleteJob:output_type -> job.v1.CompleteJobResponse
+	35, // 67: job.v1.JobService.ListJobs:output_type -> job.v1.ListJobsResponse
+	45, // 68: job.v1.JobService.CancelJob:output_type -> job.v1.CancelJobResponse
+	27, // 69: job.v1.JobEventsService.StreamJobEvents:output_type -> job.v1.StreamJobEventsResponse
+	25, // 70: job.v1.JobEventsService.PublishJobEvents:output_type -> job.v1.PublishJobEventsResponse
+	63, // [63:71] is the sub-list for method output_type
+	55, // [55:63] is the sub-list for method input_type
+	55, // [55:55] is the sub-list for extension type_name
+	55, // [55:55] is the sub-list for extension extendee
+	0,  // [0:55] is the sub-list for field type_name
 }
 
 func init() { file_job_v1_job_proto_init() }
@@ -3456,13 +3666,14 @@ func file_job_v1_job_proto_init() {
 		(*JobEvent_GitCloneError)(nil),
 		(*JobEvent_ProgramStatus)(nil),
 	}
+	file_job_v1_job_proto_msgTypes[24].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_job_v1_job_proto_rawDesc), len(file_job_v1_job_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   42,
+			NumMessages:   44,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

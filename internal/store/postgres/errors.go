@@ -26,7 +26,7 @@ func mapPostgresError(err error) error {
 	switch pgErr.Code {
 	case pgerrcode.UniqueViolation:
 		// Check which constraint was violated
-		if pgErr.ConstraintName == "jobs_request_id_key" || pgErr.ConstraintName == "idx_jobs_request_id" {
+		if pgErr.ConstraintName == "jobs_org_request_id_key" {
 			// Request ID duplicate - this is expected for idempotency
 			return store.ErrJobNotFound // Will be handled by checking if job exists
 		}

@@ -23,8 +23,6 @@ import (
 	"github.com/wolfeidau/airunner/internal/logger"
 	"github.com/wolfeidau/airunner/internal/login"
 	"github.com/wolfeidau/airunner/internal/server"
-	"github.com/wolfeidau/airunner/internal/store"
-	memorystore "github.com/wolfeidau/airunner/internal/store/memory"
 	postgresstore "github.com/wolfeidau/airunner/internal/store/postgres"
 	"github.com/wolfeidau/airunner/internal/telemetry"
 	"github.com/wolfeidau/airunner/internal/website/oidc"
@@ -53,7 +51,6 @@ type ServerCmd struct {
 	Tracing bool `help:"enable tracing" default:"false" env:"AIRUNNER_TRACING"`
 
 	// Store configuration
-	StoreType     string             `help:"store type (memory or postgres)" default:"memory" env:"AIRUNNER_STORE_TYPE" enum:"memory,postgres"`
 	PostgresStore PostgresStoreFlags `embed:"" prefix:"postgres-"`
 	Execution     ExecutionFlags     `embed:"" prefix:"execution-"`
 }
@@ -64,7 +61,7 @@ type PostgresStoreFlags struct {
 
 	// Store Configuration
 	TokenSigningSecret string `help:"secret key for HMAC signing of task tokens" env:"AIRUNNER_POSTGRES_TOKEN_SECRET"`
-	EventsTTLDays      int32  `help:"TTL in days for job events" default:"30"`
+	DefaultMaxAttempts int32  `help:"default maximum delivery attempts for jobs (1-100)" default:"3" env:"AIRUNNER_DEFAULT_MAX_ATTEMPTS"`
 
 	// Connection Pool Configuration
 	MaxConns        int32 `help:"maximum number of connections in pool" default:"20"`
@@ -127,94 +124,75 @@ func (c *ServerCmd) Run(globals *Globals) error {
 		interceptors = append(interceptors, otelInterceptor)
 	}
 
-	// Create stores based on store type
-	var (
-		jobStore          store.JobStore
-		principalStore    store.PrincipalStore
-		organizationStore store.OrganizationStore
-		sessionStore      store.SessionStore
-		err               error
-	)
+	// Create shared connection pool for all PostgreSQL stores
+	poolCfg := &postgresstore.PoolConfig{
+		ConnString:      c.PostgresStore.ConnString,
+		MaxConns:        c.PostgresStore.MaxConns,
+		MinConns:        c.PostgresStore.MinConns,
+		MaxConnLifetime: c.PostgresStore.MaxConnLifetime,
+		MaxConnIdleTime: c.PostgresStore.MaxConnIdleTime,
+	}
+	pool, err := postgresstore.NewPool(ctx, poolCfg)
+	if err != nil {
+		return fmt.Errorf("failed to create connection pool: %w", err)
+	}
+	defer pool.Close()
 
-	switch c.StoreType {
-	case "postgres":
-		// Create shared connection pool for all PostgreSQL stores
-		poolCfg := &postgresstore.PoolConfig{
-			ConnString:      c.PostgresStore.ConnString,
-			MaxConns:        c.PostgresStore.MaxConns,
-			MinConns:        c.PostgresStore.MinConns,
-			MaxConnLifetime: c.PostgresStore.MaxConnLifetime,
-			MaxConnIdleTime: c.PostgresStore.MaxConnIdleTime,
+	// Run migrations if enabled
+	if c.PostgresStore.AutoMigrate {
+		if err = postgresstore.RunMigrations(ctx, pool); err != nil {
+			return fmt.Errorf("failed to run migrations: %w", err)
 		}
-		pool, err := postgresstore.NewPool(ctx, poolCfg)
-		if err != nil {
-			return fmt.Errorf("failed to create connection pool: %w", err)
-		}
-
-		// Run migrations if enabled
-		if c.PostgresStore.AutoMigrate {
-			if err := postgresstore.RunMigrations(ctx, pool); err != nil {
-				pool.Close()
-				return fmt.Errorf("failed to run migrations: %w", err)
-			}
-			log.Info().Msg("Database migrations completed")
-		}
-
-		// Create job store configuration
-		jobStoreCfg := &postgresstore.JobStoreConfig{
-			TokenSigningSecret: []byte(c.PostgresStore.TokenSigningSecret),
-			DefaultExecutionConfig: &jobv1.ExecutionConfig{
-				Batching: &jobv1.BatchingConfig{
-					FlushIntervalSeconds:   c.Execution.BatchFlushInterval,
-					MaxBatchSize:           c.Execution.BatchMaxSize,
-					MaxBatchBytes:          c.Execution.BatchMaxBytes,
-					PlaybackIntervalMillis: c.Execution.PlaybackInterval,
-				},
-				HeartbeatIntervalSeconds: c.Execution.HeartbeatInterval,
-			},
-			EventsTTLDays: c.PostgresStore.EventsTTLDays,
-		}
-
-		// Create job store with shared pool
-		jobStore, err = postgresstore.NewJobStore(pool, jobStoreCfg)
-		if err != nil {
-			pool.Close()
-			return fmt.Errorf("failed to create job store: %w", err)
-		}
-
-		// Create identity stores with shared pool
-		principalStore = postgresstore.NewPrincipalStore(pool)
-		organizationStore = postgresstore.NewOrganizationStore(pool)
-		sessionStore = postgresstore.NewSessionStore(pool)
-
-		log.Info().Msg("Using PostgreSQL stores with shared connection pool")
-
-	default:
-		// Default to memory stores
-		memStore := memorystore.NewJobStore()
-		if err = memStore.Start(); err != nil {
-			return err
-		}
-		jobStore = memStore
-		principalStore = memorystore.NewPrincipalStore()
-		organizationStore = memorystore.NewOrganizationStore()
-		sessionStore = memorystore.NewSessionStore()
-		log.Info().Msg("Using in-memory job store")
-		log.Info().Msg("Using in-memory identity stores")
+		log.Info().Msg("Database migrations completed")
 	}
 
-	// Start job store if it supports Start()
-	if startable, ok := jobStore.(interface{ Start() error }); ok {
-		if err = startable.Start(); err != nil {
-			return err
+	jobStoreCfg := &postgresstore.JobStoreConfig{
+		TokenSigningSecret: []byte(c.PostgresStore.TokenSigningSecret),
+		DefaultExecutionConfig: &jobv1.ExecutionConfig{
+			Batching: &jobv1.BatchingConfig{
+				FlushIntervalSeconds:   c.Execution.BatchFlushInterval,
+				MaxBatchSize:           c.Execution.BatchMaxSize,
+				MaxBatchBytes:          c.Execution.BatchMaxBytes,
+				PlaybackIntervalMillis: c.Execution.PlaybackInterval,
+			},
+			HeartbeatIntervalSeconds: c.Execution.HeartbeatInterval,
+		},
+		DefaultMaxAttempts: c.PostgresStore.DefaultMaxAttempts,
+	}
+
+	jobStore, err := postgresstore.NewJobStore(pool, jobStoreCfg)
+	if err != nil {
+		return fmt.Errorf("failed to create job store: %w", err)
+	}
+
+	principalStore := postgresstore.NewPrincipalStore(pool)
+	organizationStore := postgresstore.NewOrganizationStore(pool)
+	sessionStore := postgresstore.NewSessionStore(pool)
+
+	log.Info().Msg("Using PostgreSQL stores with shared connection pool")
+
+	if err = jobStore.Start(); err != nil {
+		return fmt.Errorf("failed to start job store: %w", err)
+	}
+	defer func() {
+		if stopErr := jobStore.Stop(); stopErr != nil {
+			log.Error().Err(stopErr).Msg("Failed to stop job store")
 		}
-		defer func() {
-			if stoppable, ok := jobStore.(interface{ Stop() error }); ok {
-				if err = stoppable.Stop(); err != nil {
-					log.Error().Err(err).Msg("Failed to stop job store")
-				}
-			}
-		}()
+	}()
+
+	// Seed the reserved development identity for --no-auth mode
+	var devPrincipal *auth.Principal
+	if c.NoAuth {
+		devCaller, seedErr := postgresstore.SeedDevIdentity(ctx, pool)
+		if seedErr != nil {
+			return fmt.Errorf("failed to seed development identity: %w", seedErr)
+		}
+		devPrincipal = &auth.Principal{
+			PrincipalID: devCaller.PrincipalID,
+			OrgID:       devCaller.OrgID,
+			Roles:       postgresstore.DevRoles,
+			Type:        "user",
+		}
 	}
 
 	// Build assets for UI
@@ -299,7 +277,11 @@ func (c *ServerCmd) Run(globals *Globals) error {
 	} else {
 		// No auth mode - skip authentication
 		log.Warn().Msg("Authentication is disabled (--no-auth). This should only be used in development!")
-		dualAuthMiddleware = func(next http.Handler) http.Handler { return next }
+		dualAuthMiddleware = func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				next.ServeHTTP(w, r.WithContext(auth.WithPrincipal(r.Context(), devPrincipal)))
+			})
+		}
 	}
 
 	// Create services

@@ -1,9 +1,10 @@
+//go:build integration
+
 package server
 
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -11,25 +12,16 @@ import (
 	"github.com/stretchr/testify/require"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 	"github.com/wolfeidau/airunner/api/gen/proto/go/job/v1/jobv1connect"
-	memorystore "github.com/wolfeidau/airunner/internal/store/memory"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestCompleteJobWorkflow(t *testing.T) {
-	// Create test server
-	memStore := memorystore.NewJobStore()
-	require.NoError(t, memStore.Start())
-	defer func() {
-		require.NoError(t, memStore.Stop())
-	}()
+	_, _, urls := newPostgresServers(t)
 
-	server := NewServer(memStore)
-	testServer := httptest.NewServer(server.Handler())
-	defer testServer.Close()
-
-	// Create clients
-	jobClient := jobv1connect.NewJobServiceClient(http.DefaultClient, testServer.URL)
-	eventsClient := jobv1connect.NewJobEventsServiceClient(http.DefaultClient, testServer.URL)
+	// Users enqueue and list; workers dequeue, publish, update and complete
+	userClient := jobv1connect.NewJobServiceClient(http.DefaultClient, urls.User)
+	jobClient := jobv1connect.NewJobServiceClient(http.DefaultClient, urls.Worker)
+	eventsClient := jobv1connect.NewJobEventsServiceClient(http.DefaultClient, urls.Worker)
 
 	ctx := context.Background()
 
@@ -48,7 +40,7 @@ func TestCompleteJobWorkflow(t *testing.T) {
 		},
 	}
 
-	enqueueResp, err := jobClient.EnqueueJob(ctx, connect.NewRequest(enqueueReq))
+	enqueueResp, err := userClient.EnqueueJob(ctx, connect.NewRequest(enqueueReq))
 	require.NoError(t, err)
 	require.NotEmpty(t, enqueueResp.Msg.JobId)
 	require.Equal(t, jobv1.JobState_JOB_STATE_SCHEDULED, enqueueResp.Msg.State)
@@ -75,10 +67,9 @@ func TestCompleteJobWorkflow(t *testing.T) {
 	taskToken := dequeueResp.TaskToken
 
 	// 3. Publish some events (simplified - no streaming verification for now)
-	publishStream := eventsClient.PublishJobEvents(ctx)
-
 	// Send a start event
 	startEvent := &jobv1.JobEvent{
+		Sequence:  1,
 		EventType: jobv1.EventType_EVENT_TYPE_PROCESS_START,
 		EventData: &jobv1.JobEvent_ProcessStart{
 			ProcessStart: &jobv1.ProcessStartEvent{
@@ -88,25 +79,22 @@ func TestCompleteJobWorkflow(t *testing.T) {
 		},
 	}
 
-	err = publishStream.Send(&jobv1.PublishJobEventsRequest{
+	publishResp, err := eventsClient.PublishJobEvents(ctx, connect.NewRequest(&jobv1.PublishJobEventsRequest{
 		TaskToken: taskToken,
 		Events:    []*jobv1.JobEvent{startEvent},
-	})
+	}))
 	require.NoError(t, err)
-
-	// Close publish stream
-	_, err = publishStream.CloseAndReceive()
-	require.NoError(t, err)
+	require.Equal(t, int32(1), publishResp.Msg.Attempt)
 
 	// 4. Update job visibility timeout
 	updateReq := &jobv1.UpdateJobRequest{
-		Queue:                    "test-queue",
 		TaskToken:                taskToken,
 		VisibilityTimeoutSeconds: 600,
 	}
 
-	_, err = jobClient.UpdateJob(ctx, connect.NewRequest(updateReq))
+	updateResp, err := jobClient.UpdateJob(ctx, connect.NewRequest(updateReq))
 	require.NoError(t, err)
+	require.Equal(t, int32(600), updateResp.Msg.VisibilityTimeoutSeconds)
 
 	// 5. Complete the job
 	completeReq := &jobv1.CompleteJobRequest{
@@ -131,7 +119,7 @@ func TestCompleteJobWorkflow(t *testing.T) {
 		PageSize: 10,
 	}
 
-	listResp, err := jobClient.ListJobs(ctx, connect.NewRequest(listReq))
+	listResp, err := userClient.ListJobs(ctx, connect.NewRequest(listReq))
 	require.NoError(t, err)
 	require.Len(t, listResp.Msg.Jobs, 1)
 	require.Equal(t, jobID, listResp.Msg.Jobs[0].JobId)
@@ -139,18 +127,9 @@ func TestCompleteJobWorkflow(t *testing.T) {
 }
 
 func TestIdempotentJobEnqueue(t *testing.T) {
-	// Create test server
-	memStore := memorystore.NewJobStore()
-	require.NoError(t, memStore.Start())
-	defer func() {
-		require.NoError(t, memStore.Stop())
-	}()
+	_, _, urls := newPostgresServers(t)
 
-	server := NewServer(memStore)
-	testServer := httptest.NewServer(server.Handler())
-	defer testServer.Close()
-
-	jobClient := jobv1connect.NewJobServiceClient(http.DefaultClient, testServer.URL)
+	jobClient := jobv1connect.NewJobServiceClient(http.DefaultClient, urls.User)
 	ctx := context.Background()
 
 	requestID := uuid.New().String()

@@ -31,3 +31,10 @@ export const completeJob = JobService.method.completeJob;
  * @generated from rpc job.v1.JobService.ListJobs
  */
 export const listJobs = JobService.method.listJobs;
+
+/**
+ * CancelJob cancels a scheduled or running job
+ *
+ * @generated from rpc job.v1.JobService.CancelJob
+ */
+export const cancelJob = JobService.method.cancelJob;

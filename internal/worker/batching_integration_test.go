@@ -1,3 +1,5 @@
+//go:build integration
+
 package worker
 
 import (
@@ -8,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 	"github.com/wolfeidau/airunner/internal/store"
-	memorystore "github.com/wolfeidau/airunner/internal/store/memory"
+	"github.com/wolfeidau/airunner/internal/store/postgres/postgrestest"
 	"github.com/wolfeidau/airunner/internal/util"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -20,12 +22,12 @@ import (
 // 4. Client retrieves events
 func TestEventBatcherIntegrationWithStore(t *testing.T) {
 	ctx := context.Background()
-	jobStore := memorystore.NewJobStore()
-	require.NoError(t, jobStore.Start())
-	defer func() { require.NoError(t, jobStore.Stop()) }()
+	stores := postgrestest.NewStores(t)
+	fx := postgrestest.SeedOrg(t, stores)
+	jobStore := stores.Jobs
 
 	// Create a job with batching configuration
-	enqueueResp, err := jobStore.EnqueueJob(ctx, &jobv1.EnqueueJobRequest{
+	enqueueResp, err := jobStore.EnqueueJob(ctx, fx.User, &jobv1.EnqueueJobRequest{
 		RequestId: "test-req-1",
 		Queue:     "default",
 		JobParams: &jobv1.JobParams{
@@ -40,13 +42,13 @@ func TestEventBatcherIntegrationWithStore(t *testing.T) {
 	jobID := enqueueResp.JobId
 
 	// Verify job has ExecutionConfig
-	job, err := getJobByID(ctx, jobStore, jobID)
+	job, err := getJobByID(ctx, jobStore, fx.User, jobID)
 	require.NoError(t, err)
 	require.NotNil(t, job.ExecutionConfig)
 	require.NotNil(t, job.ExecutionConfig.Batching)
 
 	// Dequeue job and get task token
-	dequeued, err := jobStore.DequeueJobs(ctx, "default", 1, 300)
+	dequeued, err := jobStore.DequeueJobs(ctx, fx.Worker, "default", 1, 300)
 	require.NoError(t, err)
 	require.Len(t, dequeued, 1)
 
@@ -56,7 +58,8 @@ func TestEventBatcherIntegrationWithStore(t *testing.T) {
 	publishedEvents := make([]*jobv1.JobEvent, 0)
 	batcher := NewEventBatcher(job.ExecutionConfig, func(event *jobv1.JobEvent) error {
 		publishedEvents = append(publishedEvents, event)
-		return jobStore.PublishEvents(ctx, taskToken, []*jobv1.JobEvent{event})
+		_, err := jobStore.PublishEvents(ctx, fx.Worker, taskToken, []*jobv1.JobEvent{event})
+		return err
 	})
 	defer func() { require.NoError(t, batcher.Stop(ctx)) }()
 
@@ -89,12 +92,12 @@ func TestEventBatcherIntegrationWithStore(t *testing.T) {
 // TestEventBatcherWithNonOutputEvents tests that non-output events flush the buffer first
 func TestEventBatcherIntegrationWithNonOutputEvents(t *testing.T) {
 	ctx := context.Background()
-	jobStore := memorystore.NewJobStore()
-	require.NoError(t, jobStore.Start())
-	defer func() { require.NoError(t, jobStore.Stop()) }()
+	stores := postgrestest.NewStores(t)
+	fx := postgrestest.SeedOrg(t, stores)
+	jobStore := stores.Jobs
 
 	// Create job
-	enqueueResp, err := jobStore.EnqueueJob(ctx, &jobv1.EnqueueJobRequest{
+	enqueueResp, err := jobStore.EnqueueJob(ctx, fx.User, &jobv1.EnqueueJobRequest{
 		RequestId: "test-req-2",
 		Queue:     "default",
 		JobParams: &jobv1.JobParams{
@@ -106,12 +109,12 @@ func TestEventBatcherIntegrationWithNonOutputEvents(t *testing.T) {
 	require.NoError(t, err)
 
 	jobID := enqueueResp.JobId
-	job, err := getJobByID(ctx, jobStore, jobID)
+	job, err := getJobByID(ctx, jobStore, fx.User, jobID)
 	require.NoError(t, err)
 	require.NotNil(t, job)
 
 	// Dequeue and get token
-	dequeued, err := jobStore.DequeueJobs(ctx, "default", 1, 300)
+	dequeued, err := jobStore.DequeueJobs(ctx, fx.Worker, "default", 1, 300)
 	require.NoError(t, err)
 	taskToken := dequeued[0].TaskToken
 
@@ -119,7 +122,8 @@ func TestEventBatcherIntegrationWithNonOutputEvents(t *testing.T) {
 	publishedEvents := make([]*jobv1.JobEvent, 0)
 	batcher := NewEventBatcher(job.ExecutionConfig, func(event *jobv1.JobEvent) error {
 		publishedEvents = append(publishedEvents, event)
-		return jobStore.PublishEvents(ctx, taskToken, []*jobv1.JobEvent{event})
+		_, err := jobStore.PublishEvents(ctx, fx.Worker, taskToken, []*jobv1.JobEvent{event})
+		return err
 	})
 	defer func() { require.NoError(t, batcher.Stop(ctx)) }()
 
@@ -159,12 +163,12 @@ func TestEventBatcherIntegrationWithNonOutputEvents(t *testing.T) {
 // TestEventBatcherTimestampEncoding tests timestamp delta encoding across a batch
 func TestEventBatcherIntegrationTimestampEncoding(t *testing.T) {
 	ctx := context.Background()
-	jobStore := memorystore.NewJobStore()
-	require.NoError(t, jobStore.Start())
-	defer func() { require.NoError(t, jobStore.Stop()) }()
+	stores := postgrestest.NewStores(t)
+	fx := postgrestest.SeedOrg(t, stores)
+	jobStore := stores.Jobs
 
 	// Create job
-	enqueueResp, err := jobStore.EnqueueJob(ctx, &jobv1.EnqueueJobRequest{
+	enqueueResp, err := jobStore.EnqueueJob(ctx, fx.User, &jobv1.EnqueueJobRequest{
 		RequestId: "test-req-3",
 		Queue:     "default",
 		JobParams: &jobv1.JobParams{
@@ -176,11 +180,11 @@ func TestEventBatcherIntegrationTimestampEncoding(t *testing.T) {
 	require.NoError(t, err)
 
 	jobID := enqueueResp.JobId
-	job, err := getJobByID(ctx, jobStore, jobID)
+	job, err := getJobByID(ctx, jobStore, fx.User, jobID)
 	require.NoError(t, err)
 
 	// Dequeue
-	dequeued, err := jobStore.DequeueJobs(ctx, "default", 1, 300)
+	dequeued, err := jobStore.DequeueJobs(ctx, fx.Worker, "default", 1, 300)
 	require.NoError(t, err)
 	taskToken := dequeued[0].TaskToken
 
@@ -188,7 +192,8 @@ func TestEventBatcherIntegrationTimestampEncoding(t *testing.T) {
 	publishedEvents := make([]*jobv1.JobEvent, 0)
 	batcher := NewEventBatcher(job.ExecutionConfig, func(event *jobv1.JobEvent) error {
 		publishedEvents = append(publishedEvents, event)
-		return jobStore.PublishEvents(ctx, taskToken, []*jobv1.JobEvent{event})
+		_, err := jobStore.PublishEvents(ctx, fx.Worker, taskToken, []*jobv1.JobEvent{event})
+		return err
 	})
 	defer func() { require.NoError(t, batcher.Stop(ctx)) }()
 
@@ -254,12 +259,12 @@ func TestEventBatcherIntegrationBackwardsCompatibility(t *testing.T) {
 // TestEventBatcherSequenceAcrossMultipleBatches verifies monotonic sequence numbering
 func TestEventBatcherIntegrationSequenceMonotonicity(t *testing.T) {
 	ctx := context.Background()
-	jobStore := memorystore.NewJobStore()
-	require.NoError(t, jobStore.Start())
-	defer func() { require.NoError(t, jobStore.Stop()) }()
+	stores := postgrestest.NewStores(t)
+	fx := postgrestest.SeedOrg(t, stores)
+	jobStore := stores.Jobs
 
 	// Create job
-	enqueueResp, err := jobStore.EnqueueJob(ctx, &jobv1.EnqueueJobRequest{
+	enqueueResp, err := jobStore.EnqueueJob(ctx, fx.User, &jobv1.EnqueueJobRequest{
 		RequestId: "test-req-4",
 		Queue:     "default",
 		JobParams: &jobv1.JobParams{
@@ -271,12 +276,12 @@ func TestEventBatcherIntegrationSequenceMonotonicity(t *testing.T) {
 	require.NoError(t, err)
 
 	jobID := enqueueResp.JobId
-	job, err := getJobByID(ctx, jobStore, jobID)
+	job, err := getJobByID(ctx, jobStore, fx.User, jobID)
 	require.NoError(t, err)
 	require.NotNil(t, job)
 
 	// Dequeue
-	dequeued, err := jobStore.DequeueJobs(ctx, "default", 1, 300)
+	dequeued, err := jobStore.DequeueJobs(ctx, fx.Worker, "default", 1, 300)
 	require.NoError(t, err)
 	taskToken := dequeued[0].TaskToken
 
@@ -292,7 +297,8 @@ func TestEventBatcherIntegrationSequenceMonotonicity(t *testing.T) {
 	publishedEvents := make([]*jobv1.JobEvent, 0)
 	batcher := NewEventBatcher(config, func(event *jobv1.JobEvent) error {
 		publishedEvents = append(publishedEvents, event)
-		return jobStore.PublishEvents(ctx, taskToken, []*jobv1.JobEvent{event})
+		_, err := jobStore.PublishEvents(ctx, fx.Worker, taskToken, []*jobv1.JobEvent{event})
+		return err
 	})
 	defer func() { require.NoError(t, batcher.Stop(ctx)) }()
 
@@ -321,12 +327,12 @@ func TestEventBatcherIntegrationSequenceMonotonicity(t *testing.T) {
 // TestEventBatcherProcessLifecycle tests a realistic job lifecycle with multiple event types
 func TestEventBatcherIntegrationProcessLifecycle(t *testing.T) {
 	ctx := context.Background()
-	jobStore := memorystore.NewJobStore()
-	require.NoError(t, jobStore.Start())
-	defer func() { require.NoError(t, jobStore.Stop()) }()
+	stores := postgrestest.NewStores(t)
+	fx := postgrestest.SeedOrg(t, stores)
+	jobStore := stores.Jobs
 
 	// Create job
-	enqueueResp, err := jobStore.EnqueueJob(ctx, &jobv1.EnqueueJobRequest{
+	enqueueResp, err := jobStore.EnqueueJob(ctx, fx.User, &jobv1.EnqueueJobRequest{
 		RequestId: "test-req-5",
 		Queue:     "default",
 		JobParams: &jobv1.JobParams{
@@ -338,11 +344,11 @@ func TestEventBatcherIntegrationProcessLifecycle(t *testing.T) {
 	require.NoError(t, err)
 
 	jobID := enqueueResp.JobId
-	job, err := getJobByID(ctx, jobStore, jobID)
+	job, err := getJobByID(ctx, jobStore, fx.User, jobID)
 	require.NoError(t, err)
 
 	// Dequeue
-	dequeued, err := jobStore.DequeueJobs(ctx, "default", 1, 300)
+	dequeued, err := jobStore.DequeueJobs(ctx, fx.Worker, "default", 1, 300)
 	require.NoError(t, err)
 	taskToken := dequeued[0].TaskToken
 
@@ -350,7 +356,8 @@ func TestEventBatcherIntegrationProcessLifecycle(t *testing.T) {
 	publishedEvents := make([]*jobv1.JobEvent, 0)
 	batcher := NewEventBatcher(job.ExecutionConfig, func(event *jobv1.JobEvent) error {
 		publishedEvents = append(publishedEvents, event)
-		return jobStore.PublishEvents(ctx, taskToken, []*jobv1.JobEvent{event})
+		_, err := jobStore.PublishEvents(ctx, fx.Worker, taskToken, []*jobv1.JobEvent{event})
+		return err
 	})
 	defer func() { require.NoError(t, batcher.Stop(ctx)) }()
 
@@ -450,8 +457,8 @@ func TestEventBatcherIntegrationProcessLifecycle(t *testing.T) {
 
 // getJobByID is a helper to retrieve a job from the store (for testing only)
 // Uses ListJobs to find the job
-func getJobByID(ctx context.Context, jobStore store.JobStore, jobID string) (*jobv1.Job, error) {
-	resp, err := jobStore.ListJobs(ctx, &jobv1.ListJobsRequest{
+func getJobByID(ctx context.Context, jobStore store.JobStore, caller store.Caller, jobID string) (*jobv1.Job, error) {
+	resp, err := jobStore.ListJobs(ctx, caller, &jobv1.ListJobsRequest{
 		Page:     1,
 		PageSize: 100,
 	})

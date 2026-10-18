@@ -1,9 +1,10 @@
+//go:build integration
+
 package server
 
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -12,8 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 	"github.com/wolfeidau/airunner/api/gen/proto/go/job/v1/jobv1connect"
-	"github.com/wolfeidau/airunner/internal/auth"
-	memorystore "github.com/wolfeidau/airunner/internal/store/memory"
+	"github.com/wolfeidau/airunner/internal/store/postgres/postgrestest"
 )
 
 func TestRepro_JobHandlersEnforceRoles(t *testing.T) {
@@ -57,22 +57,16 @@ func TestRepro_JobHandlersEnforceRoles(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			memStore := memorystore.NewJobStore()
-			require.NoError(t, memStore.Start())
-			defer func() { require.NoError(t, memStore.Stop()) }()
+			stores := postgrestest.NewStores(t)
+			fx := postgrestest.SeedOrg(t, stores)
 
-			handler := NewServer(memStore).Handler()
-			principal := &auth.Principal{PrincipalID: uuid.New(), OrgID: uuid.New(), Roles: tt.roles}
-			wrapped := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				handler.ServeHTTP(w, r.WithContext(auth.WithPrincipal(r.Context(), principal)))
-			})
-			ts := httptest.NewServer(wrapped)
-			defer ts.Close()
+			handler := NewServer(stores.Jobs).Handler()
+			url := principalServer(t, handler, fx.User, tt.roles, "user")
 
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
 
-			err := tt.call(ctx, jobv1connect.NewJobServiceClient(http.DefaultClient, ts.URL))
+			err := tt.call(ctx, jobv1connect.NewJobServiceClient(http.DefaultClient, url))
 			require.Error(t, err)
 			require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 		})

@@ -1,2 +1,2 @@
-server: air --build.cmd "make build-server" --build.bin "./bin/airunner-server" -build.args_bin server,--cert=./.certs/cert.pem,--key=./.certs/key.pem,--postgres-auto-migrate
-# agent: air --build.cmd "make build-cli" --build.bin "./bin/airunner-cli" -build.args_bin worker
+server: air --build.cmd "make build-server" --build.bin "./bin/airunner-server" -build.args_bin server,--cert=./.certs/cert.pem,--key=./.certs/key.pem,--postgres-auto-migrate,--no-auth
+worker: air --build.cmd "make build-cli" --build.bin "./bin/airunner-cli" --build.send_interrupt=true --build.kill_delay=10s -build.args_bin worker

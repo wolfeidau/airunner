@@ -2,10 +2,12 @@ package server
 
 import (
 	"net/http"
+	"slices"
 
 	"connectrpc.com/connect"
 	"github.com/wolfeidau/airunner/api/gen/proto/go/job/v1/jobv1connect"
 	"github.com/wolfeidau/airunner/api/gen/proto/go/principal/v1/principalv1connect"
+	"github.com/wolfeidau/airunner/internal/auth"
 	"github.com/wolfeidau/airunner/internal/store"
 )
 
@@ -43,21 +45,20 @@ func (s *Server) Handler(otelInterceptor ...connect.Interceptor) http.Handler {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 
+	// Authz runs after the passed-in interceptors so denials are still logged and traced.
+	jobInterceptors := append(slices.Clone(otelInterceptor), auth.NewJobAuthzInterceptor())
+
 	// Register job service
 	jobPath, jobHandler := jobv1connect.NewJobServiceHandler(
 		s.jobServer,
-		connect.WithInterceptors(
-			otelInterceptor...,
-		),
+		connect.WithInterceptors(jobInterceptors...),
 	)
 	mux.Handle(jobPath, jobHandler)
 
 	// Register events service
 	eventsPath, eventsHandler := jobv1connect.NewJobEventsServiceHandler(
 		s.eventServer,
-		connect.WithInterceptors(
-			otelInterceptor...,
-		),
+		connect.WithInterceptors(jobInterceptors...),
 	)
 	mux.Handle(eventsPath, eventsHandler)
 

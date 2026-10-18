@@ -1,6 +1,6 @@
 # Phase 2: Schema and contract
 
-[← Redesign plan](../job-lifecycle-tenancy-redesign-plan.md) | [Phase 3 (planned) →](../job-lifecycle-tenancy-redesign-plan.md#deliverable-2-implementation-phases)
+[← Redesign plan](../job-lifecycle-tenancy-redesign-plan.md) | [Phase 3 →](03-phase3-tenancy-authz.md)
 
 **Goal:** establish the data contract that later phases build on: an org-scoped squashed schema, the new protocol fields, a `Caller`-aware store interface, PostgreSQL as the only job backend, and an independent reference model that checks the store.
 
@@ -134,4 +134,4 @@ make lint test test-integration proto-lint
 make proto-breaking                                    # only the expected failures above
 ```
 
-[← Redesign plan](../job-lifecycle-tenancy-redesign-plan.md) | [Phase 3 (planned) →](../job-lifecycle-tenancy-redesign-plan.md#deliverable-2-implementation-phases)
+[← Redesign plan](../job-lifecycle-tenancy-redesign-plan.md) | [Phase 3 →](03-phase3-tenancy-authz.md)

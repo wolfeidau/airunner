@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -141,19 +140,17 @@ func (o outcome) String() string {
 
 // classify maps a store error to an outcome kind.
 //   - ErrConflict -> Conflict.
-//   - The store returns an unwrapped fmt.Errorf("invalid max_attempts ...") for
-//     out-of-range input, so Invalid is matched on that message prefix only.
-//   - ErrJobNotFound on token operations -> LeaseLost. Phase 2 has no distinct
-//     fencing error (arrives in phase 4); with OnlyValidTokens it must not occur.
+//   - ErrInvalidArgument -> Invalid.
+//   - ErrLeaseLost -> LeaseLost.
 func classify(err error) storetest.OutcomeKind {
 	switch {
 	case err == nil:
 		return storetest.OK
 	case errors.Is(err, jobstore.ErrConflict):
 		return storetest.Conflict
-	case strings.HasPrefix(err.Error(), "invalid max_attempts"):
+	case errors.Is(err, jobstore.ErrInvalidArgument):
 		return storetest.Invalid
-	case errors.Is(err, jobstore.ErrJobNotFound):
+	case errors.Is(err, jobstore.ErrLeaseLost):
 		return storetest.LeaseLost
 	}
 	return storetest.OutcomeKind(-1)

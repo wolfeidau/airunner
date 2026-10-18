@@ -136,6 +136,9 @@ func (c *ServerCmd) Run(globals *Globals) error {
 	if err != nil {
 		return fmt.Errorf("failed to create connection pool: %w", err)
 	}
+	// The server owns the pool and shares it with every store and the revocation checker.
+	// Deferred calls run LIFO, so shutdown order is: HTTP server returns -> revocation
+	// checker stop -> job store stop -> pool close. Keep this defer registered first.
 	defer pool.Close()
 
 	// Run migrations if enabled

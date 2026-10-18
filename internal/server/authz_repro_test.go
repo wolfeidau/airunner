@@ -17,7 +17,6 @@ import (
 )
 
 func TestRepro_JobHandlersEnforceRoles(t *testing.T) {
-	t.Skip("known bug: job handlers do not enforce roles; fixed in phase 3 of specs/job-lifecycle-tenancy-redesign-plan.md")
 	tests := []struct {
 		name  string
 		roles []string

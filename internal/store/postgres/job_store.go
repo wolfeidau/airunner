@@ -39,10 +39,25 @@ type JobStore struct {
 	mu           sync.RWMutex
 	eventStreams map[string][]chan *jobv1.JobEvent
 
-	// Lifecycle
-	stopCh chan struct{}
-	wg     sync.WaitGroup
+	// Lifecycle. lcMu guards state, lifeCtx and lifeCancel; wg.Add is only called
+	// while the store is started so Stop's wg.Wait cannot race with it.
+	lcMu       sync.RWMutex
+	state      lifecycleState
+	lifeCtx    context.Context
+	lifeCancel context.CancelFunc
+	wg         sync.WaitGroup
 }
+
+type lifecycleState int
+
+const (
+	stateNew lifecycleState = iota
+	stateStarted
+	stateStopped
+)
+
+// stopTimeout bounds how long Stop waits for background tasks.
+const stopTimeout = 10 * time.Second
 
 // NewJobStore creates a new PostgreSQL-backed job store.
 // The pool parameter should be a shared connection pool created via postgres.NewPool().
@@ -62,53 +77,78 @@ func NewJobStore(pool *pgxpool.Pool, cfg *JobStoreConfig) (*JobStore, error) {
 		pool:         pool,
 		cfg:          cfg,
 		eventStreams: make(map[string][]chan *jobv1.JobEvent),
-		stopCh:       make(chan struct{}),
 	}, nil
 }
 
 // Start initializes the job store and starts background tasks.
+// It is idempotent while started and returns an error after Stop.
 func (s *JobStore) Start() error {
+	s.lcMu.Lock()
+	defer s.lcMu.Unlock()
+
+	switch s.state {
+	case stateStarted:
+		return nil
+	case stateStopped:
+		return errors.New("job store is stopped and cannot be restarted")
+	}
+
 	log.Info().Msg("Starting PostgreSQL job store")
 
+	s.lifeCtx, s.lifeCancel = context.WithCancel(context.Background())
+	s.state = stateStarted
+
 	// Start connection pool monitoring goroutine
+	lifeCtx := s.lifeCtx
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		s.monitorConnectionPool()
+		s.monitorConnectionPool(lifeCtx)
 	}()
 
 	return nil
 }
 
-// Stop gracefully shuts down the job store and closes connections.
+// Stop gracefully shuts down background tasks and open event streams.
+// It is idempotent. It does not close the connection pool, which is owned by the caller.
 func (s *JobStore) Stop() error {
+	s.lcMu.Lock()
+	switch s.state {
+	case stateStopped:
+		s.lcMu.Unlock()
+		return nil
+	case stateNew:
+		s.state = stateStopped
+		s.lcMu.Unlock()
+		return nil
+	}
+	s.state = stateStopped
+	cancel := s.lifeCancel
+	s.lcMu.Unlock()
+
 	log.Info().Msg("Stopping PostgreSQL job store")
 
-	// Signal shutdown
-	close(s.stopCh)
+	// Signal shutdown; stream goroutines observe the lifecycle ctx and close their own channels.
+	cancel()
 
-	// Wait for background tasks
-	s.wg.Wait()
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
 
-	// Close event streams
-	s.mu.Lock()
-	for jobID, streams := range s.eventStreams {
-		for _, ch := range streams {
-			close(ch)
-		}
-		delete(s.eventStreams, jobID)
+	select {
+	case <-done:
+	case <-time.After(stopTimeout):
+		return fmt.Errorf("timed out after %s waiting for job store background tasks to stop", stopTimeout)
 	}
-	s.mu.Unlock()
-
-	// Close connection pool
-	s.pool.Close()
 
 	log.Info().Msg("PostgreSQL job store stopped")
 	return nil
 }
 
 // monitorConnectionPool logs connection pool statistics periodically.
-func (s *JobStore) monitorConnectionPool() {
+func (s *JobStore) monitorConnectionPool(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
@@ -123,7 +163,7 @@ func (s *JobStore) monitorConnectionPool() {
 				Int64("acquire_count", stats.AcquireCount()).
 				Int64("acquire_duration_ns", stats.AcquireDuration().Nanoseconds()).
 				Msg("Connection pool stats")
-		case <-s.stopCh:
+		case <-ctx.Done():
 			return
 		}
 	}
@@ -141,7 +181,7 @@ func (s *JobStore) EnqueueJob(ctx context.Context, caller store.Caller, req *job
 	if req.MaxAttempts != nil {
 		maxAttempts = req.GetMaxAttempts()
 		if maxAttempts < 1 || maxAttempts > maxAttemptsLimit {
-			return nil, fmt.Errorf("invalid max_attempts %d: must be between 1 and %d", maxAttempts, maxAttemptsLimit)
+			return nil, fmt.Errorf("%w: invalid max_attempts %d: must be between 1 and %d", store.ErrInvalidArgument, maxAttempts, maxAttemptsLimit)
 		}
 	}
 
@@ -434,7 +474,7 @@ func (s *JobStore) UpdateJobVisibility(ctx context.Context, caller store.Caller,
 	}
 
 	if result.RowsAffected() == 0 {
-		return 0, fmt.Errorf("%w: job not found or receipt handle mismatch", store.ErrJobNotFound)
+		return 0, fmt.Errorf("%w: no matching lease", store.ErrLeaseLost)
 	}
 
 	log.Debug().
@@ -457,6 +497,10 @@ func (s *JobStore) CompleteJob(ctx context.Context, caller store.Caller, taskTok
 	if err != nil {
 		log.Warn().Err(err).Msg("Invalid task token")
 		return err
+	}
+
+	if result == nil {
+		return fmt.Errorf("%w: result is required", store.ErrInvalidArgument)
 	}
 
 	// Verify job ID matches
@@ -505,7 +549,7 @@ func (s *JobStore) CompleteJob(ctx context.Context, caller store.Caller, taskTok
 	}
 
 	if execResult.RowsAffected() == 0 {
-		return fmt.Errorf("%w: job not found or receipt handle mismatch", store.ErrJobNotFound)
+		return fmt.Errorf("%w: no matching lease", store.ErrLeaseLost)
 	}
 
 	log.Info().
@@ -556,7 +600,7 @@ func (s *JobStore) ReleaseJob(ctx context.Context, caller store.Caller, taskToke
 	}
 
 	if result.RowsAffected() == 0 {
-		return fmt.Errorf("%w: job not found or receipt handle mismatch", store.ErrJobNotFound)
+		return fmt.Errorf("%w: no matching lease", store.ErrLeaseLost)
 	}
 
 	log.Info().
@@ -675,7 +719,8 @@ func (s *JobStore) PublishEvents(ctx context.Context, caller store.Caller, taskT
 		return nil, err
 	}
 
-	// Verify job exists in the caller's org and read its current attempt
+	// Verify job exists in the caller's org and read its current attempt.
+	// phase 4: fence on receipt/leaser and RUNNING state instead of org + existence only.
 	var attempt int32
 	err = s.pool.QueryRow(queryCtx,
 		`SELECT attempt FROM jobs WHERE org_id = $1 AND job_id = $2`,
@@ -683,7 +728,7 @@ func (s *JobStore) PublishEvents(ctx context.Context, caller store.Caller, taskT
 	).Scan(&attempt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, store.ErrJobNotFound
+			return nil, fmt.Errorf("%w: no matching lease", store.ErrLeaseLost)
 		}
 		return nil, mapPostgresError(err)
 	}
@@ -776,14 +821,31 @@ func (s *JobStore) PublishEvents(ctx context.Context, caller store.Caller, taskT
 // The attempt parameter is accepted but ignored until phase 4: history for all
 // attempts is returned ordered by (attempt, sequence).
 func (s *JobStore) StreamEvents(ctx context.Context, caller store.Caller, jobID string, _ int32, fromSequence int64, fromTimestamp int64, eventFilter []jobv1.EventType) (<-chan *jobv1.JobEvent, error) {
+	// Streams are only served while the store is started. wg.Add happens under the
+	// read lock so Stop cannot begin waiting between the check and the Add.
+	s.lcMu.RLock()
+	if s.state != stateStarted {
+		s.lcMu.RUnlock()
+		return nil, errors.New("job store is not running")
+	}
+	lifeCtx := s.lifeCtx
+	s.wg.Add(1)
+	s.lcMu.RUnlock()
+
 	// Verify job exists in the caller's org
 	job, err := s.getJobByID(ctx, caller.OrgID, jobID)
 	if err != nil {
+		s.wg.Done()
 		return nil, err
 	}
 	if job == nil {
+		s.wg.Done()
 		return nil, store.ErrJobNotFound
 	}
+
+	// streamCtx ends when either the request ctx or the store lifecycle ctx ends.
+	streamCtx, cancelStream := context.WithCancel(ctx)
+	stopAfter := context.AfterFunc(lifeCtx, cancelStream)
 
 	// Create event channel
 	eventCh := make(chan *jobv1.JobEvent, 100)
@@ -798,11 +860,14 @@ func (s *JobStore) StreamEvents(ctx context.Context, caller store.Caller, jobID 
 	}
 
 	// Start goroutine for historical replay and streaming
-	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		defer s.deregisterEventStream(jobID, eventCh)
+		defer cancelStream()
+		defer stopAfter()
+		// This goroutine is the sole closer of eventCh. Deregistering under the write
+		// lock first guarantees fanoutEvent never sends on a closed channel.
 		defer close(eventCh)
+		defer s.deregisterEventStream(jobID, eventCh)
 
 		// Historical replay
 		query := `
@@ -835,7 +900,7 @@ func (s *JobStore) StreamEvents(ctx context.Context, caller store.Caller, jobID 
 		queryBuilder.WriteString(" ORDER BY attempt ASC, sequence ASC")
 		query = queryBuilder.String()
 
-		rows, err := s.pool.Query(ctx, query, args...)
+		rows, err := s.pool.Query(streamCtx, query, args...)
 		if err != nil {
 			log.Error().Err(err).Str("job_id", jobID).Msg("Failed to query historical events")
 			return
@@ -880,7 +945,7 @@ func (s *JobStore) StreamEvents(ctx context.Context, caller store.Caller, jobID 
 		log.Debug().Str("job_id", jobID).Msg("Historical replay complete, streaming real-time events")
 
 		// Wait for context cancellation (real-time events come via fanout)
-		<-ctx.Done()
+		<-streamCtx.Done()
 	}()
 
 	return eventCh, nil
@@ -970,15 +1035,11 @@ func (s *JobStore) getJobByID(ctx context.Context, orgID uuid.UUID, jobID string
 // fanoutEvent sends an event to all active stream channels for a job.
 // Uses non-blocking sends to prevent slow consumers from blocking.
 func (s *JobStore) fanoutEvent(jobID string, event *jobv1.JobEvent) {
+	// Hold the read lock while sending so deregister+close cannot interleave.
 	s.mu.RLock()
-	streams := s.eventStreams[jobID]
-	s.mu.RUnlock()
+	defer s.mu.RUnlock()
 
-	if len(streams) == 0 {
-		return
-	}
-
-	for _, ch := range streams {
+	for _, ch := range s.eventStreams[jobID] {
 		select {
 		case ch <- event:
 			// Event sent successfully

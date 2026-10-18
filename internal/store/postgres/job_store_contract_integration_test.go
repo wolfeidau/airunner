@@ -104,9 +104,9 @@ func TestContract_OrgIsolation(t *testing.T) {
 
 	// A token from one org cannot be used by another.
 	_, err = js.UpdateJobVisibility(ctx, other.Worker, jobs[0].TaskToken, 60)
-	require.ErrorIs(t, err, jobstore.ErrJobNotFound)
+	require.ErrorIs(t, err, jobstore.ErrLeaseLost)
 	err = js.CompleteJob(ctx, other.Worker, jobs[0].TaskToken, &jobv1.JobResult{JobId: jobs[0].Job.JobId, Success: true})
-	require.ErrorIs(t, err, jobstore.ErrJobNotFound)
+	require.ErrorIs(t, err, jobstore.ErrLeaseLost)
 }
 
 func TestContract_DequeueAttempts(t *testing.T) {
@@ -216,7 +216,7 @@ func TestContract_MigrationsIdempotent(t *testing.T) {
 
 	var count int
 	require.NoError(t, js.pool.QueryRow(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&count))
-	require.Equal(t, 1, count)
+	require.Equal(t, 2, count)
 }
 
 func TestContract_PublishStampsAttempt(t *testing.T) {

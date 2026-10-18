@@ -16,10 +16,14 @@ import (
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 	"github.com/wolfeidau/airunner/cmd/cli/internal/credentials"
 	"github.com/wolfeidau/airunner/internal/client"
+	"github.com/wolfeidau/airunner/internal/telemetry"
 	"github.com/wolfeidau/airunner/internal/util"
 	"github.com/wolfeidau/airunner/internal/worker"
 	"github.com/wolfeidau/airunner/internal/worker/lease"
 	"github.com/wolfeidau/airunner/internal/worker/wal"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -30,7 +34,46 @@ type WorkerCmd struct {
 	ClientTimeout     time.Duration `help:"Client timeout in seconds" default:"5m"`
 	VisibilityTimeout int32         `help:"Visibility timeout in seconds (30-3600)" default:"300"`
 	KeepFailedWAL     time.Duration `help:"Keep discarded or stale WALs in the failed directory for this long (0 disables)" default:"0" env:"AIRUNNER_KEEP_FAILED_WAL"`
+	Tracing           bool          `help:"enable tracing and metrics export (OTEL_* env)" env:"AIRUNNER_TRACING"`
+
+	metrics *telemetry.WorkerMetrics // nil records nothing
 }
+
+// workerMetrics returns the configured instruments or no-op instruments.
+func (w *WorkerCmd) workerMetrics() *telemetry.WorkerMetrics {
+	if w.metrics == nil {
+		return telemetry.NoopWorkerMetrics()
+	}
+	return w.metrics
+}
+
+// setupTelemetry initialises metrics export when --tracing is set and returns a shutdown function.
+func (w *WorkerCmd) setupTelemetry(ctx context.Context, version string) func() {
+	w.metrics = telemetry.NoopWorkerMetrics()
+	if !w.Tracing {
+		return func() {}
+	}
+	log.Info().Msg("Tracing is enabled")
+	shutdown, err := telemetry.InitTelemetry(ctx, "airunner-worker", version)
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to initialize telemetry, continuing without metrics")
+		return func() {}
+	}
+	if m, err := telemetry.NewWorkerMetrics(otel.GetMeterProvider().Meter(meterName)); err != nil {
+		log.Warn().Err(err).Msg("Failed to create worker metrics, continuing without metrics")
+	} else {
+		w.metrics = m
+	}
+	return func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdown(shutdownCtx); err != nil {
+			log.Error().Err(err).Msg("Failed to shutdown telemetry")
+		}
+	}
+}
+
+const meterName = "github.com/wolfeidau/airunner"
 
 func (w *WorkerCmd) Run(ctx context.Context, globals *Globals) error {
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr}).
@@ -39,6 +82,8 @@ func (w *WorkerCmd) Run(ctx context.Context, globals *Globals) error {
 	log.Info().Str("version", globals.Version).Msg("Starting RPC server")
 
 	log.Info().Str("queue", w.Queue).Str("server", w.Server).Msg("Worker starting")
+
+	defer w.setupTelemetry(ctx, globals.Version)()
 
 	// Initialize credential store and auth interceptor
 	store, err := credentials.NewStore("")
@@ -70,7 +115,7 @@ func (w *WorkerCmd) Run(ctx context.Context, globals *Globals) error {
 	}
 
 	// Remove WALs left by crashed workers before taking new jobs.
-	report, err := wal.CleanupStale(wal.DefaultConfig(), w.KeepFailedWAL)
+	report, err := wal.CleanupStale(w.walConfig(), w.KeepFailedWAL)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to clean up stale WALs")
 	}
@@ -149,7 +194,14 @@ func (w *WorkerCmd) processJob(ctx context.Context, clients *client.Clients) (bo
 		return false, nil // No jobs available
 	}
 
-	return true, w.runJob(ctx, clients, wal.DefaultConfig(), stream.Msg())
+	return true, w.runJob(ctx, clients, w.walConfig(), stream.Msg())
+}
+
+// walConfig returns the default WAL config wired to the worker metrics.
+func (w *WorkerCmd) walConfig() *wal.WALConfig {
+	cfg := wal.DefaultConfig()
+	cfg.Metrics = w.workerMetrics()
+	return cfg
 }
 
 // runJob executes one dequeued job under a renewable lease and settles it.
@@ -182,7 +234,7 @@ func (w *WorkerCmd) runJob(ctx context.Context, clients *client.Clients, walCfg 
 	if accepted <= 0 {
 		accepted = time.Duration(w.VisibilityTimeout) * time.Second
 	}
-	ctrl := lease.New(newRenewFunc(clients, taskToken), accepted)
+	ctrl := lease.New(newRenewFunc(clients, taskToken), accepted, lease.WithMetrics(w.workerMetrics()))
 	ctrlCtx, cancelCtrl := context.WithCancel(ctx)
 	defer cancelCtrl()
 	go ctrl.Run(ctrlCtx)
@@ -204,7 +256,7 @@ func (w *WorkerCmd) runJob(ctx context.Context, clients *client.Clients, walCfg 
 	executeErr := worker.NewJobExecutor(taskToken, batcher).Execute(execCtx, job)
 	cancelExec()
 
-	r := &jobRun{clients: clients, walCfg: walCfg, job: job, taskToken: taskToken, wal: jobWAL, ctrl: ctrl, keep: w.KeepFailedWAL > 0}
+	r := &jobRun{clients: clients, walCfg: walCfg, job: job, taskToken: taskToken, wal: jobWAL, ctrl: ctrl, keep: w.KeepFailedWAL > 0, metrics: w.workerMetrics()}
 	defer ctrl.Stop()
 	return r.finish(ctx, executeErr)
 }
@@ -218,13 +270,14 @@ type jobRun struct {
 	wal       wal.WAL
 	ctrl      *lease.Controller
 	keep      bool // keep discarded WALs in failed/ for diagnosis
+	metrics   *telemetry.WorkerMetrics
 }
 
 // finish settles the job after execution returns: flush the WAL, then complete, fail,
 // or abandon the job depending on what the lease and the publish path report.
 func (r *jobRun) finish(ctx context.Context, executeErr error) error {
 	if r.leaseLost() {
-		r.abandon("lease lost")
+		r.abandon(abandonLeaseLost, "lease lost")
 		return nil
 	}
 
@@ -235,7 +288,7 @@ func (r *jobRun) finish(ctx context.Context, executeErr error) error {
 	switch {
 	case flushErr == nil:
 	case errors.Is(flushErr, wal.ErrLeaseLost) || r.leaseLost():
-		r.abandon("lease lost")
+		r.abandon(abandonLeaseLost, "lease lost")
 		return nil
 	case errors.Is(flushErr, wal.ErrPermanent):
 		// The server will never accept the remaining events: fail the job with the
@@ -248,7 +301,7 @@ func (r *jobRun) finish(ctx context.Context, executeErr error) error {
 	case r.wal.Pending() > 0:
 		// Expiry redelivers the job; completing now would lose the pending events.
 		r.ctrl.Stop()
-		r.abandon("events could not be published before the lease budget ran out")
+		r.abandon(abandonFlushTimeout, "events could not be published before the lease budget ran out")
 		return nil
 	}
 
@@ -293,7 +346,7 @@ func (r *jobRun) complete(ctx context.Context, executeErr error) error {
 	}))
 	if err != nil {
 		if connect.CodeOf(err) == connect.CodeFailedPrecondition {
-			r.abandon("lease lost on completion")
+			r.abandon(abandonLeaseLost, "lease lost on completion")
 			return nil
 		}
 		return fmt.Errorf("failed to complete job: %w", err)
@@ -303,13 +356,25 @@ func (r *jobRun) complete(ctx context.Context, executeErr error) error {
 	return nil
 }
 
+// Abandon reasons, used as the reason attribute of worker.jobs.abandoned.
+const (
+	abandonLeaseLost    = "lease_lost"
+	abandonFlushTimeout = "flush_timeout"
+	abandonOther        = "other"
+)
+
 // abandon drops the WAL without completing or releasing the job; lease expiry redelivers it.
-func (r *jobRun) abandon(reason string) {
+// reason is one of the abandon* constants; detail is for the log.
+func (r *jobRun) abandon(reason, detail string) {
+	if r.metrics != nil {
+		r.metrics.JobsAbandoned.Add(context.Background(), 1, metric.WithAttributes(attribute.String("reason", reason)))
+	}
 	log.Warn().
 		Str("job_id", r.job.JobId).
 		Int32("attempt", r.job.Attempt).
 		Int("pending", r.wal.Pending()).
 		Str("reason", reason).
+		Str("detail", detail).
 		Msg("Abandoning job without completing, lease expiry will redeliver")
 	r.discard()
 }

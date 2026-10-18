@@ -5,6 +5,7 @@ import (
 	"time"
 
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
+	"github.com/wolfeidau/airunner/internal/telemetry"
 )
 
 // JobStoreConfig holds job-specific configuration for the PostgreSQL job store.
@@ -53,6 +54,9 @@ type JobStoreConfig struct {
 	// DisableRetentionLoop stops Start from running the in-process retention loop.
 	// Retention can then be run on a schedule with SweepRetention.
 	DisableRetentionLoop bool
+
+	// Metrics holds the telemetry instruments. Nil uses no-op instruments.
+	Metrics *telemetry.Metrics
 }
 
 // Validate checks that the configuration is valid.
@@ -98,6 +102,10 @@ func (c *JobStoreConfig) Validate() error {
 
 // ApplyDefaults applies default values to unset configuration fields.
 func (c *JobStoreConfig) ApplyDefaults() {
+	if c.Metrics == nil {
+		c.Metrics = telemetry.NoopMetrics()
+	}
+
 	if c.QueryTimeoutSeconds == 0 {
 		c.QueryTimeoutSeconds = 10 // 10 seconds
 	}

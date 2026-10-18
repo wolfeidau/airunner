@@ -3,12 +3,14 @@ package server
 import (
 	"net/http"
 	"slices"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/wolfeidau/airunner/api/gen/proto/go/job/v1/jobv1connect"
 	"github.com/wolfeidau/airunner/api/gen/proto/go/principal/v1/principalv1connect"
 	"github.com/wolfeidau/airunner/internal/auth"
 	"github.com/wolfeidau/airunner/internal/store"
+	"github.com/wolfeidau/airunner/internal/telemetry"
 )
 
 // Server wraps the HTTP server and job services
@@ -17,6 +19,7 @@ type Server struct {
 	jobServer        *JobServer
 	eventServer      *JobEventServer
 	credentialServer *CredentialServiceServer
+	metrics          *telemetry.Metrics
 }
 
 // NewServer creates a new server with the given store
@@ -26,6 +29,21 @@ func NewServer(store store.JobStore) *Server {
 		jobServer:   NewJobServer(store),
 		eventServer: NewJobEventServer(store),
 	}
+}
+
+// WithMetrics sets the telemetry instruments used by the authz interceptor and event
+// service. Without it, no-op instruments are used.
+func (s *Server) WithMetrics(m *telemetry.Metrics) *Server {
+	s.metrics = m
+	s.eventServer.metrics = m
+	return s
+}
+
+// WithStreamSendTimeout bounds how long one event stream send may block before the
+// stream is closed with DeadlineExceeded. Zero disables the bound.
+func (s *Server) WithStreamSendTimeout(d time.Duration) *Server {
+	s.eventServer.sendTimeout = d
+	return s
 }
 
 // WithCredentialService adds a credential service to the server.
@@ -46,7 +64,7 @@ func (s *Server) Handler(otelInterceptor ...connect.Interceptor) http.Handler {
 	})
 
 	// Authz runs after the passed-in interceptors so denials are still logged and traced.
-	jobInterceptors := append(slices.Clone(otelInterceptor), auth.NewJobAuthzInterceptor())
+	jobInterceptors := append(slices.Clone(otelInterceptor), auth.NewJobAuthzInterceptor(s.metrics))
 
 	// Register job service
 	jobPath, jobHandler := jobv1connect.NewJobServiceHandler(
@@ -60,7 +78,8 @@ func (s *Server) Handler(otelInterceptor ...connect.Interceptor) http.Handler {
 		s.eventServer,
 		connect.WithInterceptors(jobInterceptors...),
 	)
-	mux.Handle(eventsPath, eventsHandler)
+	// Innermost, so the write deadline is set on the real ResponseWriter.
+	mux.Handle(eventsPath, WithWriteDeadline(eventsHandler))
 
 	// Register credential service if available
 	if s.credentialServer != nil {

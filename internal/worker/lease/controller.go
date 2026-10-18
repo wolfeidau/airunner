@@ -10,6 +10,9 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
+	"github.com/wolfeidau/airunner/internal/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 )
 
 var (
@@ -37,10 +40,20 @@ type Option func(*Controller)
 // WithJitter overrides the jitter source. f returns a value in [0,1).
 func WithJitter(f func() float64) Option { return func(c *Controller) { c.jitter = f } }
 
+// WithMetrics records lease aborts on m. Nil keeps the no-op default.
+func WithMetrics(m *telemetry.WorkerMetrics) Option {
+	return func(c *Controller) {
+		if m != nil {
+			c.metrics = m
+		}
+	}
+}
+
 // Controller renews a lease and aborts when the local budget is exhausted.
 type Controller struct {
-	renew  RenewFunc
-	jitter func() float64
+	renew   RenewFunc
+	jitter  func() float64
+	metrics *telemetry.WorkerMetrics
 
 	mu       sync.Mutex
 	accepted time.Duration
@@ -63,6 +76,7 @@ func New(renew RenewFunc, accepted time.Duration, opts ...Option) *Controller {
 	c := &Controller{
 		renew:    renew,
 		jitter:   rand.Float64,
+		metrics:  telemetry.NoopWorkerMetrics(),
 		accepted: accepted,
 		done:     make(chan struct{}),
 		stopCh:   make(chan struct{}),
@@ -125,6 +139,11 @@ func (c *Controller) abort(err error) {
 	}
 	c.mu.Unlock()
 	log.Warn().Err(err).Msg("lease aborted")
+	reason := "budget"
+	if errors.Is(err, ErrLost) {
+		reason = "lost"
+	}
+	c.metrics.LeaseAborts.Add(context.Background(), 1, metric.WithAttributes(attribute.String("reason", reason)))
 	c.doneOnce.Do(func() { close(c.done) })
 	c.stopOnce.Do(func() { close(c.stopCh) })
 }

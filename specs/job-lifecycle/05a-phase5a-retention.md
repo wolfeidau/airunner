@@ -1,6 +1,6 @@
 # Phase 5a: Retention
 
-[← Redesign plan](../job-lifecycle-tenancy-redesign-plan.md) | [← Phase 4c](04c-phase4c-event-streams.md) | [Phase 5b (planned) →](../job-lifecycle-tenancy-redesign-plan.md#deliverable-2-implementation-phases)
+[← Redesign plan](../job-lifecycle-tenancy-redesign-plan.md) | [← Phase 4c](04c-phase4c-event-streams.md) | [Phase 5b →](05b-phase5b-metrics.md)
 
 **Goal:** terminal jobs, their events and expired sessions are deleted on a bounded, cancellable schedule. Live jobs are never touched.
 
@@ -109,4 +109,4 @@ go test -tags integration -race ./...
 make lint test proto-lint
 ```
 
-[← Redesign plan](../job-lifecycle-tenancy-redesign-plan.md) | [← Phase 4c](04c-phase4c-event-streams.md) | [Phase 5b (planned) →](../job-lifecycle-tenancy-redesign-plan.md#deliverable-2-implementation-phases)
+[← Redesign plan](../job-lifecycle-tenancy-redesign-plan.md) | [← Phase 4c](04c-phase4c-event-streams.md) | [Phase 5b →](05b-phase5b-metrics.md)

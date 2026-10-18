@@ -1,6 +1,7 @@
 package wal
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -47,8 +48,16 @@ func moveToFailed(walDir, walPath, jobID string, attempt int32) error {
 // deleted. With keepFailed > 0, stale files move to <WALDir>/failed and are
 // pruned once older than keepFailed; with keepFailed == 0 they are deleted and
 // failed/ is emptied.
+//
+// When cfg.Metrics is set, worker.wal.failed_deleted increases by the number of
+// WAL files removed from disk: LegacyDeleted + Deleted + PrunedFailed. Files
+// moved to failed/ are not deletions and are counted when pruned later.
 func CleanupStale(cfg *WALConfig, keepFailed time.Duration) (CleanupReport, error) {
 	var report CleanupReport
+	defer func() {
+		cfg.metrics().WALFailedDeleted.Add(context.Background(),
+			int64(report.LegacyDeleted+report.Deleted+report.PrunedFailed))
+	}()
 
 	entries, err := os.ReadDir(cfg.WALDir)
 	if errors.Is(err, os.ErrNotExist) {

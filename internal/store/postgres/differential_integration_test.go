@@ -67,6 +67,7 @@ type replayEnv struct {
 	handles map[storetest.JobHandle]string // model handle -> real job ID
 	byReal  map[string]storetest.JobHandle
 	tokens  map[storetest.Receipt]string // model receipt -> real task token
+	attempt map[storetest.Receipt]int32  // model receipt -> leased attempt
 }
 
 func newReplayEnv(t *testing.T, js *JobStore) *replayEnv {
@@ -83,6 +84,7 @@ func newReplayEnv(t *testing.T, js *JobStore) *replayEnv {
 		handles: map[storetest.JobHandle]string{},
 		byReal:  map[string]storetest.JobHandle{},
 		tokens:  map[storetest.Receipt]string{},
+		attempt: map[storetest.Receipt]int32{},
 	}
 	principals := NewPrincipalStore(js.pool)
 	// Mirrors the generator: 2 orgs x (workers n=1,2 + one user).
@@ -231,7 +233,7 @@ func (e *replayEnv) tokenFor(h storetest.JobHandle, r storetest.Receipt) (token,
 
 // eventFor builds the output batch for a model record. Timestamp and payload
 // derive only from the record and handle, so identical retries are byte-identical.
-func eventFor(h storetest.JobHandle, r storetest.Record) *jobv1.JobEvent {
+func eventFor(h storetest.JobHandle, r storetest.Record, attempt int32) *jobv1.JobEvent {
 	hash := fnv.New32a()
 	_, _ = fmt.Fprintf(hash, "%s|%d|%d|%s", h, r.Sequence, r.EndSequence, r.ContentHash)
 	ts := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(hash.Sum32()) * time.Millisecond)
@@ -241,6 +243,7 @@ func eventFor(h storetest.JobHandle, r storetest.Record) *jobv1.JobEvent {
 		outputs = append(outputs, &jobv1.OutputItem{Output: []byte(fmt.Sprintf("%s#%d", r.ContentHash, i))})
 	}
 	return &jobv1.JobEvent{
+		Attempt:   attempt,
 		Sequence:  r.Sequence,
 		Timestamp: timestamppb.New(ts),
 		EventType: jobv1.EventType_EVENT_TYPE_OUTPUT_BATCH,
@@ -298,6 +301,7 @@ func (e *replayEnv) step(t *testing.T, cmd storetest.Command, expect storetest.O
 			// the i-th claimed job takes the i-th receipt the model issued.
 			if i < len(expect.Acquired) {
 				e.tokens[expect.Acquired[i].Receipt] = jt.TaskToken
+				e.attempt[expect.Acquired[i].Receipt] = jt.Job.Attempt
 			}
 		}
 		return out
@@ -319,9 +323,11 @@ func (e *replayEnv) step(t *testing.T, cmd storetest.Command, expect storetest.O
 
 	case storetest.Publish:
 		token, _ := e.tokenFor(c.Handle, c.Receipt)
+		// The worker stamps the leased attempt; receipts the store never issued fall back to 1.
+		attempt := max(e.attempt[c.Receipt], 1)
 		events := make([]*jobv1.JobEvent, 0, len(c.Events))
 		for _, r := range c.Events {
-			events = append(events, eventFor(c.Handle, r))
+			events = append(events, eventFor(c.Handle, r, attempt))
 		}
 		res, err := e.js.PublishEvents(ctx, e.caller(t, c.Caller), token, events)
 		out := outcome{Kind: classify(err), Err: err}

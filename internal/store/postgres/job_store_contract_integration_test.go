@@ -231,8 +231,8 @@ func TestContract_PublishStampsAttempt(t *testing.T) {
 	require.Len(t, jobs, 1)
 
 	res, err := js.PublishEvents(ctx, fx.Worker, jobs[0].TaskToken, []*jobv1.JobEvent{
-		{Sequence: 1, Timestamp: timestamppb.Now(), EventType: jobv1.EventType_EVENT_TYPE_PROCESS_START},
-		{Sequence: 2, Timestamp: timestamppb.Now(), EventType: jobv1.EventType_EVENT_TYPE_OUTPUT_BATCH, EventData: &jobv1.JobEvent_OutputBatch{
+		{Attempt: 1, Sequence: 1, Timestamp: timestamppb.Now(), EventType: jobv1.EventType_EVENT_TYPE_PROCESS_START},
+		{Attempt: 1, Sequence: 2, Timestamp: timestamppb.Now(), EventType: jobv1.EventType_EVENT_TYPE_OUTPUT_BATCH, EventData: &jobv1.JobEvent_OutputBatch{
 			OutputBatch: &jobv1.OutputBatchEvent{StartSequence: 2, EndSequence: 5, Outputs: outputItems(4)},
 		}},
 	})

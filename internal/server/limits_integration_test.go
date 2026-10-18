@@ -41,6 +41,7 @@ func TestPublishLimitsAndVisibilityRange(t *testing.T) {
 
 	heartbeat := func(seq int64) *jobv1.JobEvent {
 		return &jobv1.JobEvent{
+			Attempt:   1,
 			Sequence:  seq,
 			Timestamp: timestamppb.Now(),
 			EventType: jobv1.EventType_EVENT_TYPE_HEARTBEAT,
@@ -59,6 +60,7 @@ func TestPublishLimitsAndVisibilityRange(t *testing.T) {
 
 	t.Run("over 1 MiB ResourceExhausted", func(t *testing.T) {
 		ev := &jobv1.JobEvent{
+			Attempt:   1,
 			Sequence:  1,
 			Timestamp: timestamppb.Now(),
 			EventType: jobv1.EventType_EVENT_TYPE_OUTPUT_BATCH,

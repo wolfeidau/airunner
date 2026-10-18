@@ -28,7 +28,7 @@ func (e *ArchiveCleanupError) Unwrap() error {
 }
 
 // archiveWAL compresses a WAL file using zstd and moves it to the archive directory
-func archiveWAL(walPath, archiveDir, jobID string) error {
+func archiveWAL(walPath, archiveDir, jobID string, attempt int32) error {
 	// Open source WAL file
 	src, err := os.Open(walPath)
 	if err != nil {
@@ -44,7 +44,7 @@ func archiveWAL(walPath, archiveDir, jobID string) error {
 	originalSize := srcInfo.Size()
 
 	// Create archive file
-	archivePath := filepath.Join(archiveDir, fmt.Sprintf("%s.wal.zst", jobID))
+	archivePath := filepath.Join(archiveDir, fmt.Sprintf("%s-%d.wal.zst", jobID, attempt))
 	dst, err := os.Create(archivePath)
 	if err != nil {
 		return fmt.Errorf("failed to create archive: %w", err)

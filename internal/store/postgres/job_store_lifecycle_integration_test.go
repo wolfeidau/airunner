@@ -127,6 +127,7 @@ func TestLifecycle_ConcurrentPublishStreamAndStop(t *testing.T) {
 		defer wg.Done()
 		for seq := int64(1); seq <= 300 && time.Now().Before(deadline); seq++ {
 			_, _ = js.PublishEvents(ctx, fx.Worker, token, []*jobv1.JobEvent{{
+				Attempt:   1,
 				Sequence:  seq,
 				Timestamp: timestamppb.Now(),
 				EventType: jobv1.EventType_EVENT_TYPE_OUTPUT,

@@ -1,6 +1,6 @@
 # Phase 4a: Server fencing, reaper, and the publish contract
 
-[← Redesign plan](../job-lifecycle-tenancy-redesign-plan.md) | [← Phase 3](03-phase3-tenancy-authz.md) | [Phase 4b (planned) →](../job-lifecycle-tenancy-redesign-plan.md#deliverable-2-implementation-phases)
+[← Redesign plan](../job-lifecycle-tenancy-redesign-plan.md) | [← Phase 3](03-phase3-tenancy-authz.md) | [Phase 4b →](04b-phase4b-worker-durability.md)
 
 **Goal:** jobs whose lease has expired are redelivered or failed. Only the current lease holder can mutate a job or its event log. Events are committed contiguously and acknowledged only after commit. A job completes only once the server holds its whole log.
 
@@ -105,4 +105,4 @@ go test -tags integration -race -run TestDifferentialReplay ./internal/store/pos
 make lint test proto-lint && go test -tags integration -race ./...
 ```
 
-[← Redesign plan](../job-lifecycle-tenancy-redesign-plan.md) | [← Phase 3](03-phase3-tenancy-authz.md) | [Phase 4b (planned) →](../job-lifecycle-tenancy-redesign-plan.md#deliverable-2-implementation-phases)
+[← Redesign plan](../job-lifecycle-tenancy-redesign-plan.md) | [← Phase 3](03-phase3-tenancy-authz.md) | [Phase 4b →](04b-phase4b-worker-durability.md)

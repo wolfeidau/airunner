@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/minio/crc64nvme"
 	"github.com/rs/zerolog/log"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
@@ -17,8 +18,10 @@ import (
 const (
 	// WAL file format constants
 	walMagic   = "ARWAL001"
-	walVersion = uint32(1)
-	headerSize = 16 // 8 bytes magic + 4 bytes version + 4 bytes reserved
+	walVersion = uint32(2)
+
+	// Header v2: magic(8) + version(4) + job UUID(16) + attempt(4) + reserved(4)
+	headerSize = 36
 
 	// Record status values
 	RecordPending uint8 = 1
@@ -35,25 +38,37 @@ type walRecord struct {
 	timestamp int64
 }
 
+// encodeHeader builds the v2 WAL file header
+func encodeHeader(jobUUID uuid.UUID, attempt int32) []byte {
+	header := make([]byte, headerSize)
+	copy(header[0:8], walMagic)
+	binary.LittleEndian.PutUint32(header[8:12], walVersion)
+	copy(header[12:28], jobUUID[:])
+	binary.LittleEndian.PutUint32(header[28:32], uint32(attempt)) //nolint:gosec // attempt is validated positive
+	binary.LittleEndian.PutUint32(header[32:36], 0)               // reserved
+	return header
+}
+
 // writeHeader writes the WAL file header
 func (w *walImpl) writeHeader() error {
-	header := make([]byte, headerSize)
-
-	// Magic number (8 bytes)
-	copy(header[0:8], walMagic)
-
-	// Version (4 bytes)
-	binary.LittleEndian.PutUint32(header[8:12], walVersion)
-
-	// Reserved (4 bytes) - for future use
-	binary.LittleEndian.PutUint32(header[12:16], 0)
-
-	// Write header
-	if _, err := w.file.Write(header); err != nil {
+	if _, err := w.file.Write(encodeHeader(w.jobUUID, w.attempt)); err != nil {
 		return fmt.Errorf("failed to write header: %w", err)
 	}
-
 	return nil
+}
+
+// decodeHeader parses and validates magic and version, returning the identity
+func decodeHeader(header []byte) (uuid.UUID, int32, error) {
+	var id uuid.UUID
+	if string(header[0:8]) != walMagic {
+		return id, 0, fmt.Errorf("invalid magic: %q", header[0:8])
+	}
+	if v := binary.LittleEndian.Uint32(header[8:12]); v != walVersion {
+		return id, 0, fmt.Errorf("unsupported version: %d", v)
+	}
+	copy(id[:], header[12:28])
+	//nolint:gosec // attempts are small positive values
+	return id, int32(binary.LittleEndian.Uint32(header[28:32])), nil
 }
 
 // appendRecord marshals event and writes binary record to file
@@ -195,17 +210,13 @@ func (w *walImpl) loadIndex() error {
 	if _, err := io.ReadFull(w.file, header); err != nil {
 		return fmt.Errorf("failed to read header: %w", err)
 	}
-
-	// Validate magic
-	magic := string(header[0:8])
-	if magic != walMagic {
-		return fmt.Errorf("invalid magic: %s", magic)
+	id, attempt, err := decodeHeader(header)
+	if err != nil {
+		return err
 	}
-
-	// Validate version
-	version := binary.LittleEndian.Uint32(header[8:12])
-	if version != walVersion {
-		return fmt.Errorf("unsupported version: %d", version)
+	if id != w.jobUUID || attempt != w.attempt {
+		return fmt.Errorf("header mismatch: file has job=%s attempt=%d, expected job=%s attempt=%d",
+			id, attempt, w.jobUUID, w.attempt)
 	}
 
 	// Scan records

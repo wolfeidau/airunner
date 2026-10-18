@@ -58,6 +58,7 @@ func TestEventBatcherIntegrationWithStore(t *testing.T) {
 	publishedEvents := make([]*jobv1.JobEvent, 0)
 	batcher := NewEventBatcher(job.ExecutionConfig, func(event *jobv1.JobEvent) error {
 		publishedEvents = append(publishedEvents, event)
+		event.Attempt = 1 // the worker WAL stamps the leased attempt
 		_, err := jobStore.PublishEvents(ctx, fx.Worker, taskToken, []*jobv1.JobEvent{event})
 		return err
 	})
@@ -122,6 +123,7 @@ func TestEventBatcherIntegrationWithNonOutputEvents(t *testing.T) {
 	publishedEvents := make([]*jobv1.JobEvent, 0)
 	batcher := NewEventBatcher(job.ExecutionConfig, func(event *jobv1.JobEvent) error {
 		publishedEvents = append(publishedEvents, event)
+		event.Attempt = 1 // the worker WAL stamps the leased attempt
 		_, err := jobStore.PublishEvents(ctx, fx.Worker, taskToken, []*jobv1.JobEvent{event})
 		return err
 	})
@@ -192,6 +194,7 @@ func TestEventBatcherIntegrationTimestampEncoding(t *testing.T) {
 	publishedEvents := make([]*jobv1.JobEvent, 0)
 	batcher := NewEventBatcher(job.ExecutionConfig, func(event *jobv1.JobEvent) error {
 		publishedEvents = append(publishedEvents, event)
+		event.Attempt = 1 // the worker WAL stamps the leased attempt
 		_, err := jobStore.PublishEvents(ctx, fx.Worker, taskToken, []*jobv1.JobEvent{event})
 		return err
 	})
@@ -297,6 +300,7 @@ func TestEventBatcherIntegrationSequenceMonotonicity(t *testing.T) {
 	publishedEvents := make([]*jobv1.JobEvent, 0)
 	batcher := NewEventBatcher(config, func(event *jobv1.JobEvent) error {
 		publishedEvents = append(publishedEvents, event)
+		event.Attempt = 1 // the worker WAL stamps the leased attempt
 		_, err := jobStore.PublishEvents(ctx, fx.Worker, taskToken, []*jobv1.JobEvent{event})
 		return err
 	})
@@ -356,6 +360,7 @@ func TestEventBatcherIntegrationProcessLifecycle(t *testing.T) {
 	publishedEvents := make([]*jobv1.JobEvent, 0)
 	batcher := NewEventBatcher(job.ExecutionConfig, func(event *jobv1.JobEvent) error {
 		publishedEvents = append(publishedEvents, event)
+		event.Attempt = 1 // the worker WAL stamps the leased attempt
 		_, err := jobStore.PublishEvents(ctx, fx.Worker, taskToken, []*jobv1.JobEvent{event})
 		return err
 	})

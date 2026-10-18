@@ -2,6 +2,7 @@ package wal
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -9,40 +10,82 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 )
 
+// Sentinel errors. The transport adapter wraps its errors with ErrPermanent
+// or ErrLeaseLost so the wal package stays transport-agnostic.
+var (
+	// ErrPermanent marks an error that retrying cannot fix.
+	ErrPermanent = errors.New("permanent publish error")
+
+	// ErrLeaseLost marks that the job lease was lost; publishing must stop.
+	ErrLeaseLost = errors.New("job lease lost")
+
+	// ErrAckMismatch is returned when the acknowledgement does not match the
+	// batch that was sent.
+	ErrAckMismatch = fmt.Errorf("%w: acknowledgement mismatch", ErrPermanent)
+
+	// ErrWALLocked is returned when another open WAL holds the file lock.
+	ErrWALLocked = errors.New("WAL is locked by another process")
+
+	errWALClosed = errors.New("WAL is closed")
+)
+
 // WAL provides durable event persistence with async retry
 type WAL interface {
-	// Append writes event to disk (synchronous, with fsync)
-	// Returns error if disk write or fsync fails
+	// Append stamps the event with the WAL attempt and writes it to disk
+	// (synchronous, with fsync)
 	Append(ctx context.Context, event *jobv1.JobEvent) error
 
 	// Start begins async sender goroutine
-	// The sender will continuously retry failed sends with exponential backoff
+	// The sender retries transient failures with capped exponential backoff
+	// and stops on a permanent error or lease loss.
 	Start(ctx context.Context, sender EventSender) error
 
-	// Flush blocks until all pending events are sent
-	// Returns error if context is cancelled or events cannot be sent
-	// Should be called before completing a job to ensure no data loss
+	// Flush blocks until all pending events are acknowledged, the sticky error
+	// is set (returned immediately), or ctx is done.
 	Flush(ctx context.Context) error
 
-	// Stop flushes pending events and stops async sender
-	// Blocks until all pending events are sent or context is cancelled
+	// Err returns the sticky publish error, if any.
+	Err() error
+
+	// Pending returns the number of unacknowledged records.
+	Pending() int
+
+	// Acked returns the highest acknowledged covered sequence.
+	Acked() int64
+
+	// Stop makes one final best-effort send, stops the sender, closes the file
+	// and releases the lock.
 	Stop(ctx context.Context) error
 
-	// Archive compresses WAL file and moves to archive directory
+	// Discard stops the sender without sending more, closes the file, deletes
+	// it (or moves it to <WALDir>/failed when keep is set) and releases the lock.
+	Discard(keep bool) error
+
+	// Archive compresses a stopped WAL file and moves it to the archive directory
 	// Uses zstd level 3 compression (~70% reduction)
 	Archive(ctx context.Context, archiveDir string) error
+}
+
+// Ack is the server's acknowledgement of a published batch.
+type Ack struct {
+	// Attempt is the job attempt the events were recorded against.
+	Attempt int32
+	// Through is the last covered sequence committed by the request.
+	Through int64
 }
 
 // EventSender sends events to the server
 // This interface allows decoupling WAL from transport mechanism
 type EventSender interface {
-	// Send transmits events to the server
-	// Returns error if send fails (WAL will retry)
-	Send(ctx context.Context, events []*jobv1.JobEvent) error
+	// Send transmits one batch and returns the server's acknowledgement.
+	// Errors wrapping ErrLeaseLost or ErrPermanent stop the sender; any other
+	// error is treated as transient and retried.
+	Send(ctx context.Context, events []*jobv1.JobEvent) (Ack, error)
 }
 
 // WALConfig configures WAL behavior
@@ -101,31 +144,51 @@ func DefaultConfig() *WALConfig {
 
 // walImpl implements the WAL interface
 type walImpl struct {
-	mu     sync.RWMutex
-	cfg    *WALConfig
-	jobID  string
-	file   *os.File
-	index  *walIndex
-	sender *asyncSender
+	mu      sync.RWMutex
+	cfg     *WALConfig
+	jobID   string
+	jobUUID uuid.UUID
+	attempt int32
+	file    *os.File // holds the flock until closed
+	index   *walIndex
+	sender  *asyncSender
 
 	nextSequence int64
 	walPath      string
 	isStarted    bool
+
+	acked   int64
+	err     error
+	errCh   chan struct{} // closed when err is first set
+	errOnce sync.Once
 }
 
-// NewWAL creates a new WAL instance for the given job ID
-func NewWAL(cfg *WALConfig, jobID string) (WAL, error) {
+// NewWAL creates a new WAL for the given job and attempt at
+// <WALDir>/<jobID>/<attempt>.wal. The file is locked exclusively until Stop,
+// Discard or Archive. An existing file for the same (job, attempt) is a stale
+// crash leftover and is recreated, because attempts are never reused.
+func NewWAL(cfg *WALConfig, jobID string, attempt int32) (WAL, error) {
 	if cfg == nil {
 		cfg = DefaultConfig()
+	}
+	jobUUID, err := uuid.Parse(jobID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid job id %q: %w", jobID, err)
+	}
+	if attempt < 1 {
+		return nil, fmt.Errorf("invalid attempt %d", attempt)
 	}
 
 	// Set defaults for zero-valued fields
 	if cfg.FlushPollInterval == 0 {
 		cfg.FlushPollInterval = 100 * time.Millisecond
 	}
+	if cfg.FlushInterval == 0 {
+		cfg.FlushInterval = 100 * time.Millisecond
+	}
 
-	// Ensure directories exist
-	if err := os.MkdirAll(cfg.WALDir, 0755); err != nil {
+	jobDir := filepath.Join(cfg.WALDir, jobID)
+	if err := os.MkdirAll(jobDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create WAL directory: %w", err)
 	}
 	if err := os.MkdirAll(cfg.ArchiveDir, 0755); err != nil {
@@ -135,60 +198,82 @@ func NewWAL(cfg *WALConfig, jobID string) (WAL, error) {
 	w := &walImpl{
 		cfg:          cfg,
 		jobID:        jobID,
-		walPath:      filepath.Join(cfg.WALDir, fmt.Sprintf("%s.wal", jobID)),
+		jobUUID:      jobUUID,
+		attempt:      attempt,
+		walPath:      walFilePath(cfg.WALDir, jobID, attempt),
 		index:        newWALIndex(),
 		nextSequence: 1,
+		errCh:        make(chan struct{}),
 	}
 
-	// Open or create WAL file
-	if err := w.openOrCreate(); err != nil {
-		return nil, fmt.Errorf("failed to open WAL: %w", err)
+	if err := w.openAndLock(); err != nil {
+		return nil, err
 	}
 
 	log.Info().
 		Str("job_id", jobID).
+		Int32("attempt", attempt).
 		Str("wal_path", w.walPath).
-		Int64("records", int64(w.index.Count())).
 		Msg("WAL initialized")
 
 	return w, nil
 }
 
-// openOrCreate opens existing WAL or creates new one with header
-func (w *walImpl) openOrCreate() error {
-	// Check if WAL file exists
-	fileExists := false
-	if _, err := os.Stat(w.walPath); err == nil {
-		fileExists = true
-	}
+func walFilePath(walDir, jobID string, attempt int32) string {
+	return filepath.Join(walDir, jobID, fmt.Sprintf("%d.wal", attempt))
+}
 
-	// Open file for read/write, create if not exists
-	var err error
-	w.file, err = os.OpenFile(w.walPath, os.O_RDWR|os.O_CREATE, 0644)
+// openAndLock opens the WAL file, takes the lock and writes a fresh header.
+func (w *walImpl) openAndLock() error {
+	f, err := os.OpenFile(w.walPath, os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
-		return fmt.Errorf("failed to open file: %w", err)
+		return fmt.Errorf("failed to open WAL file: %w", err)
+	}
+	if err := tryLockFile(f); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("failed to lock %s: %w", w.walPath, err)
+	}
+	w.file = f
+
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return fmt.Errorf("failed to stat WAL file: %w", err)
 	}
 
-	if !fileExists {
-		// New file - write header
-		if err := w.writeHeader(); err != nil {
-			w.file.Close()
-			return fmt.Errorf("failed to write header: %w", err)
+	if info.Size() > 0 {
+		// A file claiming another job or attempt means the path is wrong.
+		header := make([]byte, headerSize)
+		if _, rerr := io.ReadFull(f, header); rerr == nil {
+			if id, att, derr := decodeHeader(header); derr == nil && (id != w.jobUUID || att != w.attempt) {
+				_ = f.Close()
+				return fmt.Errorf("WAL header mismatch at %s: file has job=%s attempt=%d, expected job=%s attempt=%d",
+					w.walPath, id, att, w.jobUUID, w.attempt)
+			}
 		}
-		log.Debug().Str("job_id", w.jobID).Msg("Created new WAL file with header")
-	} else {
-		// Existing file - load index
-		if err := w.loadIndex(); err != nil {
-			w.file.Close()
-			return fmt.Errorf("failed to load index: %w", err)
-		}
-		log.Debug().
+		log.Warn().
 			Str("job_id", w.jobID).
-			Int("records", w.index.Count()).
-			Int("pending", w.index.CountPending()).
-			Msg("Loaded existing WAL")
+			Int32("attempt", w.attempt).
+			Int64("bytes", info.Size()).
+			Msg("Recreating stale WAL file left by a previous process")
+		if err := f.Truncate(0); err != nil {
+			_ = f.Close()
+			return fmt.Errorf("failed to truncate stale WAL: %w", err)
+		}
 	}
 
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("failed to seek: %w", err)
+	}
+	if err := w.writeHeader(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("failed to sync header: %w", err)
+	}
 	return nil
 }
 
@@ -198,7 +283,7 @@ func (w *walImpl) Append(ctx context.Context, event *jobv1.JobEvent) error {
 	defer w.mu.Unlock()
 
 	if w.file == nil {
-		return fmt.Errorf("WAL is closed")
+		return errWALClosed
 	}
 
 	// Seek to end of file to ensure we always append after the last record,
@@ -208,28 +293,26 @@ func (w *walImpl) Append(ctx context.Context, event *jobv1.JobEvent) error {
 		return fmt.Errorf("failed to get file position: %w", err)
 	}
 
+	event.Attempt = w.attempt
+
 	// Use event's sequence if set, otherwise use internal sequence
 	sequence := event.Sequence
 	if sequence == 0 {
 		sequence = w.nextSequence
 		w.nextSequence++
 	} else if sequence >= w.nextSequence {
-		// Update next sequence if event has higher sequence
 		w.nextSequence = sequence + 1
 	}
 
-	// Write record to file
 	record, err := w.appendRecord(sequence, event)
 	if err != nil {
 		return fmt.Errorf("failed to append record: %w", err)
 	}
 
-	// Fsync for durability
 	if err := w.file.Sync(); err != nil {
 		return fmt.Errorf("failed to fsync: %w", err)
 	}
 
-	// Add to index
 	w.index.Add(walRecord{
 		sequence:  sequence,
 		offset:    offset,
@@ -237,12 +320,6 @@ func (w *walImpl) Append(ctx context.Context, event *jobv1.JobEvent) error {
 		status:    RecordPending,
 		timestamp: time.Now().UnixMilli(),
 	})
-
-	log.Debug().
-		Str("job_id", w.jobID).
-		Int64("sequence", sequence).
-		Int64("offset", offset).
-		Msg("Event appended to WAL")
 
 	return nil
 }
@@ -256,92 +333,114 @@ func (w *walImpl) Start(ctx context.Context, sender EventSender) error {
 		return fmt.Errorf("WAL already started")
 	}
 
-	w.sender = newAsyncSender(w, sender, w.cfg)
-	go w.sender.sendLoop(ctx)
+	w.sender = newAsyncSender(ctx, w, sender, w.cfg)
+	go w.sender.sendLoop()
 	w.isStarted = true
 
-	log.Info().
-		Str("job_id", w.jobID).
-		Msg("WAL async sender started")
+	log.Info().Str("job_id", w.jobID).Msg("WAL async sender started")
 
 	return nil
 }
 
-// Flush blocks until all pending events are sent or context is cancelled
-func (w *walImpl) Flush(ctx context.Context) error {
-	log.Info().
-		Str("job_id", w.jobID).
-		Msg("Flushing WAL, waiting for all events to be sent")
+// setErr records the first sticky error and wakes waiting Flush callers.
+func (w *walImpl) setErr(err error) {
+	w.mu.Lock()
+	if w.err == nil {
+		w.err = err
+	}
+	w.mu.Unlock()
+	w.errOnce.Do(func() { close(w.errCh) })
 
-	// Trigger immediate send attempt (interrupts retry backoff)
+	log.Error().
+		Err(err).
+		Str("job_id", w.jobID).
+		Int32("attempt", w.attempt).
+		Int("pending", w.index.CountPending()).
+		Msg("WAL publishing stopped")
+}
+
+// Err returns the sticky publish error, if any
+func (w *walImpl) Err() error {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.err
+}
+
+// Pending returns the number of unacknowledged records
+func (w *walImpl) Pending() int {
+	return w.index.CountPending()
+}
+
+// Acked returns the highest acknowledged covered sequence
+func (w *walImpl) Acked() int64 {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.acked
+}
+
+func (w *walImpl) setAcked(through int64) {
+	w.mu.Lock()
+	if through > w.acked {
+		w.acked = through
+	}
+	w.mu.Unlock()
+}
+
+// Flush blocks until all pending events are acknowledged
+func (w *walImpl) Flush(ctx context.Context) error {
 	w.mu.RLock()
 	if w.sender != nil {
 		w.sender.triggerFlush()
 	}
 	w.mu.RUnlock()
 
-	// Poll to check if all events are sent
 	ticker := time.NewTicker(w.cfg.FlushPollInterval)
 	defer ticker.Stop()
 
 	for {
-		w.mu.RLock()
-		pending := w.index.CountPending()
-		total := w.index.Count()
-		sent := w.index.CountSent()
-		hasSender := w.sender != nil
-		w.mu.RUnlock()
-
-		if pending == 0 {
-			log.Info().
-				Str("job_id", w.jobID).
-				Int("total_events", total).
-				Int("sent", sent).
-				Msg("All WAL events sent successfully")
-			return nil
+		if err := w.Err(); err != nil {
+			return err
 		}
-
-		log.Debug().
-			Str("job_id", w.jobID).
-			Int("pending", pending).
-			Int("sent", sent).
-			Int("total", total).
-			Msg("Waiting for pending events to be sent")
-
-		// Periodically trigger flush to keep sender active
-		if hasSender {
-			w.mu.RLock()
-			if w.sender != nil {
-				w.sender.triggerFlush()
-			}
-			w.mu.RUnlock()
+		pending := w.index.CountPending()
+		if pending == 0 {
+			return nil
 		}
 
 		select {
 		case <-ticker.C:
-			// Continue polling
+		case <-w.errCh:
 		case <-ctx.Done():
 			return fmt.Errorf("flush cancelled: %d events still pending: %w", pending, ctx.Err())
 		}
 	}
 }
 
-// Stop flushes pending events and stops async sender
+// takeSender detaches the sender so it can be stopped without holding w.mu
+// (the sender goroutine needs w.mu to read records).
+func (w *walImpl) takeSender() *asyncSender {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	s := w.sender
+	w.sender = nil
+	return s
+}
+
+// Stop flushes pending events once and stops async sender
 func (w *walImpl) Stop(ctx context.Context) error {
+	if s := w.takeSender(); s != nil {
+		s.stop(false)
+	}
+
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if w.sender != nil {
-		w.sender.stop()
-		w.sender = nil
-	}
-
 	if w.file != nil {
-		if err := w.file.Close(); err != nil {
+		err := w.file.Close()
+		w.file = nil
+		if err != nil {
 			log.Error().Err(err).Str("job_id", w.jobID).Msg("Failed to close WAL file")
 			return fmt.Errorf("failed to close file: %w", err)
 		}
-		w.file = nil
 	}
 
 	log.Info().
@@ -354,6 +453,41 @@ func (w *walImpl) Stop(ctx context.Context) error {
 	return nil
 }
 
+// Discard stops the sender without sending more, then deletes the file or
+// moves it to <WALDir>/failed when keep is set, and releases the lock.
+func (w *walImpl) Discard(keep bool) error {
+	if s := w.takeSender(); s != nil {
+		s.stop(true)
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	var opErr error
+	if keep {
+		opErr = moveToFailed(w.cfg.WALDir, w.walPath, w.jobID, w.attempt)
+	} else if err := os.Remove(w.walPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		opErr = fmt.Errorf("failed to remove WAL: %w", err)
+	}
+
+	if w.file != nil {
+		if err := w.file.Close(); err != nil && opErr == nil {
+			opErr = fmt.Errorf("failed to close file: %w", err)
+		}
+		w.file = nil
+	}
+	_ = os.Remove(filepath.Dir(w.walPath)) // only succeeds when empty
+
+	log.Info().
+		Str("job_id", w.jobID).
+		Int32("attempt", w.attempt).
+		Bool("kept", keep).
+		Int("pending", w.index.CountPending()).
+		Msg("WAL discarded")
+
+	return opErr
+}
+
 // Archive compresses WAL file and moves to archive directory
 func (w *walImpl) Archive(ctx context.Context, archiveDir string) error {
 	w.mu.Lock()
@@ -363,20 +497,17 @@ func (w *walImpl) Archive(ctx context.Context, archiveDir string) error {
 		return fmt.Errorf("WAL must be stopped before archiving")
 	}
 
-	// Use configured archive dir if not specified
 	if archiveDir == "" {
 		archiveDir = w.cfg.ArchiveDir
 	}
-
-	// Ensure archive directory exists
 	if err := os.MkdirAll(archiveDir, 0755); err != nil {
 		return fmt.Errorf("failed to create archive directory: %w", err)
 	}
 
-	// Archive the WAL file
-	if err := archiveWAL(w.walPath, archiveDir, w.jobID); err != nil {
+	if err := archiveWAL(w.walPath, archiveDir, w.jobID, w.attempt); err != nil {
 		return fmt.Errorf("failed to archive WAL: %w", err)
 	}
+	_ = os.Remove(filepath.Dir(w.walPath)) // only succeeds when empty
 
 	log.Info().
 		Str("job_id", w.jobID).
@@ -392,13 +523,8 @@ func (w *walImpl) readRecordAt(offset int64) (*jobv1.JobEvent, error) {
 	defer w.mu.Unlock()
 
 	if w.file == nil {
-		return nil, fmt.Errorf("WAL is closed")
+		return nil, errWALClosed
 	}
 
-	record, err := readRecordAt(w.file, offset)
-	if err != nil {
-		return nil, err
-	}
-
-	return record, nil
+	return readRecordAt(w.file, offset)
 }

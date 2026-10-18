@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"math/rand/v2"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/rs/zerolog/log"
 	v1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 	"github.com/wolfeidau/airunner/api/gen/proto/go/job/v1/jobv1connect"
+	"github.com/wolfeidau/airunner/internal/auth"
 	"github.com/wolfeidau/airunner/internal/store"
 )
 
@@ -32,15 +34,36 @@ func NewJobServer(store store.JobStore) *JobServer {
 	}
 }
 
+// callerFromContext derives the store caller from the authenticated principal.
+func callerFromContext(ctx context.Context) (store.Caller, error) {
+	principal := auth.PrincipalFromContext(ctx)
+	if principal == nil {
+		return store.Caller{}, connect.NewError(connect.CodeUnauthenticated, errors.New("authentication required"))
+	}
+	return store.Caller{OrgID: principal.OrgID, PrincipalID: principal.PrincipalID}, nil
+}
+
 func (s *JobServer) EnqueueJob(ctx context.Context, req *connect.Request[v1.EnqueueJobRequest]) (*connect.Response[v1.EnqueueJobResponse], error) {
-	resp, err := s.store.EnqueueJob(ctx, req.Msg)
+	caller, err := callerFromContext(ctx)
 	if err != nil {
+		return nil, err
+	}
+	resp, err := s.store.EnqueueJob(ctx, caller, req.Msg)
+	if err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			return nil, connect.NewError(connect.CodeAlreadyExists, err)
+		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	return connect.NewResponse(resp), nil
 }
 
 func (s *JobServer) DequeueJob(ctx context.Context, req *connect.Request[v1.DequeueJobRequest], stream *connect.ServerStream[v1.DequeueJobResponse]) error {
+	caller, err := callerFromContext(ctx)
+	if err != nil {
+		return err
+	}
+
 	maxJobs := int(req.Msg.MaxJobs)
 	if maxJobs <= 0 {
 		maxJobs = 1
@@ -54,7 +77,7 @@ func (s *JobServer) DequeueJob(ctx context.Context, req *connect.Request[v1.Dequ
 	// Polling with jitter to prevent thundering herd
 	// SQS long polling handles the wait, this is for when queue is empty
 	for {
-		jobs, err := s.store.DequeueJobs(ctx, req.Msg.Queue, maxJobs, timeoutSeconds)
+		jobs, err := s.store.DequeueJobs(ctx, caller, req.Msg.Queue, maxJobs, timeoutSeconds)
 		if err != nil {
 			return connect.NewError(connect.CodeInternal, err)
 		}
@@ -64,11 +87,13 @@ func (s *JobServer) DequeueJob(ctx context.Context, req *connect.Request[v1.Dequ
 			resp := &v1.DequeueJobResponse{
 				Job:       jobWithToken.Job,
 				TaskToken: jobWithToken.TaskToken,
+
+				VisibilityTimeoutSeconds: jobWithToken.VisibilityTimeoutSeconds,
 			}
 			if err := stream.Send(resp); err != nil {
 				// Release the job back to the queue so it can be picked up by another worker
 				// This prevents jobs from being stuck in RUNNING state until visibility timeout
-				if releaseErr := s.store.ReleaseJob(ctx, jobWithToken.TaskToken); releaseErr != nil {
+				if releaseErr := s.store.ReleaseJob(ctx, caller, jobWithToken.TaskToken); releaseErr != nil {
 					log.Error().Err(releaseErr).Str("job_id", jobWithToken.Job.JobId).Msg("Failed to release job after stream error")
 				} else {
 					log.Warn().Str("job_id", jobWithToken.Job.JobId).Msg("Released job back to queue after stream failure")
@@ -99,16 +124,26 @@ func (s *JobServer) UpdateJob(ctx context.Context, req *connect.Request[v1.Updat
 		timeoutSeconds = 300 // 5 minutes default
 	}
 
-	err := s.store.UpdateJobVisibility(ctx, req.Msg.Queue, req.Msg.TaskToken, timeoutSeconds)
+	caller, err := callerFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	effective, err := s.store.UpdateJobVisibility(ctx, caller, req.Msg.TaskToken, timeoutSeconds)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	return connect.NewResponse(&v1.UpdateJobResponse{}), nil
+	return connect.NewResponse(&v1.UpdateJobResponse{VisibilityTimeoutSeconds: effective}), nil
 }
 
 func (s *JobServer) CompleteJob(ctx context.Context, req *connect.Request[v1.CompleteJobRequest]) (*connect.Response[v1.CompleteJobResponse], error) {
-	err := s.store.CompleteJob(ctx, req.Msg.TaskToken, req.Msg.JobResult)
+	caller, err := callerFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	err = s.store.CompleteJob(ctx, caller, req.Msg.TaskToken, req.Msg.JobResult)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
@@ -117,12 +152,22 @@ func (s *JobServer) CompleteJob(ctx context.Context, req *connect.Request[v1.Com
 }
 
 func (s *JobServer) ListJobs(ctx context.Context, req *connect.Request[v1.ListJobsRequest]) (*connect.Response[v1.ListJobsResponse], error) {
-	resp, err := s.store.ListJobs(ctx, req.Msg)
+	caller, err := callerFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := s.store.ListJobs(ctx, caller, req.Msg)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
 	return connect.NewResponse(resp), nil
+}
+
+// CancelJob is not implemented yet.
+func (s *JobServer) CancelJob(_ context.Context, _ *connect.Request[v1.CancelJobRequest]) (*connect.Response[v1.CancelJobResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cancel is not implemented yet"))
 }
 
 // addJitter adds random jitter to a duration to prevent thundering herd.

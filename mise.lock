@@ -334,6 +334,9 @@ checksum = "sha256:a1338c4140c8c94e789733e21b161a3de177b467cd3c388b634fe1a869574
 url = "https://github.com/ko-build/ko/releases/download/v0.19.1/ko_0.19.1_Darwin_arm64.tar.gz"
 url_api = "https://api.github.com/repos/ko-build/ko/releases/assets/461171820"
 
+[tools.ko."platforms.macos-arm64".provenance.slsa]
+url = "https://github.com/ko-build/ko/releases/download/v0.19.1/multiple.intoto.jsonl"
+
 [tools.ko."platforms.macos-x64"]
 checksum = "sha256:1b4ed52a5e506a55b085c7f106eb743ee756c776cc90fa232a539a47ad665310"
 url = "https://github.com/ko-build/ko/releases/download/v0.19.1/ko_0.19.1_Darwin_x86_64.tar.gz"

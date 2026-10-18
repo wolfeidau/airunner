@@ -22,6 +22,9 @@ service JobService {
 
   // ListJobs retrieves a list of jobs
   rpc ListJobs(ListJobsRequest) returns (ListJobsResponse) {}
+
+  // CancelJob cancels a scheduled or running job
+  rpc CancelJob(CancelJobRequest) returns (CancelJobResponse) {}
 }
 
 // Real-time event streaming
@@ -29,8 +32,8 @@ service JobEventsService {
   // StreamJobEvents streams job events for a specific job
   rpc StreamJobEvents(StreamJobEventsRequest) returns (stream StreamJobEventsResponse) {}
 
-  // PublishJobEvents allows workers to publish job events
-  rpc PublishJobEvents(stream PublishJobEventsRequest) returns (PublishJobEventsResponse) {}
+  // PublishJobEvents allows workers to publish a batch of job events
+  rpc PublishJobEvents(PublishJobEventsRequest) returns (PublishJobEventsResponse) {}
 }
 
 message JobEvent {
@@ -61,6 +64,7 @@ message JobEvent {
     // Program status events
     ProgramStatusEvent program_status = 19;
   }
+  int32 attempt = 20; // Job attempt that produced the event, stamped by the server
 }
 
 message ProcessStartEvent {
@@ -230,17 +234,24 @@ message PublishJobEventsRequest {
   repeated JobEvent events = 2;
 }
 
-message PublishJobEventsResponse {}
+message PublishJobEventsResponse {
+  int32 attempt = 1; // Attempt the events were recorded against
+  int64 acknowledged_through_sequence = 2; // Highest sequence covered by the committed request
+}
 
 message StreamJobEventsRequest {
   string job_id = 1;
   int64 from_sequence = 2; // Optional: replay from specific sequence
   int64 from_timestamp = 3; // Optional: replay from specific time
   repeated EventType event_filter = 4; // Optional: filter specific event types
+  int32 attempt = 5; // Optional: attempt to stream, 0 selects the latest attempt
 }
 
 message StreamJobEventsResponse {
   JobEvent event = 1;
+  int32 resolved_attempt = 2; // Attempt the stream resolved to
+  JobState job_state = 3; // Job state when the response was produced
+  bool attempt_closed = 4; // True when no further events will be produced for the attempt
 }
 
 // EnqueueJobRequest is the request message for EnqueueJob
@@ -248,6 +259,7 @@ message EnqueueJobRequest {
   string request_id = 1; // Unique request id for the job enqueue idempotency
   string queue = 2; // Queue name to enqueue the job into
   JobParams job_params = 3; // Parameters for the job to be enqueued
+  optional int32 max_attempts = 4; // Maximum delivery attempts (1-100), server default when omitted
 }
 
 // EnqueueJobResponse is the response message for EnqueueJob
@@ -268,17 +280,21 @@ message DequeueJobRequest {
 message DequeueJobResponse {
   Job job = 1; // The dequeued job
   string task_token = 2; // Token to acknowledge job completion
+  int32 visibility_timeout_seconds = 3; // Effective visibility timeout granted for the lease
 }
 
-// UpdateJobResponse is the response message for UpdateJob
+// UpdateJobRequest is the request message for UpdateJob
 message UpdateJobRequest {
-  string queue = 1; // Queue name where the job is located, used for partitioning
+  reserved 1;
+  reserved "queue";
   string task_token = 2; // Token to acknowledge job completion
   int32 visibility_timeout_seconds = 3; // How long job stays invisible after update (default: 300s)
 }
 
 // UpdateJobResponse is the response message for UpdateJob
-message UpdateJobResponse {}
+message UpdateJobResponse {
+  int32 visibility_timeout_seconds = 1; // Effective visibility timeout granted for the lease
+}
 
 // ListJobsRequest is the request message for ListJobs
 message ListJobsRequest {
@@ -371,12 +387,15 @@ message Job {
   google.protobuf.Timestamp created_at = 4; // Timestamp when the job was created
   google.protobuf.Timestamp updated_at = 5; // Timestamp when the job was last updated
   ExecutionConfig execution_config = 6; // Execution configuration for the job
+  int32 attempt = 7; // Number of delivery attempts consumed so far
+  int32 max_attempts = 8; // Maximum delivery attempts allowed
 }
 
 // CompleteJobRequest is the request message for CompleteJob
 message CompleteJobRequest {
   string task_token = 1; // Token to acknowledge job completion
   JobResult job_result = 2; // Result of the completed job
+  int64 final_event_sequence = 3; // Last event sequence published for the attempt, 0 if not reported
 }
 
 // CompleteJobResponse is the response message for CompleteJob
@@ -390,4 +409,14 @@ message JobResult {
   string error_message = 4; // Error message if the job failed
   google.protobuf.Timestamp started_at = 5; // Timestamp when the job started
   google.protobuf.Timestamp completed_at = 6; // Timestamp when the job was completed
+}
+
+// CancelJobRequest is the request message for CancelJob
+message CancelJobRequest {
+  string job_id = 1; // Job to cancel
+}
+
+// CancelJobResponse is the response message for CancelJob
+message CancelJobResponse {
+  JobState state = 1; // State of the job after the request
 }

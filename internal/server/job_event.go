@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 
 	"connectrpc.com/connect"
 	v1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
@@ -22,14 +23,24 @@ func NewJobEventServer(store store.JobStore) *JobEventServer {
 var _ jobv1connect.JobEventsServiceHandler = &JobEventServer{}
 
 func (s *JobEventServer) StreamJobEvents(ctx context.Context, req *connect.Request[v1.StreamJobEventsRequest], stream *connect.ServerStream[v1.StreamJobEventsResponse]) error {
+	caller, err := callerFromContext(ctx)
+	if err != nil {
+		return err
+	}
+
 	eventChan, err := s.store.StreamEvents(
 		ctx,
+		caller,
 		req.Msg.JobId,
+		req.Msg.Attempt,
 		req.Msg.FromSequence,
 		req.Msg.FromTimestamp,
 		req.Msg.EventFilter,
 	)
 	if err != nil {
+		if errors.Is(err, store.ErrJobNotFound) {
+			return connect.NewError(connect.CodeNotFound, err)
+		}
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
@@ -54,20 +65,19 @@ func (s *JobEventServer) StreamJobEvents(ctx context.Context, req *connect.Reque
 	}
 }
 
-func (s *JobEventServer) PublishJobEvents(ctx context.Context, stream *connect.ClientStream[v1.PublishJobEventsRequest]) (*connect.Response[v1.PublishJobEventsResponse], error) {
-	for stream.Receive() {
-		req := stream.Msg()
-
-		// Publish events to store
-		err := s.store.PublishEvents(ctx, req.TaskToken, req.Events)
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err)
-		}
+func (s *JobEventServer) PublishJobEvents(ctx context.Context, req *connect.Request[v1.PublishJobEventsRequest]) (*connect.Response[v1.PublishJobEventsResponse], error) {
+	caller, err := callerFromContext(ctx)
+	if err != nil {
+		return nil, err
 	}
 
-	if err := stream.Err(); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+	result, err := s.store.PublishEvents(ctx, caller, req.Msg.TaskToken, req.Msg.Events)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	return connect.NewResponse(&v1.PublishJobEventsResponse{}), nil
+	return connect.NewResponse(&v1.PublishJobEventsResponse{
+		Attempt:                     result.Attempt,
+		AcknowledgedThroughSequence: result.AcknowledgedThroughSequence,
+	}), nil
 }

@@ -1,9 +1,11 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +18,14 @@ import (
 	"github.com/wolfeidau/airunner/internal/store"
 	"github.com/wolfeidau/airunner/internal/util"
 	"google.golang.org/protobuf/types/known/timestamppb"
+)
+
+const (
+	// maxAttemptsLimit is the upper bound for a job's max_attempts.
+	maxAttemptsLimit = 100
+
+	// defaultVisibilityTimeoutSeconds is the lease duration when the caller does not request one.
+	defaultVisibilityTimeoutSeconds = 300
 )
 
 // JobStore implements the store.JobStore interface using PostgreSQL as the backend.
@@ -119,30 +129,25 @@ func (s *JobStore) monitorConnectionPool() {
 	}
 }
 
-// EnqueueJob adds a new job to the queue with idempotency support.
-// If a job with the same request_id already exists, returns the existing job.
-func (s *JobStore) EnqueueJob(ctx context.Context, req *jobv1.EnqueueJobRequest) (*jobv1.EnqueueJobResponse, error) {
+// EnqueueJob adds a new job to the caller's org queue with idempotency support.
+// A retry with the same request_id and the same intent returns the existing job;
+// the same request_id with a different intent returns store.ErrConflict.
+func (s *JobStore) EnqueueJob(ctx context.Context, caller store.Caller, req *jobv1.EnqueueJobRequest) (*jobv1.EnqueueJobResponse, error) {
 	// Apply query timeout
 	queryCtx, cancel := s.withQueryTimeout(ctx)
 	defer cancel()
 
-	// Check idempotency first
-	existing, err := s.getJobByRequestID(queryCtx, req.RequestId)
-	if err != nil {
-		log.Error().Err(err).Str("request_id", req.RequestId).Msg("Failed to check idempotency")
-		return nil, err
+	maxAttempts := s.cfg.DefaultMaxAttempts
+	if req.MaxAttempts != nil {
+		maxAttempts = req.GetMaxAttempts()
+		if maxAttempts < 1 || maxAttempts > maxAttemptsLimit {
+			return nil, fmt.Errorf("invalid max_attempts %d: must be between 1 and %d", maxAttempts, maxAttemptsLimit)
+		}
 	}
 
-	if existing != nil {
-		log.Debug().
-			Str("job_id", existing.JobId).
-			Str("request_id", req.RequestId).
-			Msg("Job already exists (idempotent)")
-		return &jobv1.EnqueueJobResponse{
-			JobId:     existing.JobId,
-			CreatedAt: existing.CreatedAt,
-			State:     existing.State,
-		}, nil
+	fingerprint, err := enqueueFingerprint(req.Queue, req.JobParams, req.MaxAttempts)
+	if err != nil {
+		return nil, err
 	}
 
 	// Generate new job ID
@@ -167,24 +172,27 @@ func (s *JobStore) EnqueueJob(ctx context.Context, req *jobv1.EnqueueJobRequest)
 		return nil, fmt.Errorf("failed to marshal execution_config: %w", err)
 	}
 
-	// Insert job
+	// Insert job (state 1 = SCHEDULED)
 	query := `
 		INSERT INTO jobs (
-			job_id, queue, state, request_id, created_at, updated_at,
-			job_params, execution_config
+			job_id, org_id, created_by, queue, state, request_id, request_fingerprint,
+			attempt, max_attempts, created_at, updated_at, job_params, execution_config
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8
+			$1, $2, $3, $4, 1, $5, $6, 0, $7, $8, $9, $10, $11
 		)
-		ON CONFLICT (request_id) DO NOTHING
+		ON CONFLICT (org_id, request_id) DO NOTHING
 		RETURNING job_id
 	`
 
 	var returnedJobID string
 	err = s.pool.QueryRow(queryCtx, query,
 		jobID,
+		caller.OrgID,
+		caller.PrincipalID,
 		req.Queue,
-		jobv1.JobState_JOB_STATE_SCHEDULED,
 		req.RequestId,
+		fingerprint,
+		maxAttempts,
 		now,
 		now,
 		jobParamsJSON,
@@ -192,26 +200,40 @@ func (s *JobStore) EnqueueJob(ctx context.Context, req *jobv1.EnqueueJobRequest)
 	).Scan(&returnedJobID)
 
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			// Conflict occurred, fetch the existing job
-			existing, err := s.getJobByRequestID(queryCtx, req.RequestId)
-			if err != nil {
-				return nil, err
-			}
-			if existing != nil {
-				log.Debug().
-					Str("job_id", existing.JobId).
-					Str("request_id", req.RequestId).
-					Msg("Job created concurrently (race)")
-				return &jobv1.EnqueueJobResponse{
-					JobId:     existing.JobId,
-					CreatedAt: existing.CreatedAt,
-					State:     existing.State,
-				}, nil
-			}
-			return nil, fmt.Errorf("concurrent insert conflict but job not found")
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, mapPostgresError(err)
 		}
-		return nil, mapPostgresError(err)
+
+		// Conflict occurred, fetch the existing job and compare intent
+		var existingID string
+		var createdAt time.Time
+		var state jobv1.JobState
+		var existingFingerprint []byte
+		err = s.pool.QueryRow(queryCtx, `
+			SELECT job_id, created_at, state, request_fingerprint
+			FROM jobs
+			WHERE org_id = $1 AND request_id = $2
+		`, caller.OrgID, req.RequestId).Scan(&existingID, &createdAt, &state, &existingFingerprint)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, fmt.Errorf("concurrent insert conflict but job not found")
+			}
+			return nil, mapPostgresError(err)
+		}
+
+		if !bytes.Equal(existingFingerprint, fingerprint) {
+			return nil, fmt.Errorf("%w: request_id %q was used with a different job", store.ErrConflict, req.RequestId)
+		}
+
+		log.Debug().
+			Str("job_id", existingID).
+			Str("request_id", req.RequestId).
+			Msg("Job already exists (idempotent)")
+		return &jobv1.EnqueueJobResponse{
+			JobId:     existingID,
+			CreatedAt: timestamppb.New(createdAt),
+			State:     state,
+		}, nil
 	}
 
 	log.Info().
@@ -228,41 +250,53 @@ func (s *JobStore) EnqueueJob(ctx context.Context, req *jobv1.EnqueueJobRequest)
 	}, nil
 }
 
-// DequeueJobs claims jobs from the queue using SELECT FOR UPDATE SKIP LOCKED.
-// Returns at most maxJobs jobs that are SCHEDULED and not currently visible.
-func (s *JobStore) DequeueJobs(ctx context.Context, queue string, maxJobs int, timeoutSeconds int) ([]*store.JobWithToken, error) {
+// DequeueJobs claims jobs from the caller's org queue using SELECT FOR UPDATE SKIP LOCKED.
+// Returns at most maxJobs SCHEDULED jobs with attempts remaining, oldest first.
+// Each acquisition consumes an attempt.
+func (s *JobStore) DequeueJobs(ctx context.Context, caller store.Caller, queue string, maxJobs int, timeoutSeconds int) ([]*store.JobWithToken, error) {
 	// Apply query timeout
 	queryCtx, cancel := s.withQueryTimeout(ctx)
 	defer cancel()
 
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = defaultVisibilityTimeoutSeconds
+	}
+
+	// State predicates are literals (1=SCHEDULED, 2=RUNNING) so generic plans can
+	// prove the idx_jobs_dequeue partial index predicate.
 	query := `
 		WITH claimable AS (
-			SELECT job_id, queue, created_at, job_params, execution_config
+			SELECT job_id
 			FROM jobs
-			WHERE queue = $1
-			  AND state = $2
-			  AND (visibility_until IS NULL OR visibility_until < NOW())
-			ORDER BY created_at ASC
+			WHERE org_id = $1
+			  AND queue = $2
+			  AND state = 1
+			  AND attempt < max_attempts
+			ORDER BY created_at ASC, job_id ASC
 			LIMIT $3
 			FOR UPDATE SKIP LOCKED
 		)
 		UPDATE jobs
 		SET
-			state = $4,
+			state = 2,
+			attempt = jobs.attempt + 1,
+			last_event_sequence = 0,
+			result = NULL,
+			leased_by = $4,
 			visibility_until = NOW() + $5 * INTERVAL '1 second',
 			receipt_handle = gen_random_uuid(),
 			updated_at = NOW()
 		FROM claimable
 		WHERE jobs.job_id = claimable.job_id
-		RETURNING jobs.job_id, jobs.queue, jobs.receipt_handle, jobs.created_at,
-		          jobs.job_params, jobs.execution_config
+		RETURNING jobs.job_id, jobs.queue, jobs.receipt_handle, jobs.created_at, jobs.updated_at,
+		          jobs.job_params, jobs.execution_config, jobs.attempt, jobs.max_attempts
 	`
 
 	rows, err := s.pool.Query(queryCtx, query,
+		caller.OrgID,
 		queue,
-		jobv1.JobState_JOB_STATE_SCHEDULED,
 		maxJobs,
-		jobv1.JobState_JOB_STATE_RUNNING,
+		caller.PrincipalID,
 		timeoutSeconds,
 	)
 	if err != nil {
@@ -273,16 +307,20 @@ func (s *JobStore) DequeueJobs(ctx context.Context, queue string, maxJobs int, t
 	var results []*store.JobWithToken
 	for rows.Next() {
 		var jobID, queueName, receiptHandle string
-		var createdAt time.Time
+		var createdAt, updatedAt time.Time
 		var jobParamsJSON, execConfigJSON []byte
+		var attempt, maxAttempts int32
 
 		err := rows.Scan(
 			&jobID,
 			&queueName,
 			&receiptHandle,
 			&createdAt,
+			&updatedAt,
 			&jobParamsJSON,
 			&execConfigJSON,
+			&attempt,
+			&maxAttempts,
 		)
 		if err != nil {
 			return nil, mapPostgresError(err)
@@ -305,23 +343,35 @@ func (s *JobStore) DequeueJobs(ctx context.Context, queue string, maxJobs int, t
 			JobId:           jobID,
 			State:           jobv1.JobState_JOB_STATE_RUNNING,
 			CreatedAt:       timestamppb.New(createdAt),
-			UpdatedAt:       timestamppb.Now(),
+			UpdatedAt:       timestamppb.New(updatedAt),
 			JobParams:       jobParams,
 			ExecutionConfig: execConfig,
+			Attempt:         attempt,
+			MaxAttempts:     maxAttempts,
 		}
 
 		// Generate task token
 		taskToken := s.encodeTaskToken(jobID, queueName, receiptHandle)
 
 		results = append(results, &store.JobWithToken{
-			Job:       job,
-			TaskToken: taskToken,
+			Job:                      job,
+			TaskToken:                taskToken,
+			VisibilityTimeoutSeconds: int32(timeoutSeconds), //nolint:gosec // bounded by request validation
 		})
 	}
 
 	if err := rows.Err(); err != nil {
 		return nil, mapPostgresError(err)
 	}
+
+	// UPDATE ... RETURNING does not preserve the claim order
+	sort.Slice(results, func(i, j int) bool {
+		a, b := results[i].Job, results[j].Job
+		if !a.CreatedAt.AsTime().Equal(b.CreatedAt.AsTime()) {
+			return a.CreatedAt.AsTime().Before(b.CreatedAt.AsTime())
+		}
+		return a.JobId < b.JobId
+	})
 
 	// Only log at info level when jobs are actually dequeued
 	if len(results) > 0 {
@@ -340,9 +390,10 @@ func (s *JobStore) DequeueJobs(ctx context.Context, queue string, maxJobs int, t
 	return results, nil
 }
 
-// UpdateJobVisibility extends the visibility timeout for a job.
-// The receipt handle does NOT change (matches AWS SQS behavior).
-func (s *JobStore) UpdateJobVisibility(ctx context.Context, queue string, taskToken string, timeoutSeconds int) error {
+// UpdateJobVisibility extends the visibility timeout for a job and returns the
+// effective timeout in seconds. The receipt handle does NOT change (matches AWS SQS behavior).
+// The queue is taken from the task token and verified against the job row.
+func (s *JobStore) UpdateJobVisibility(ctx context.Context, caller store.Caller, taskToken string, timeoutSeconds int) (int32, error) {
 	// Apply query timeout
 	queryCtx, cancel := s.withQueryTimeout(ctx)
 	defer cancel()
@@ -351,38 +402,39 @@ func (s *JobStore) UpdateJobVisibility(ctx context.Context, queue string, taskTo
 	tt, err := s.decodeTaskToken(taskToken)
 	if err != nil {
 		log.Warn().Err(err).Msg("Invalid task token")
-		return err
+		return 0, err
 	}
 
-	// Verify queue matches
-	if tt.Queue != queue {
-		log.Warn().Str("expected_queue", queue).Str("token_queue", tt.Queue).Msg("Queue mismatch")
-		return fmt.Errorf("%w: expected %s, got %s", store.ErrQueueMismatch, queue, tt.Queue)
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = defaultVisibilityTimeoutSeconds
 	}
 
-	// Update visibility timeout (receipt_handle stays the same)
+	// Update visibility timeout (receipt_handle stays the same); state 2 = RUNNING
 	query := `
 		UPDATE jobs
 		SET
 			visibility_until = NOW() + $1 * INTERVAL '1 second',
 			updated_at = NOW()
-		WHERE job_id = $2
-		  AND receipt_handle = $3::UUID
-		  AND queue = $4
+		WHERE org_id = $2
+		  AND job_id = $3
+		  AND receipt_handle = $4::UUID
+		  AND queue = $5
+		  AND state = 2
 	`
 
 	result, err := s.pool.Exec(queryCtx, query,
 		timeoutSeconds,
+		caller.OrgID,
 		tt.JobID,
 		tt.ReceiptHandle,
-		queue,
+		tt.Queue,
 	)
 	if err != nil {
-		return mapPostgresError(err)
+		return 0, mapPostgresError(err)
 	}
 
 	if result.RowsAffected() == 0 {
-		return fmt.Errorf("%w: job not found or receipt handle mismatch", store.ErrJobNotFound)
+		return 0, fmt.Errorf("%w: job not found or receipt handle mismatch", store.ErrJobNotFound)
 	}
 
 	log.Debug().
@@ -390,12 +442,12 @@ func (s *JobStore) UpdateJobVisibility(ctx context.Context, queue string, taskTo
 		Int("timeout_seconds", timeoutSeconds).
 		Msg("Updated job visibility")
 
-	return nil
+	return int32(timeoutSeconds), nil //nolint:gosec // bounded by request validation
 }
 
 // CompleteJob marks a job as completed or failed and removes it from the queue.
-// Clears the receipt_handle and visibility_until fields.
-func (s *JobStore) CompleteJob(ctx context.Context, taskToken string, result *jobv1.JobResult) error {
+// Clears the receipt_handle, visibility_until and leased_by fields together.
+func (s *JobStore) CompleteJob(ctx context.Context, caller store.Caller, taskToken string, result *jobv1.JobResult) error {
 	// Apply query timeout
 	queryCtx, cancel := s.withQueryTimeout(ctx)
 	defer cancel()
@@ -425,22 +477,26 @@ func (s *JobStore) CompleteJob(ctx context.Context, taskToken string, result *jo
 		return fmt.Errorf("failed to marshal result: %w", err)
 	}
 
-	// Update job state and clear visibility
+	// Update job state and clear the lease (3=COMPLETED, 4=FAILED; state 2 = RUNNING)
 	query := `
 		UPDATE jobs
 		SET
-			state = $1,
+			state = CASE WHEN $1::BOOLEAN THEN 3 ELSE 4 END,
 			visibility_until = NULL,
 			receipt_handle = NULL,
+			leased_by = NULL,
 			result = $2,
 			updated_at = NOW()
-		WHERE job_id = $3
-		  AND receipt_handle = $4::UUID
+		WHERE org_id = $3
+		  AND job_id = $4
+		  AND receipt_handle = $5::UUID
+		  AND state = 2
 	`
 
 	execResult, err := s.pool.Exec(queryCtx, query,
-		finalState,
+		result.Success,
 		resultJSON,
+		caller.OrgID,
 		tt.JobID,
 		tt.ReceiptHandle,
 	)
@@ -461,9 +517,9 @@ func (s *JobStore) CompleteJob(ctx context.Context, taskToken string, result *jo
 	return nil
 }
 
-// ReleaseJob returns a job back to the queue in SCHEDULED state.
-// Clears the receipt_handle and visibility_until fields.
-func (s *JobStore) ReleaseJob(ctx context.Context, taskToken string) error {
+// ReleaseJob returns a job back to the queue in SCHEDULED state, or fails it when
+// no attempts remain. Clears the receipt_handle, visibility_until and leased_by fields together.
+func (s *JobStore) ReleaseJob(ctx context.Context, caller store.Caller, taskToken string) error {
 	// Apply query timeout
 	queryCtx, cancel := s.withQueryTimeout(ctx)
 	defer cancel()
@@ -475,20 +531,23 @@ func (s *JobStore) ReleaseJob(ctx context.Context, taskToken string) error {
 		return err
 	}
 
-	// Update job back to SCHEDULED state
+	// Update job back to SCHEDULED (1) unless attempts are exhausted, then FAILED (4); state 2 = RUNNING
 	query := `
 		UPDATE jobs
 		SET
-			state = $1,
+			state = CASE WHEN attempt < max_attempts THEN 1 ELSE 4 END,
 			visibility_until = NULL,
 			receipt_handle = NULL,
+			leased_by = NULL,
 			updated_at = NOW()
-		WHERE job_id = $2
+		WHERE org_id = $1
+		  AND job_id = $2
 		  AND receipt_handle = $3::UUID
+		  AND state = 2
 	`
 
 	result, err := s.pool.Exec(queryCtx, query,
-		jobv1.JobState_JOB_STATE_SCHEDULED,
+		caller.OrgID,
 		tt.JobID,
 		tt.ReceiptHandle,
 	)
@@ -507,19 +566,19 @@ func (s *JobStore) ReleaseJob(ctx context.Context, taskToken string) error {
 	return nil
 }
 
-// ListJobs returns jobs matching the filter criteria.
-func (s *JobStore) ListJobs(ctx context.Context, req *jobv1.ListJobsRequest) (*jobv1.ListJobsResponse, error) {
+// ListJobs returns jobs in the caller's org matching the filter criteria.
+func (s *JobStore) ListJobs(ctx context.Context, caller store.Caller, req *jobv1.ListJobsRequest) (*jobv1.ListJobsResponse, error) {
 	// Build query with filters
 	baseQuery := `
 		SELECT job_id, state, created_at, updated_at,
-		       job_params, execution_config
+		       job_params, execution_config, attempt, max_attempts
 		FROM jobs
-		WHERE 1=1
+		WHERE org_id = $1
 	`
 
 	var conditions []string
-	var args []any
-	argIdx := 1
+	args := []any{caller.OrgID}
+	argIdx := 2
 
 	// Filter by queue (optional)
 	if req.Queue != "" {
@@ -542,8 +601,7 @@ func (s *JobStore) ListJobs(ctx context.Context, req *jobv1.ListJobsRequest) (*j
 		queryBuilder.WriteString(" ")
 		queryBuilder.WriteString(cond)
 	}
-	queryBuilder.WriteString(" ORDER BY created_at DESC")
-
+	queryBuilder.WriteString(" ORDER BY created_at DESC, job_id DESC")
 	// Add pagination
 	pageSize := int32(50) // Default page size
 	if req.PageSize > 0 && req.PageSize <= 100 {
@@ -599,9 +657,11 @@ func (s *JobStore) ListJobs(ctx context.Context, req *jobv1.ListJobsRequest) (*j
 }
 
 // PublishEvents persists events to the database and fanouts to active streams.
-func (s *JobStore) PublishEvents(ctx context.Context, taskToken string, events []*jobv1.JobEvent) error {
+// Events are stamped with the job's current attempt. Contiguity and lease fencing
+// are not enforced yet (phase 4).
+func (s *JobStore) PublishEvents(ctx context.Context, caller store.Caller, taskToken string, events []*jobv1.JobEvent) (*store.PublishResult, error) {
 	if len(events) == 0 {
-		return nil
+		return &store.PublishResult{}, nil
 	}
 
 	// Apply query timeout
@@ -612,21 +672,29 @@ func (s *JobStore) PublishEvents(ctx context.Context, taskToken string, events [
 	tt, err := s.decodeTaskToken(taskToken)
 	if err != nil {
 		log.Warn().Err(err).Msg("Invalid task token")
-		return err
+		return nil, err
 	}
 
-	// Verify job exists
-	job, err := s.getJobByID(queryCtx, tt.JobID)
+	// Verify job exists in the caller's org and read its current attempt
+	var attempt int32
+	err = s.pool.QueryRow(queryCtx,
+		`SELECT attempt FROM jobs WHERE org_id = $1 AND job_id = $2`,
+		caller.OrgID, tt.JobID,
+	).Scan(&attempt)
 	if err != nil {
-		return err
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, store.ErrJobNotFound
+		}
+		return nil, mapPostgresError(err)
 	}
-	if job == nil {
-		return store.ErrJobNotFound
+	if attempt == 0 {
+		return nil, fmt.Errorf("%w: job has no leased attempt", store.ErrLeaseLost)
 	}
 
-	// Validate event sizes and set timestamps
+	// Stamp attempt, validate event sizes and set timestamps
 	now := time.Now()
 	for _, event := range events {
+		event.Attempt = attempt
 		if event.Timestamp == nil {
 			event.Timestamp = timestamppb.New(now)
 		}
@@ -634,42 +702,46 @@ func (s *JobStore) PublishEvents(ctx context.Context, taskToken string, events [
 		// Validate event size
 		eventBytes, err := util.MarshalProto(event)
 		if err != nil {
-			return fmt.Errorf("failed to marshal event: %w", err)
+			return nil, fmt.Errorf("failed to marshal event: %w", err)
 		}
 
 		if len(eventBytes) > maxEventPayloadBytes {
-			return fmt.Errorf("%w: event size=%d exceeds limit=%d",
+			return nil, fmt.Errorf("%w: event size=%d exceeds limit=%d",
 				store.ErrEventTooLarge, len(eventBytes), maxEventPayloadBytes)
 		}
 	}
 
 	// Batch insert events
 	query := `
-		INSERT INTO job_events (job_id, sequence, timestamp, event_type, event_payload, ttl)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		ON CONFLICT (job_id, sequence) DO NOTHING
+		INSERT INTO job_events (job_id, attempt, sequence, end_sequence, timestamp, event_type, event_payload)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (job_id, attempt, sequence) DO NOTHING
 	`
 
 	batch := &pgx.Batch{}
-	var ttl *time.Time
-	if s.cfg.EventsTTLDays > 0 {
-		ttlTime := now.AddDate(0, 0, int(s.cfg.EventsTTLDays))
-		ttl = &ttlTime
-	}
+	var maxCovered int64
 
 	for _, event := range events {
 		eventPayload, err := util.MarshalProto(event)
 		if err != nil {
-			return fmt.Errorf("failed to marshal event: %w", err)
+			return nil, fmt.Errorf("failed to marshal event: %w", err)
 		}
+
+		// An output batch covers [sequence, end_sequence]; other events cover one sequence
+		endSequence := event.Sequence
+		if ob := event.GetOutputBatch(); ob != nil && ob.EndSequence > endSequence {
+			endSequence = ob.EndSequence
+		}
+		maxCovered = max(maxCovered, endSequence)
 
 		batch.Queue(query,
 			tt.JobID,
+			attempt,
 			event.Sequence,
+			endSequence,
 			event.Timestamp.AsTime(),
 			event.EventType,
 			eventPayload,
-			ttl,
 		)
 	}
 
@@ -681,12 +753,13 @@ func (s *JobStore) PublishEvents(ctx context.Context, taskToken string, events [
 	for i := range len(events) {
 		_, err := batchResults.Exec()
 		if err != nil {
-			return mapPostgresError(fmt.Errorf("failed to insert event %d: %w", i, err))
+			return nil, mapPostgresError(fmt.Errorf("failed to insert event %d: %w", i, err))
 		}
 	}
 
 	log.Debug().
 		Str("job_id", tt.JobID).
+		Int32("attempt", attempt).
 		Int("event_count", len(events)).
 		Msg("Published events")
 
@@ -695,14 +768,16 @@ func (s *JobStore) PublishEvents(ctx context.Context, taskToken string, events [
 		s.fanoutEvent(tt.JobID, event)
 	}
 
-	return nil
+	return &store.PublishResult{Attempt: attempt, AcknowledgedThroughSequence: maxCovered}, nil
 }
 
 // StreamEvents returns a channel that streams events for a job.
 // Replays historical events from the database, then streams real-time events.
-func (s *JobStore) StreamEvents(ctx context.Context, jobID string, fromSequence int64, fromTimestamp int64, eventFilter []jobv1.EventType) (<-chan *jobv1.JobEvent, error) {
-	// Verify job exists
-	job, err := s.getJobByID(ctx, jobID)
+// The attempt parameter is accepted but ignored until phase 4: history for all
+// attempts is returned ordered by (attempt, sequence).
+func (s *JobStore) StreamEvents(ctx context.Context, caller store.Caller, jobID string, _ int32, fromSequence int64, fromTimestamp int64, eventFilter []jobv1.EventType) (<-chan *jobv1.JobEvent, error) {
+	// Verify job exists in the caller's org
+	job, err := s.getJobByID(ctx, caller.OrgID, jobID)
 	if err != nil {
 		return nil, err
 	}
@@ -757,7 +832,7 @@ func (s *JobStore) StreamEvents(ctx context.Context, jobID string, fromSequence 
 			queryBuilder.WriteString(" ")
 			queryBuilder.WriteString(cond)
 		}
-		queryBuilder.WriteString(" ORDER BY sequence ASC")
+		queryBuilder.WriteString(" ORDER BY attempt ASC, sequence ASC")
 		query = queryBuilder.String()
 
 		rows, err := s.pool.Query(ctx, query, args...)
@@ -820,7 +895,7 @@ type rowScanner interface {
 }
 
 // scanJob scans a job row and unmarshals its JSON fields.
-// Expected columns: job_id, state, created_at, updated_at, job_params, execution_config
+// Expected columns: job_id, state, created_at, updated_at, job_params, execution_config, attempt, max_attempts
 func scanJob(scanner rowScanner) (*jobv1.Job, error) {
 	var jobProto jobv1.Job
 	var jobParamsJSON, execConfigJSON []byte
@@ -833,6 +908,8 @@ func scanJob(scanner rowScanner) (*jobv1.Job, error) {
 		&updatedAt,
 		&jobParamsJSON,
 		&execConfigJSON,
+		&jobProto.Attempt,
+		&jobProto.MaxAttempts,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -869,16 +946,17 @@ func (s *JobStore) withQueryTimeout(ctx context.Context) (context.Context, conte
 	return context.WithTimeout(ctx, 10*time.Second)
 }
 
-// getJobByID retrieves a job by its job_id.
-func (s *JobStore) getJobByID(ctx context.Context, jobID string) (*jobv1.Job, error) {
+// getJobByID retrieves a job by its job_id, scoped to the caller's org.
+// Returns store.ErrJobNotFound if the job is absent or belongs to another org.
+func (s *JobStore) getJobByID(ctx context.Context, orgID uuid.UUID, jobID string) (*jobv1.Job, error) {
 	query := `
 		SELECT job_id, state, created_at, updated_at,
-		       job_params, execution_config
+		       job_params, execution_config, attempt, max_attempts
 		FROM jobs
-		WHERE job_id = $1
+		WHERE org_id = $1 AND job_id = $2
 	`
 
-	job, err := scanJob(s.pool.QueryRow(ctx, query, jobID))
+	job, err := scanJob(s.pool.QueryRow(ctx, query, orgID, jobID))
 	if err != nil {
 		return nil, err
 	}
@@ -886,23 +964,6 @@ func (s *JobStore) getJobByID(ctx context.Context, jobID string) (*jobv1.Job, er
 		return nil, store.ErrJobNotFound
 	}
 
-	return job, nil
-}
-
-// getJobByRequestID retrieves a job by its request_id (for idempotency checks).
-func (s *JobStore) getJobByRequestID(ctx context.Context, requestID string) (*jobv1.Job, error) {
-	query := `
-		SELECT job_id, state, created_at, updated_at,
-		       job_params, execution_config
-		FROM jobs
-		WHERE request_id = $1
-	`
-
-	job, err := scanJob(s.pool.QueryRow(ctx, query, requestID))
-	if err != nil {
-		return nil, err
-	}
-	// Return nil without error if not found (idempotency check)
 	return job, nil
 }
 

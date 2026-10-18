@@ -4,79 +4,16 @@ package postgres
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 )
 
-func setupPostgresContainer(t *testing.T, ctx context.Context) (*JobStore, func()) {
-	// Start postgres container
-	req := testcontainers.ContainerRequest{
-		Image:        "postgres:18-alpine",
-		ExposedPorts: []string{"5432/tcp"},
-		Env: map[string]string{
-			"POSTGRES_USER":     "test",
-			"POSTGRES_PASSWORD": "test",
-			"POSTGRES_DB":       "testdb",
-		},
-		WaitingFor: wait.ForLog("database system is ready to accept connections").WithOccurrence(2),
-	}
-
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: req,
-		Started:          true,
-	})
-	require.NoError(t, err)
-
-	host, err := container.Host(ctx)
-	require.NoError(t, err)
-
-	port, err := container.MappedPort(ctx, "5432")
-	require.NoError(t, err)
-
-	connString := fmt.Sprintf("postgres://test:test@%s:%s/testdb?sslmode=disable", host, port.Port())
-
-	// Create connection pool
-	poolCfg := &PoolConfig{
-		ConnString: connString,
-	}
-	pool, err := NewPool(ctx, poolCfg)
-	require.NoError(t, err)
-
-	// Run migrations
-	err = RunMigrations(ctx, pool)
-	require.NoError(t, err)
-
-	// Create job store configuration
-	jobCfg := &JobStoreConfig{
-		TokenSigningSecret: []byte("test-secret-key-min-32-bytes-long"),
-	}
-
-	// Create store with shared pool
-	store, err := NewJobStore(pool, jobCfg)
-	require.NoError(t, err)
-
-	err = store.Start()
-	require.NoError(t, err)
-
-	cleanup := func() {
-		store.Stop()
-		pool.Close()
-		_ = container.Terminate(ctx)
-	}
-
-	return store, cleanup
-}
-
 func TestIntegration_BasicJobLifecycle(t *testing.T) {
 	ctx := context.Background()
-	store, cleanup := setupPostgresContainer(t, ctx)
-	defer cleanup()
+	store, fx := setupStore(t)
 
 	t.Run("enqueue job", func(t *testing.T) {
 		req := &jobv1.EnqueueJobRequest{
@@ -91,7 +28,7 @@ func TestIntegration_BasicJobLifecycle(t *testing.T) {
 			},
 		}
 
-		resp, err := store.EnqueueJob(ctx, req)
+		resp, err := store.EnqueueJob(ctx, fx.User, req)
 		require.NoError(t, err)
 		require.NotEmpty(t, resp.JobId)
 		require.Equal(t, jobv1.JobState_JOB_STATE_SCHEDULED, resp.State)
@@ -114,12 +51,12 @@ func TestIntegration_BasicJobLifecycle(t *testing.T) {
 		}
 
 		// First enqueue
-		resp1, err := store.EnqueueJob(ctx, req)
+		resp1, err := store.EnqueueJob(ctx, fx.User, req)
 		require.NoError(t, err)
 		jobID1 := resp1.JobId
 
 		// Second enqueue with same request_id
-		resp2, err := store.EnqueueJob(ctx, req)
+		resp2, err := store.EnqueueJob(ctx, fx.User, req)
 		require.NoError(t, err)
 		require.Equal(t, jobID1, resp2.JobId, "Should return same job ID")
 
@@ -140,12 +77,12 @@ func TestIntegration_BasicJobLifecycle(t *testing.T) {
 			},
 		}
 
-		enqResp, err := store.EnqueueJob(ctx, enqReq)
+		enqResp, err := store.EnqueueJob(ctx, fx.User, enqReq)
 		require.NoError(t, err)
 		originalJobID := enqResp.JobId
 
 		// Dequeue
-		jobs, err := store.DequeueJobs(ctx, "dequeue-test-queue", 1, 300)
+		jobs, err := store.DequeueJobs(ctx, fx.Worker, "dequeue-test-queue", 1, 300)
 		require.NoError(t, err)
 		require.Len(t, jobs, 1)
 		require.Equal(t, originalJobID, jobs[0].Job.JobId)
@@ -156,19 +93,19 @@ func TestIntegration_BasicJobLifecycle(t *testing.T) {
 
 		// Complete the job
 		result := &jobv1.JobResult{
-			JobId:   jobs[0].Job.JobId,
-			Success: true,
+			JobId:    jobs[0].Job.JobId,
+			Success:  true,
 			ExitCode: 0,
 		}
 
-		err = store.CompleteJob(ctx, jobs[0].TaskToken, result)
+		err = store.CompleteJob(ctx, fx.Worker, jobs[0].TaskToken, result)
 		require.NoError(t, err)
 
 		t.Logf("Completed job: %s", jobs[0].Job.JobId)
 	})
 
 	t.Run("dequeue no jobs available", func(t *testing.T) {
-		jobs, err := store.DequeueJobs(ctx, "empty-queue", 10, 300)
+		jobs, err := store.DequeueJobs(ctx, fx.Worker, "empty-queue", 10, 300)
 		require.NoError(t, err)
 		require.Empty(t, jobs)
 	})
@@ -187,16 +124,17 @@ func TestIntegration_BasicJobLifecycle(t *testing.T) {
 			},
 		}
 
-		_, err := store.EnqueueJob(ctx, enqReq)
+		_, err := store.EnqueueJob(ctx, fx.User, enqReq)
 		require.NoError(t, err)
 
-		jobs, err := store.DequeueJobs(ctx, "default", 1, 300)
+		jobs, err := store.DequeueJobs(ctx, fx.Worker, "default", 1, 300)
 		require.NoError(t, err)
 		require.Len(t, jobs, 1)
 
 		// Update visibility
-		err = store.UpdateJobVisibility(ctx, "default", jobs[0].TaskToken, 600)
+		timeout, err := store.UpdateJobVisibility(ctx, fx.Worker, jobs[0].TaskToken, 600)
 		require.NoError(t, err)
+		require.Equal(t, int32(600), timeout)
 
 		t.Logf("Updated visibility for job: %s", jobs[0].Job.JobId)
 
@@ -205,7 +143,7 @@ func TestIntegration_BasicJobLifecycle(t *testing.T) {
 			JobId:   jobs[0].Job.JobId,
 			Success: true,
 		}
-		err = store.CompleteJob(ctx, jobs[0].TaskToken, result)
+		err = store.CompleteJob(ctx, fx.Worker, jobs[0].TaskToken, result)
 		require.NoError(t, err)
 	})
 
@@ -223,21 +161,21 @@ func TestIntegration_BasicJobLifecycle(t *testing.T) {
 			},
 		}
 
-		_, err := store.EnqueueJob(ctx, enqReq)
+		_, err := store.EnqueueJob(ctx, fx.User, enqReq)
 		require.NoError(t, err)
 
-		jobs, err := store.DequeueJobs(ctx, "default", 1, 300)
+		jobs, err := store.DequeueJobs(ctx, fx.Worker, "default", 1, 300)
 		require.NoError(t, err)
 		require.Len(t, jobs, 1)
 
 		// Release the job back to queue
-		err = store.ReleaseJob(ctx, jobs[0].TaskToken)
+		err = store.ReleaseJob(ctx, fx.Worker, jobs[0].TaskToken)
 		require.NoError(t, err)
 
 		t.Logf("Released job: %s", jobs[0].Job.JobId)
 
 		// Should be able to dequeue again
-		jobs2, err := store.DequeueJobs(ctx, "default", 1, 300)
+		jobs2, err := store.DequeueJobs(ctx, fx.Worker, "default", 1, 300)
 		require.NoError(t, err)
 		require.Len(t, jobs2, 1)
 		require.Equal(t, jobs[0].Job.JobId, jobs2[0].Job.JobId)
@@ -247,7 +185,7 @@ func TestIntegration_BasicJobLifecycle(t *testing.T) {
 			JobId:   jobs2[0].Job.JobId,
 			Success: true,
 		}
-		err = store.CompleteJob(ctx, jobs2[0].TaskToken, result)
+		err = store.CompleteJob(ctx, fx.Worker, jobs2[0].TaskToken, result)
 		require.NoError(t, err)
 	})
 
@@ -265,7 +203,7 @@ func TestIntegration_BasicJobLifecycle(t *testing.T) {
 					Args:       []string{"test"},
 				},
 			}
-			_, err := store.EnqueueJob(ctx, req)
+			_, err := store.EnqueueJob(ctx, fx.User, req)
 			require.NoError(t, err)
 			time.Sleep(10 * time.Millisecond) // Ensure different timestamps
 		}
@@ -276,7 +214,7 @@ func TestIntegration_BasicJobLifecycle(t *testing.T) {
 			PageSize: 10,
 		}
 
-		resp, err := store.ListJobs(ctx, listReq)
+		resp, err := store.ListJobs(ctx, fx.User, listReq)
 		require.NoError(t, err)
 		require.GreaterOrEqual(t, len(resp.Jobs), 3)
 
@@ -297,10 +235,10 @@ func TestIntegration_BasicJobLifecycle(t *testing.T) {
 			},
 		}
 
-		_, err := store.EnqueueJob(ctx, enqReq)
+		_, err := store.EnqueueJob(ctx, fx.User, enqReq)
 		require.NoError(t, err)
 
-		jobs, err := store.DequeueJobs(ctx, "default", 1, 300)
+		jobs, err := store.DequeueJobs(ctx, fx.Worker, "default", 1, 300)
 		require.NoError(t, err)
 		require.Len(t, jobs, 1)
 		jobID := jobs[0].Job.JobId
@@ -337,8 +275,10 @@ func TestIntegration_BasicJobLifecycle(t *testing.T) {
 			},
 		}
 
-		err = store.PublishEvents(ctx, jobs[0].TaskToken, events)
+		pubResult, err := store.PublishEvents(ctx, fx.Worker, jobs[0].TaskToken, events)
 		require.NoError(t, err)
+		require.Equal(t, int32(1), pubResult.Attempt)
+		require.Equal(t, int64(3), pubResult.AcknowledgedThroughSequence)
 
 		t.Logf("Published %d events for job: %s", len(events), jobID)
 
@@ -346,7 +286,7 @@ func TestIntegration_BasicJobLifecycle(t *testing.T) {
 		streamCtx, cancelStream := context.WithCancel(ctx)
 		defer cancelStream()
 
-		eventCh, err := store.StreamEvents(streamCtx, jobID, 0, 0, nil)
+		eventCh, err := store.StreamEvents(streamCtx, fx.User, jobID, 0, 0, 0, nil)
 		require.NoError(t, err)
 
 		// Collect events
@@ -380,15 +320,14 @@ func TestIntegration_BasicJobLifecycle(t *testing.T) {
 			JobId:   jobID,
 			Success: true,
 		}
-		err = store.CompleteJob(ctx, jobs[0].TaskToken, result)
+		err = store.CompleteJob(ctx, fx.Worker, jobs[0].TaskToken, result)
 		require.NoError(t, err)
 	})
 }
 
 func TestIntegration_ConcurrentDequeue(t *testing.T) {
 	ctx := context.Background()
-	store, cleanup := setupPostgresContainer(t, ctx)
-	defer cleanup()
+	store, fx := setupStore(t)
 
 	// Enqueue 5 jobs
 	jobIDs := make([]string, 5)
@@ -404,7 +343,7 @@ func TestIntegration_ConcurrentDequeue(t *testing.T) {
 				Args:       []string{"concurrent"},
 			},
 		}
-		resp, err := store.EnqueueJob(ctx, req)
+		resp, err := store.EnqueueJob(ctx, fx.User, req)
 		require.NoError(t, err)
 		jobIDs[i] = resp.JobId
 		time.Sleep(10 * time.Millisecond)
@@ -422,7 +361,7 @@ func TestIntegration_ConcurrentDequeue(t *testing.T) {
 	for w := 0; w < 3; w++ {
 		workerID := w
 		go func() {
-			jobs, err := store.DequeueJobs(ctx, "concurrent-queue", 2, 300)
+			jobs, err := store.DequeueJobs(ctx, fx.Worker, "concurrent-queue", 2, 300)
 			var jobIDs []string
 			for _, j := range jobs {
 				jobIDs = append(jobIDs, j.Job.JobId)
@@ -449,6 +388,6 @@ func TestIntegration_ConcurrentDequeue(t *testing.T) {
 	}
 
 	// Verify all 5 jobs were dequeued exactly once
-	require.Equal(t, 5, len(allDequeuedJobs), "All jobs should be dequeued exactly once")
+	require.Len(t, allDequeuedJobs, 5, "All jobs should be dequeued exactly once")
 	t.Logf("✓ Concurrent dequeue test passed: 5 jobs dequeued by 3 workers with no duplicates")
 }

@@ -4,11 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"math/rand/v2"
 	"os"
-	"strings"
-	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -153,8 +150,6 @@ func (w *WorkerCmd) processJob(ctx context.Context, clients *client.Clients) (bo
 		return true, errors.New("no command specified")
 	}
 
-	eventStream := clients.Events.PublishJobEvents(ctx)
-
 	// Create WAL for durable event persistence
 	jobWAL, err := wal.NewWAL(wal.DefaultConfig(), job.JobId)
 	if err != nil {
@@ -166,10 +161,9 @@ func (w *WorkerCmd) processJob(ctx context.Context, clients *client.Clients) (bo
 		}
 	}()
 
-	// Wrap gRPC stream as EventSender for WAL with reconnection support
+	// Wrap the unary publish RPC as EventSender for WAL
 	sender := &grpcEventSender{
 		clients:   clients,
-		stream:    eventStream,
 		taskToken: taskToken,
 	}
 
@@ -185,7 +179,7 @@ func (w *WorkerCmd) processJob(ctx context.Context, clients *client.Clients) (bo
 		return jobWAL.Append(ctx, event)
 	})
 
-	executor := worker.NewJobExecutor(eventStream, taskToken, batcher)
+	executor := worker.NewJobExecutor(taskToken, batcher)
 
 	// Create a separate context for timeout extension so we can cancel it when the job completes
 	timeoutCtx, cancelTimeout := context.WithCancel(ctx)
@@ -196,11 +190,6 @@ func (w *WorkerCmd) processJob(ctx context.Context, clients *client.Clients) (bo
 	// Execute the job and capture result
 	var jobResult *jobv1.JobResult
 	executeErr := executor.Execute(ctx, job)
-
-	// Close event stream first
-	if _, err := eventStream.CloseAndReceive(); err != nil {
-		log.Error().Err(err).Msg("Failed to close event stream")
-	}
 
 	// CRITICAL: Flush WAL before completing job to ensure zero data loss
 	// This blocks until all events are sent or context times out
@@ -271,7 +260,6 @@ func (w *WorkerCmd) extendVisibilityTimeout(ctx context.Context, clients *client
 		case <-ticker.C:
 			// Extend visibility timeout by the configured timeout value
 			req := &jobv1.UpdateJobRequest{
-				Queue:                    w.Queue,
 				TaskToken:                taskToken,
 				VisibilityTimeoutSeconds: w.VisibilityTimeout,
 			}
@@ -309,65 +297,17 @@ func addJitter(base time.Duration, jitterFactor float64) time.Duration {
 	return time.Duration(jittered)
 }
 
-// grpcEventSender wraps a Connect RPC stream as an EventSender for the WAL
-// It handles automatic reconnection when the stream is closed
+// grpcEventSender publishes each WAL batch with one unary PublishJobEvents call.
 type grpcEventSender struct {
 	clients   *client.Clients
-	stream    *connect.ClientStreamForClient[jobv1.PublishJobEventsRequest, jobv1.PublishJobEventsResponse]
 	taskToken string
-	mu        sync.Mutex
 }
 
 // Send implements wal.EventSender
-// If the stream is closed (EOF), it will recreate the stream and retry
 func (s *grpcEventSender) Send(ctx context.Context, events []*jobv1.JobEvent) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.stream == nil {
-		return fmt.Errorf("event stream is not initialized")
-	}
-
-	err := s.stream.Send(&jobv1.PublishJobEventsRequest{
+	_, err := s.clients.Events.PublishJobEvents(ctx, connect.NewRequest(&jobv1.PublishJobEventsRequest{
 		TaskToken: s.taskToken,
 		Events:    events,
-	})
-
-	// If we get EOF, the stream is dead - recreate it and retry
-	if err != nil && (errors.Is(err, io.EOF) || isStreamClosed(err)) {
-		log.Warn().Err(err).Msg("Event stream closed, reconnecting...")
-
-		// Recreate the stream
-		newStream := s.clients.Events.PublishJobEvents(ctx)
-		s.stream = newStream
-
-		// Retry send on new stream
-		err = s.stream.Send(&jobv1.PublishJobEventsRequest{
-			TaskToken: s.taskToken,
-			Events:    events,
-		})
-
-		if err == nil {
-			log.Info().Msg("Successfully reconnected event stream")
-		}
-	}
-
+	}))
 	return err
-}
-
-// isStreamClosed checks if error indicates a closed stream
-func isStreamClosed(err error) bool {
-	if err == nil {
-		return false
-	}
-	errStr := err.Error()
-	return errors.Is(err, io.EOF) ||
-		errors.Is(err, io.ErrUnexpectedEOF) ||
-		// Check for common gRPC stream closed errors
-		(errStr != "" && (errors.Is(err, io.EOF) ||
-			errors.Is(err, io.ErrUnexpectedEOF) ||
-			// Connect RPC errors
-			strings.Contains(errStr, "EOF") ||
-			strings.Contains(errStr, "stream") && strings.Contains(errStr, "closed") ||
-			strings.Contains(errStr, "connection") && strings.Contains(errStr, "closed")))
 }

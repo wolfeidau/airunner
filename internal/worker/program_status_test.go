@@ -24,7 +24,7 @@ func newCollectingExecutor(t *testing.T) (*JobExecutor, func() []*jobv1.JobEvent
 		return nil
 	})
 
-	return NewJobExecutor(nil, "token", batcher), func() []*jobv1.JobEvent {
+	return NewJobExecutor("token", batcher), func() []*jobv1.JobEvent {
 		mu.Lock()
 		defer mu.Unlock()
 		return append([]*jobv1.JobEvent(nil), events...)

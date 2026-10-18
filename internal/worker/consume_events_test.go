@@ -42,7 +42,7 @@ func newFailingExecutor() *JobExecutor {
 	batcher := NewEventBatcher(nil, func(*jobv1.JobEvent) error {
 		return errors.New("wal write failed")
 	})
-	return NewJobExecutor(nil, "token", batcher)
+	return NewJobExecutor("token", batcher)
 }
 
 func eventTypes(events []*jobv1.JobEvent) []jobv1.EventType {

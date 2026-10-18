@@ -5,6 +5,7 @@ package lease
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/rand/v2"
 	"sync"
 	"time"
@@ -18,6 +19,8 @@ import (
 var (
 	// ErrLost reports that the server no longer recognises the lease.
 	ErrLost = errors.New("lease lost")
+	// ErrCancelled reports that the job was cancelled; it is a kind of ErrLost.
+	ErrCancelled = fmt.Errorf("lease cancelled: %w", ErrLost)
 	// ErrBudgetExhausted reports that the local deadline passed without a confirmed renewal.
 	ErrBudgetExhausted = errors.New("lease budget exhausted")
 )
@@ -31,7 +34,7 @@ const (
 )
 
 // RenewFunc extends the lease and returns the server-accepted duration.
-// Implementations wrap FailedPrecondition with ErrLost.
+// Implementations wrap FailedPrecondition with ErrLost, or ErrCancelled when the job was cancelled.
 type RenewFunc func(ctx context.Context, requested time.Duration) (accepted time.Duration, err error)
 
 // Option configures a Controller.
@@ -140,7 +143,10 @@ func (c *Controller) abort(err error) {
 	c.mu.Unlock()
 	log.Warn().Err(err).Msg("lease aborted")
 	reason := "budget"
-	if errors.Is(err, ErrLost) {
+	switch {
+	case errors.Is(err, ErrCancelled):
+		reason = "cancelled"
+	case errors.Is(err, ErrLost):
 		reason = "lost"
 	}
 	c.metrics.LeaseAborts.Add(context.Background(), 1, metric.WithAttributes(attribute.String("reason", reason)))
@@ -202,9 +208,12 @@ func (c *Controller) attempt(ctx context.Context) (time.Duration, bool) {
 	cancel()
 
 	if err != nil {
-		if errors.Is(err, ErrLost) {
+		switch {
+		case errors.Is(err, ErrCancelled):
+			c.abort(ErrCancelled)
+		case errors.Is(err, ErrLost):
 			c.abort(ErrLost)
-		} else if ctx.Err() == nil {
+		case ctx.Err() == nil:
 			log.Warn().Err(err).Dur("remaining", c.Remaining()).Msg("lease renewal failed, retrying")
 		}
 		return 0, false

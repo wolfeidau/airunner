@@ -181,6 +181,50 @@ func TestRunJob_LeaseLostAbortsExecution(t *testing.T) {
 	}, 10*time.Second, 100*time.Millisecond, "job process should be killed")
 }
 
+func TestRunJob_CancelStopsExecution(t *testing.T) {
+	e := newWorkerEnv(t)
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	d := e.enqueueAndDequeue(t, "sh", "-c", "echo $$ > "+pidFile+"; exec sleep 300")
+	jobID := d.Job.JobId
+
+	done := make(chan error, 1)
+	go func() {
+		done <- (&WorkerCmd{VisibilityTimeout: 30}).runJob(context.Background(), e.clients, e.walCfg, d)
+	}()
+
+	var pid int
+	require.Eventually(t, func() bool {
+		b, err := os.ReadFile(pidFile)
+		if err != nil || len(strings.TrimSpace(string(b))) == 0 {
+			return false
+		}
+		pid, err = strconv.Atoi(strings.TrimSpace(string(b)))
+		return err == nil
+	}, 10*time.Second, 50*time.Millisecond)
+
+	cancelledAt := time.Now()
+	resp, err := e.user.CancelJob(context.Background(), connect.NewRequest(&jobv1.CancelJobRequest{JobId: jobID}))
+	require.NoError(t, err)
+	require.Equal(t, jobv1.JobState_JOB_STATE_CANCELLED, resp.Msg.State)
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(40 * time.Second):
+		t.Fatal("worker did not stop after cancel")
+	}
+	t.Logf("worker exited %s after cancel", time.Since(cancelledAt))
+
+	state, _, result := e.jobState(t, jobID)
+	require.Equal(t, jobv1.JobState_JOB_STATE_CANCELLED, state, "job is never completed after cancel")
+	require.Empty(t, result)
+	requireNoWAL(t, e.walCfg, jobID)
+
+	require.Eventually(t, func() bool {
+		return errors.Is(syscall.Kill(pid, 0), syscall.ESRCH)
+	}, 10*time.Second, 100*time.Millisecond, "job process should be killed")
+}
+
 type rejectingEvents struct {
 	jobv1connect.JobEventsServiceClient
 }

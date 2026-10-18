@@ -255,3 +255,24 @@ func TestMetricsBudgetExhausted(t *testing.T) {
 		require.Equal(t, map[string]int64{"budget": 1}, leaseAborts(t, reader))
 	})
 }
+
+func TestErrCancelledAbortsImmediately(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m, reader := newTestMetrics(t)
+		var calls atomic.Int32
+		c := New(func(ctx context.Context, d time.Duration) (time.Duration, error) {
+			if calls.Add(1) == 1 {
+				return d, nil
+			}
+			return 0, errors.Join(errors.New("rpc"), ErrCancelled)
+		}, 30*time.Second, WithJitter(noJitter), WithMetrics(m))
+		start := time.Now()
+		go c.Run(t.Context())
+		<-c.Done()
+		require.Equal(t, 10*time.Second, time.Since(start))
+		require.ErrorIs(t, c.Err(), ErrCancelled)
+		require.ErrorIs(t, c.Err(), ErrLost)
+		c.Stop()
+		require.Equal(t, map[string]int64{"cancelled": 1}, leaseAborts(t, reader))
+	})
+}

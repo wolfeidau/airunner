@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/google/uuid"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
@@ -24,6 +25,14 @@ var (
 
 	// ErrLeaseLost indicates the task token no longer holds a valid lease.
 	ErrLeaseLost = errors.New("lease lost")
+
+	// ErrJobCancelled indicates the job was cancelled while the caller held (or
+	// believed it held) a lease. It wraps ErrLeaseLost, so existing lease-loss
+	// handling applies; check it first to tell cancellation from other lease loss.
+	ErrJobCancelled = fmt.Errorf("job cancelled: %w", ErrLeaseLost)
+
+	// ErrFailedPrecondition indicates the job is in a state that does not permit the operation.
+	ErrFailedPrecondition = errors.New("failed precondition")
 
 	// ErrConflict indicates a request conflicts with previously recorded intent or content.
 	ErrConflict = errors.New("conflict")
@@ -63,6 +72,10 @@ type JobStore interface {
 	// This is used when a dequeued job cannot be delivered to the client (e.g., stream failure).
 	// The job becomes immediately available for another worker to pick up.
 	ReleaseJob(ctx context.Context, caller Caller, taskToken string) error
+
+	// CancelJob cancels a SCHEDULED or RUNNING job. Cancelling a CANCELLED job is a no-op;
+	// COMPLETED or FAILED returns ErrFailedPrecondition. It returns the resulting state.
+	CancelJob(ctx context.Context, caller Caller, jobID string) (jobv1.JobState, error)
 
 	// Event streaming
 	PublishEvents(ctx context.Context, caller Caller, taskToken string, events []*jobv1.JobEvent) (*PublishResult, error)

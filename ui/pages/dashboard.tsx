@@ -22,6 +22,7 @@ import {
   EventType,
   StreamType,
   JobEventsService,
+  JobService,
   type JobEvent,
   type OutputBatchEvent,
 } from "../../api/gen/proto/es/job/v1/job_pb";
@@ -441,13 +442,74 @@ function EventsConsole({
   );
 }
 
+// Cancel button for SCHEDULED or RUNNING jobs; renders nothing for other states.
+function CancelJobButton({
+  jobId,
+  state,
+  onCancelled,
+}: {
+  jobId: string;
+  state: JobState;
+  onCancelled?: () => void;
+}) {
+  const transport = useTransport();
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (state !== JobState.SCHEDULED && state !== JobState.RUNNING) {
+    return null;
+  }
+
+  const shortId = jobId.slice(-8);
+  const handleCancel = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!window.confirm(`Cancel job ${shortId}?`)) return;
+    setPending(true);
+    setError(null);
+    try {
+      await createClient(JobService, transport).cancelJob({ jobId });
+      onCancelled?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Cancel failed");
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        className="btn-cancel"
+        disabled={pending}
+        aria-label={`Cancel job ${shortId}`}
+        onClick={handleCancel}
+        onKeyDown={(e) => e.stopPropagation()}
+      >
+        {pending ? "Cancelling..." : "Cancel"}
+      </button>
+      {error && (
+        <span className="cancel-error" role="alert">
+          {error}
+        </span>
+      )}
+    </>
+  );
+}
+
 // Human-readable job state: strip the enum prefix and lowercase
 function formatJobState(state: JobState): string {
   return JobState[state].replace(/^JOB_STATE_/, "").toLowerCase();
 }
 
 // Job Events View component (Phase 3 - with streaming, Phase 4 will add full rendering)
-function JobEventsView({ jobId }: { jobId: string }) {
+function JobEventsView({
+  jobId,
+  onCancelled,
+}: {
+  jobId: string;
+  onCancelled?: () => void;
+}) {
   const [selectedAttempt, setSelectedAttempt] = useState(0);
   const [latestAttempt, setLatestAttempt] = useState(0);
   const {
@@ -483,6 +545,11 @@ function JobEventsView({ jobId }: { jobId: string }) {
         {jobState !== JobState.UNSPECIFIED && (
           <span className="events-state">{formatJobState(jobState)}</span>
         )}
+        <CancelJobButton
+          jobId={jobId}
+          state={jobState}
+          onCancelled={onCancelled}
+        />
         {latestAttempt > 1 && (
           <label className="events-attempt-select">
             Attempt
@@ -884,7 +951,7 @@ function CredentialsView() {
 }
 
 function Dashboard() {
-  const { data } = useQuery(listJobs, {});
+  const { data, refetch } = useQuery(listJobs, {});
   const user = usePageContext();
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"jobs" | "credentials">("jobs");
@@ -1001,7 +1068,11 @@ function Dashboard() {
 
       {/* Conditional rendering: show event view, credentials view, or job list */}
       {selectedJobId ? (
-        <JobEventsView key={selectedJobId} jobId={selectedJobId} />
+        <JobEventsView
+          key={selectedJobId}
+          jobId={selectedJobId}
+          onCancelled={() => void refetch()}
+        />
       ) : activeTab === "credentials" ? (
         <CredentialsView />
       ) : (
@@ -1038,6 +1109,7 @@ function Dashboard() {
                       <th>Repository</th>
                       <th>Created</th>
                       <th className="cell-status">Status</th>
+                      <th className="cell-actions">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1072,6 +1144,13 @@ function Dashboard() {
                           >
                             {getStateLabel(job.state)}
                           </span>
+                        </td>
+                        <td className="cell-actions">
+                          <CancelJobButton
+                            jobId={job.jobId}
+                            state={job.state}
+                            onCancelled={() => void refetch()}
+                          />
                         </td>
                       </tr>
                     ))}

@@ -6,7 +6,15 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/rs/zerolog/log"
+	"github.com/wolfeidau/airunner/internal/leasereason"
 	"github.com/wolfeidau/airunner/internal/store"
+)
+
+// Response header telling clients why a lease-fenced call failed. Re-exported from
+// internal/leasereason, which the CLI imports without pulling in server dependencies.
+const (
+	LeaseReasonHeader    = leasereason.Header
+	LeaseReasonCancelled = leasereason.Cancelled
 )
 
 // toConnectError maps a store or context error to a Connect error.
@@ -32,7 +40,12 @@ func toConnectError(err error) error {
 		return connect.NewError(connect.CodeResourceExhausted, err)
 	case errors.Is(err, store.ErrJobNotFound):
 		return connect.NewError(connect.CodeNotFound, err)
-	case errors.Is(err, store.ErrLeaseLost):
+	case errors.Is(err, store.ErrJobCancelled):
+		ce := connect.NewError(connect.CodeFailedPrecondition, err)
+		ce.Meta().Set(leasereason.Header, leasereason.Cancelled)
+		return ce
+	case errors.Is(err, store.ErrFailedPrecondition),
+		errors.Is(err, store.ErrLeaseLost):
 		return connect.NewError(connect.CodeFailedPrecondition, err)
 	case errors.Is(err, store.ErrConflict):
 		return connect.NewError(connect.CodeAlreadyExists, err)

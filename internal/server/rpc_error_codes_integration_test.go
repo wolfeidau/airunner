@@ -131,4 +131,50 @@ func TestRPCErrorCodes(t *testing.T) {
 		}))
 		require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	})
+
+	t.Run("cancel codes and lease reason", func(t *testing.T) {
+		cancelJob := func(id string) (*connect.Response[jobv1.CancelJobResponse], error) {
+			return user.CancelJob(ctx, connect.NewRequest(&jobv1.CancelJobRequest{JobId: id}))
+		}
+		_, err := cancelJob("")
+		require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+		_, err = cancelJob(uuid.New().String())
+		require.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+
+		_, err = enqueue("cancel-done", nil)
+		require.NoError(t, err)
+		done, doneToken := dequeue("cancel-done")
+		_, err = worker.CompleteJob(ctx, connect.NewRequest(&jobv1.CompleteJobRequest{
+			TaskToken: doneToken, JobResult: &jobv1.JobResult{JobId: done.JobId, Success: true},
+		}))
+		require.NoError(t, err)
+		_, err = cancelJob(done.JobId)
+		require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+
+		// Cancelling a running job fences its token and marks the error as cancelled.
+		_, err = enqueue("cancel-run", nil)
+		require.NoError(t, err)
+		running, token := dequeue("cancel-run")
+		resp, err := cancelJob(running.JobId)
+		require.NoError(t, err)
+		require.Equal(t, jobv1.JobState_JOB_STATE_CANCELLED, resp.Msg.State)
+
+		_, err = worker.UpdateJob(ctx, connect.NewRequest(&jobv1.UpdateJobRequest{TaskToken: token}))
+		require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+		var ce *connect.Error
+		require.ErrorAs(t, err, &ce)
+		require.Equal(t, LeaseReasonCancelled, ce.Meta().Get(LeaseReasonHeader))
+
+		// A plain expired lease carries no reason.
+		_, err = enqueue("cancel-plain", nil)
+		require.NoError(t, err)
+		plain, plainToken := dequeue("cancel-plain")
+		_, err = stores.Pool.Exec(ctx,
+			`UPDATE jobs SET visibility_until = clock_timestamp() - INTERVAL '1 second' WHERE job_id = $1`, plain.JobId)
+		require.NoError(t, err)
+		_, err = worker.UpdateJob(ctx, connect.NewRequest(&jobv1.UpdateJobRequest{TaskToken: plainToken}))
+		require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+		require.ErrorAs(t, err, &ce)
+		require.Empty(t, ce.Meta().Get(LeaseReasonHeader))
+	})
 }

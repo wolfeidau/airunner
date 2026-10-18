@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
 	"github.com/wolfeidau/airunner/api/gen/proto/go/job/v1/jobv1connect"
 	"github.com/wolfeidau/airunner/internal/client"
+	"github.com/wolfeidau/airunner/internal/leasereason"
 	"github.com/wolfeidau/airunner/internal/telemetry"
 	"github.com/wolfeidau/airunner/internal/worker/lease"
 	"github.com/wolfeidau/airunner/internal/worker/wal"
@@ -36,6 +38,27 @@ func TestClassifyPublishError(t *testing.T) {
 		require.NotErrorIs(t, err, wal.ErrPermanent, code.String())
 		require.NotErrorIs(t, err, wal.ErrLeaseLost, code.String())
 	}
+}
+
+func cancelledErr() error {
+	err := connect.NewError(connect.CodeFailedPrecondition, errors.New("job cancelled"))
+	err.Meta().Set(leasereason.Header, leasereason.Cancelled)
+	return err
+}
+
+func TestIsCancelled(t *testing.T) {
+	require.True(t, isCancelled(cancelledErr()))
+	require.True(t, isCancelled(classifyPublishError(cancelledErr())), "survives wal classification")
+	require.True(t, isCancelled(fmt.Errorf("wrapped: %w", cancelledErr())))
+	require.False(t, isCancelled(connect.NewError(connect.CodeFailedPrecondition, errors.New("stale"))))
+	require.False(t, isCancelled(nil))
+	other := connect.NewError(connect.CodeInternal, errors.New("x"))
+	other.Meta().Set(leasereason.Header, leasereason.Cancelled)
+	require.False(t, isCancelled(other))
+}
+
+func TestClassifyPublishErrorCancelledIsLeaseLost(t *testing.T) {
+	require.ErrorIs(t, classifyPublishError(cancelledErr()), wal.ErrLeaseLost)
 }
 
 type fakeJobService struct {
@@ -67,6 +90,15 @@ func TestNewRenewFunc(t *testing.T) {
 			return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("stale"))
 		}}
 		_, err := newRenewFunc(&client.Clients{Job: svc}, "tok")(context.Background(), time.Minute)
+		require.ErrorIs(t, err, lease.ErrLost)
+	})
+
+	t.Run("cancelled reason is lease cancelled", func(t *testing.T) {
+		svc := &fakeJobService{update: func() (*connect.Response[jobv1.UpdateJobResponse], error) {
+			return nil, cancelledErr()
+		}}
+		_, err := newRenewFunc(&client.Clients{Job: svc}, "tok")(context.Background(), time.Minute)
+		require.ErrorIs(t, err, lease.ErrCancelled)
 		require.ErrorIs(t, err, lease.ErrLost)
 	})
 
@@ -110,7 +142,7 @@ func TestAbandonRecordsReason(t *testing.T) {
 	m, err := telemetry.NewWorkerMetrics(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("test"))
 	require.NoError(t, err)
 
-	for _, reason := range []string{abandonLeaseLost, abandonLeaseLost, abandonFlushTimeout, abandonOther} {
+	for _, reason := range []string{abandonLeaseLost, abandonLeaseLost, abandonFlushTimeout, abandonOther, abandonCancelled} {
 		r := &jobRun{job: &jobv1.Job{JobId: "j"}, wal: &fakeWAL{}, metrics: m}
 		r.abandon(reason, "test")
 	}
@@ -129,7 +161,7 @@ func TestAbandonRecordsReason(t *testing.T) {
 			}
 		}
 	}
-	require.Equal(t, map[string]int64{"lease_lost": 2, "flush_timeout": 1, "other": 1}, got)
+	require.Equal(t, map[string]int64{"lease_lost": 2, "flush_timeout": 1, "other": 1, "cancelled": 1}, got)
 }
 
 // fakeWAL implements wal.WAL for abandon tests; only Pending and Discard are used.

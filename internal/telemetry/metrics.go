@@ -19,12 +19,19 @@ const (
 	AttrReason    = attribute.Key("reason")
 	AttrProcedure = attribute.Key("procedure")
 	AttrCategory  = attribute.Key("category")
+	AttrFrom      = attribute.Key("from")
 )
 
 // Result attribute values for jobs.completed.
 const (
 	ResultSuccess = "success"
 	ResultFailure = "failure"
+)
+
+// From attribute values for jobs.cancelled.
+const (
+	FromScheduled = "scheduled"
+	FromRunning   = "running"
 )
 
 // Operation attribute values for jobs.lease_lost.
@@ -56,6 +63,7 @@ type Metrics struct {
 	JobsRedelivered  metric.Int64Counter
 	JobsDeadLettered metric.Int64Counter
 	JobsLeaseLost    metric.Int64Counter
+	JobsCancelled    metric.Int64Counter
 	LeaseRenewals    metric.Int64Counter
 
 	EventsPublished       metric.Int64Counter
@@ -100,6 +108,7 @@ func NewMetrics(meter metric.Meter) (*Metrics, error) {
 	m.JobsRedelivered = b.counter("jobs.redelivered", "Expired leases returned to the queue for redelivery", "{job}")
 	m.JobsDeadLettered = b.counter("jobs.dead_lettered", "Expired leases failed because attempts were exhausted", "{job}")
 	m.JobsLeaseLost = b.counter("jobs.lease_lost", "Operations rejected because the lease was lost, by operation", "{operation}")
+	m.JobsCancelled = b.counter("jobs.cancelled", "Jobs cancelled, by prior state", "{job}")
 	m.LeaseRenewals = b.counter("lease.renewals", "Successful lease renewals", "{renewal}")
 
 	m.EventsPublished = b.counter("events.published", "Events persisted", "{event}")

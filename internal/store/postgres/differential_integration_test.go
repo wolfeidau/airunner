@@ -37,11 +37,7 @@ var regressionSeeds []int64
 // zero (Now == deadline) is the exact expiry boundary and is expired in both worlds.
 const replayTimeScale = 3
 
-// replayEnabled is the phase 4a command set.
-//
-// Disabled kinds and the phase that enables each:
-//
-//	Cancel   phase 6
+// replayEnabled is the full command set.
 //
 // Stale-receipt, wrong-holder, wrong-org, unknown-job and at-deadline token
 // operations are enabled (OnlyValidTokens is false).
@@ -53,6 +49,7 @@ var replayEnabled = map[storetest.CommandKind]bool{
 	storetest.KindComplete: true,
 	storetest.KindPublish:  true,
 	storetest.KindExpire:   true,
+	storetest.KindCancel:   true,
 	storetest.KindList:     true,
 }
 
@@ -158,12 +155,15 @@ func (o outcome) String() string {
 //   - ErrInvalidArgument -> Invalid.
 //   - ErrLeaseLost -> LeaseLost.
 //   - ErrJobNotFound -> NotFound.
+//   - ErrFailedPrecondition -> Precondition.
 func classify(err error) storetest.OutcomeKind {
 	switch {
 	case err == nil:
 		return storetest.OK
 	case errors.Is(err, jobstore.ErrJobNotFound):
 		return storetest.NotFound
+	case errors.Is(err, jobstore.ErrFailedPrecondition):
+		return storetest.Precondition
 	case errors.Is(err, jobstore.ErrConflict):
 		return storetest.Conflict
 	case errors.Is(err, jobstore.ErrInvalidArgument):
@@ -188,6 +188,8 @@ func cmdNow(cmd storetest.Command) (int64, bool) {
 	case storetest.Publish:
 		return c.Now, true
 	case storetest.Expire:
+		return c.Now, true
+	case storetest.Cancel:
 		return c.Now, true
 	}
 	return 0, false
@@ -335,6 +337,14 @@ func (e *replayEnv) step(t *testing.T, cmd storetest.Command, expect storetest.O
 			out.Attempt, out.Ack = int(res.Attempt), res.AcknowledgedThroughSequence
 		}
 		return out
+
+	case storetest.Cancel:
+		realID, known := e.handles[c.Handle]
+		if !known {
+			realID = uuid.NewString()
+		}
+		_, err := e.js.CancelJob(ctx, e.caller(t, c.Caller), realID)
+		return outcome{Kind: classify(err), Err: err}
 
 	case storetest.Expire:
 		_, err := e.js.ReapExpired(ctx, 1_000_000)

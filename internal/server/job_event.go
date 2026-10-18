@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"errors"
 
 	"connectrpc.com/connect"
 	v1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
@@ -38,10 +37,7 @@ func (s *JobEventServer) StreamJobEvents(ctx context.Context, req *connect.Reque
 		req.Msg.EventFilter,
 	)
 	if err != nil {
-		if errors.Is(err, store.ErrJobNotFound) {
-			return connect.NewError(connect.CodeNotFound, err)
-		}
-		return connect.NewError(connect.CodeInvalidArgument, err)
+		return toConnectError(err)
 	}
 
 	// Stream events to client
@@ -56,7 +52,7 @@ func (s *JobEventServer) StreamJobEvents(ctx context.Context, req *connect.Reque
 				Event: event,
 			}
 			if err := stream.Send(resp); err != nil {
-				return connect.NewError(connect.CodeInternal, err)
+				return toConnectError(err)
 			}
 
 		case <-ctx.Done():
@@ -73,7 +69,7 @@ func (s *JobEventServer) PublishJobEvents(ctx context.Context, req *connect.Requ
 
 	result, err := s.store.PublishEvents(ctx, caller, req.Msg.TaskToken, req.Msg.Events)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, toConnectError(err)
 	}
 
 	return connect.NewResponse(&v1.PublishJobEventsResponse{

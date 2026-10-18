@@ -16,6 +16,9 @@ var (
 	ErrJobIDMismatch    = errors.New("job ID mismatch")
 	ErrEventTooLarge    = errors.New("event exceeds maximum size")
 
+	// ErrInvalidArgument indicates the request failed validation.
+	ErrInvalidArgument = errors.New("invalid argument")
+
 	// ErrLeaseLost indicates the task token no longer holds a valid lease.
 	ErrLeaseLost = errors.New("lease lost")
 

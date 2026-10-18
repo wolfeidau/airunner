@@ -50,10 +50,7 @@ func (s *JobServer) EnqueueJob(ctx context.Context, req *connect.Request[v1.Enqu
 	}
 	resp, err := s.store.EnqueueJob(ctx, caller, req.Msg)
 	if err != nil {
-		if errors.Is(err, store.ErrConflict) {
-			return nil, connect.NewError(connect.CodeAlreadyExists, err)
-		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, toConnectError(err)
 	}
 	return connect.NewResponse(resp), nil
 }
@@ -79,7 +76,7 @@ func (s *JobServer) DequeueJob(ctx context.Context, req *connect.Request[v1.Dequ
 	for {
 		jobs, err := s.store.DequeueJobs(ctx, caller, req.Msg.Queue, maxJobs, timeoutSeconds)
 		if err != nil {
-			return connect.NewError(connect.CodeInternal, err)
+			return toConnectError(err)
 		}
 
 		// Send jobs if found
@@ -98,7 +95,7 @@ func (s *JobServer) DequeueJob(ctx context.Context, req *connect.Request[v1.Dequ
 				} else {
 					log.Warn().Str("job_id", jobWithToken.Job.JobId).Msg("Released job back to queue after stream failure")
 				}
-				return connect.NewError(connect.CodeInternal, err)
+				return toConnectError(err)
 			}
 		}
 
@@ -131,7 +128,7 @@ func (s *JobServer) UpdateJob(ctx context.Context, req *connect.Request[v1.Updat
 
 	effective, err := s.store.UpdateJobVisibility(ctx, caller, req.Msg.TaskToken, timeoutSeconds)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, toConnectError(err)
 	}
 
 	return connect.NewResponse(&v1.UpdateJobResponse{VisibilityTimeoutSeconds: effective}), nil
@@ -145,7 +142,7 @@ func (s *JobServer) CompleteJob(ctx context.Context, req *connect.Request[v1.Com
 
 	err = s.store.CompleteJob(ctx, caller, req.Msg.TaskToken, req.Msg.JobResult)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, toConnectError(err)
 	}
 
 	return connect.NewResponse(&v1.CompleteJobResponse{}), nil
@@ -159,7 +156,7 @@ func (s *JobServer) ListJobs(ctx context.Context, req *connect.Request[v1.ListJo
 
 	resp, err := s.store.ListJobs(ctx, caller, req.Msg)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, toConnectError(err)
 	}
 
 	return connect.NewResponse(resp), nil

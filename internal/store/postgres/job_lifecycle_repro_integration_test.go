@@ -68,6 +68,7 @@ func TestRepro_StaleTokenCannotPublishEvents(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = store.PublishEvents(ctx, fx.Worker, token, []*jobv1.JobEvent{{
+		Attempt:   1,
 		Sequence:  1,
 		Timestamp: timestamppb.Now(),
 		EventType: jobv1.EventType_EVENT_TYPE_OUTPUT,

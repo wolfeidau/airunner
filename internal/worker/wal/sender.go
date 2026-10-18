@@ -2,11 +2,26 @@ package wal
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"math/rand/v2"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
+	"google.golang.org/protobuf/proto"
+)
+
+const (
+	// maxBatchEvents is the server's per-request event limit.
+	maxBatchEvents = 50
+
+	// maxBatchBytes is the encoded event budget per request. The server accepts
+	// 1 MiB per request; the remainder is headroom for the request envelope.
+	maxBatchBytes = 900 * 1024
+
+	stopTimeout = 5 * time.Second
 )
 
 // asyncSender manages background sending of WAL records with retry logic
@@ -15,17 +30,24 @@ type asyncSender struct {
 	sender EventSender
 	cfg    *WALConfig
 
-	stopCh  chan struct{}
-	doneCh  chan struct{}
-	flushCh chan struct{}
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	stopCh   chan struct{}
+	doneCh   chan struct{}
+	flushCh  chan struct{}
+	stopOnce sync.Once
 }
 
-// newAsyncSender creates a new async sender
-func newAsyncSender(wal *walImpl, sender EventSender, cfg *WALConfig) *asyncSender {
+// newAsyncSender creates a new async sender bound to ctx
+func newAsyncSender(ctx context.Context, wal *walImpl, sender EventSender, cfg *WALConfig) *asyncSender {
+	sctx, cancel := context.WithCancel(ctx)
 	return &asyncSender{
 		wal:     wal,
 		sender:  sender,
 		cfg:     cfg,
+		ctx:     sctx,
+		cancel:  cancel,
 		stopCh:  make(chan struct{}),
 		doneCh:  make(chan struct{}),
 		flushCh: make(chan struct{}, 1), // Buffered so trigger doesn't block
@@ -33,186 +55,202 @@ func newAsyncSender(wal *walImpl, sender EventSender, cfg *WALConfig) *asyncSend
 }
 
 // sendLoop is the main goroutine that periodically tries to send unsent records
-func (s *asyncSender) sendLoop(ctx context.Context) {
+func (s *asyncSender) sendLoop() {
 	defer close(s.doneCh)
 
 	ticker := time.NewTicker(s.cfg.FlushInterval)
 	defer ticker.Stop()
 
-	log.Debug().
-		Str("job_id", s.wal.jobID).
-		Dur("flush_interval", s.cfg.FlushInterval).
-		Msg("Async sender loop started")
-
 	for {
 		select {
 		case <-ticker.C:
-			s.trySend(ctx)
-
+			s.drain(true)
 		case <-s.flushCh:
-			log.Debug().Str("job_id", s.wal.jobID).Msg("Flush triggered, attempting immediate send")
-			s.trySend(ctx)
-
+			s.drain(true)
 		case <-s.stopCh:
-			log.Debug().Str("job_id", s.wal.jobID).Msg("Async sender stopping, final flush")
-			s.trySend(ctx) // Final flush
+			// Final best-effort pass without retries.
+			s.drain(false)
 			return
-
-		case <-ctx.Done():
-			log.Debug().Str("job_id", s.wal.jobID).Msg("Async sender context cancelled")
+		case <-s.ctx.Done():
 			return
 		}
 	}
 }
 
-// trySend attempts to send all unsent records with exponential backoff retry
-func (s *asyncSender) trySend(ctx context.Context) {
-	unsent := s.wal.index.GetUnsent()
-	if len(unsent) == 0 {
-		return
-	}
-
-	log.Debug().
-		Str("job_id", s.wal.jobID).
-		Int("unsent_count", len(unsent)).
-		Msg("Attempting to send unsent records")
-
-	// Read events from WAL file
-	events, validRecords, err := s.readRecords(unsent)
-	if err != nil {
-		log.Error().
-			Err(err).
-			Str("job_id", s.wal.jobID).
-			Msg("Failed to read records from WAL")
-		return
-	}
-
-	if len(events) == 0 {
-		log.Debug().
-			Str("job_id", s.wal.jobID).
-			Msg("No valid events to send")
-		return
-	}
-
-	// Retry with exponential backoff
-	var sendErr error
-	interval := s.cfg.RetryBackoff.InitialInterval
-	attempt := 0
-
+// drain sends batches in sequence order until nothing is pending, the sender
+// is stopped, or a sticky error is recorded. With retry set, transient errors
+// are retried with capped exponential backoff; otherwise drain returns.
+func (s *asyncSender) drain(retry bool) {
 	for {
-		attempt++
+		if s.ctx.Err() != nil || s.wal.Err() != nil {
+			return
+		}
 
-		sendErr = s.sender.Send(ctx, events)
-		if sendErr == nil {
-			// Success!
-			log.Info().
+		events, recs, err := s.nextBatch()
+		if err != nil {
+			if !errors.Is(err, errWALClosed) {
+				s.wal.setErr(err)
+			}
+			return
+		}
+		if len(events) == 0 {
+			return
+		}
+
+		if !s.sendBatch(events, recs, retry) {
+			return
+		}
+	}
+}
+
+// sendBatch sends one batch until it is acknowledged. It returns false when
+// the caller should stop draining.
+func (s *asyncSender) sendBatch(events []*jobv1.JobEvent, recs []walRecord, retry bool) bool {
+	through := coveredSequence(events[len(events)-1])
+	backoff := s.initialInterval()
+
+	for sendAttempt := 1; ; sendAttempt++ {
+		ack, err := s.sender.Send(s.ctx, events)
+		if err == nil {
+			if ack.Attempt != s.wal.attempt || ack.Through != through {
+				s.wal.setErr(fmt.Errorf("%w: got attempt=%d through=%d, want attempt=%d through=%d",
+					ErrAckMismatch, ack.Attempt, ack.Through, s.wal.attempt, through))
+				return false
+			}
+			s.wal.index.MarkSent(recs)
+			s.wal.setAcked(through)
+			log.Debug().
 				Str("job_id", s.wal.jobID).
 				Int("event_count", len(events)).
-				Int("attempts", attempt).
-				Msg("Successfully sent events")
-			break
+				Int64("through", through).
+				Int("send_attempts", sendAttempt).
+				Msg("Batch acknowledged")
+			return true
 		}
 
+		if errors.Is(err, ErrLeaseLost) || errors.Is(err, ErrPermanent) {
+			s.wal.setErr(err)
+			return false
+		}
+		if s.ctx.Err() != nil || !retry {
+			return false
+		}
+
+		wait := jitter(backoff)
 		log.Warn().
-			Err(sendErr).
+			Err(err).
 			Str("job_id", s.wal.jobID).
 			Int("event_count", len(events)).
-			Int("attempt", attempt).
-			Dur("next_retry", interval).
+			Int("send_attempt", sendAttempt).
+			Dur("next_retry", wait).
 			Msg("Failed to send events, will retry")
 
-		// Wait with exponential backoff
+		timer := time.NewTimer(wait)
 		select {
-		case <-time.After(interval):
-			// Increase interval for next retry
-			interval = time.Duration(float64(interval) * s.cfg.RetryBackoff.Multiplier)
-			if interval > s.cfg.RetryBackoff.MaxInterval {
-				interval = s.cfg.RetryBackoff.MaxInterval
-			}
-
-		case <-s.flushCh:
-			log.Debug().
-				Str("job_id", s.wal.jobID).
-				Msg("Flush triggered during retry backoff, retrying immediately")
-			// Don't increase interval, retry immediately with same backoff
-
-		case <-ctx.Done():
-			log.Debug().
-				Str("job_id", s.wal.jobID).
-				Msg("Context cancelled during retry backoff")
-			return
-
+		case <-timer.C:
+			backoff = s.nextInterval(backoff)
+		case <-s.ctx.Done():
+			timer.Stop()
+			return false
 		case <-s.stopCh:
-			log.Debug().
-				Str("job_id", s.wal.jobID).
-				Msg("Stop requested during retry backoff")
-			return
+			timer.Stop()
+			return false
 		}
-	}
-
-	// Update record status
-	if sendErr == nil {
-		s.wal.index.MarkSent(validRecords)
-		log.Debug().
-			Str("job_id", s.wal.jobID).
-			Int("marked_sent", len(validRecords)).
-			Msg("Marked records as sent")
-	} else {
-		s.wal.index.MarkFailed(validRecords)
-		log.Warn().
-			Str("job_id", s.wal.jobID).
-			Int("marked_failed", len(validRecords)).
-			Msg("Marked records as failed")
 	}
 }
 
-// readRecords reads events from the WAL file for the given record metadata
-// Returns the events, valid records (that could be read), and any error
-func (s *asyncSender) readRecords(records []walRecord) ([]*jobv1.JobEvent, []walRecord, error) {
-	events := make([]*jobv1.JobEvent, 0, len(records))
-	validRecords := make([]walRecord, 0, len(records))
+// nextBatch reads the next batch of pending records in sequence order.
+// A batch holds at most maxBatchEvents records and maxBatchBytes of encoded
+// events. A record is never split; a lone record over the byte budget is sent
+// by itself. An unreadable record is a permanent failure: later records are
+// never sent past it.
+func (s *asyncSender) nextBatch() ([]*jobv1.JobEvent, []walRecord, error) {
+	unsent := s.wal.index.GetUnsent()
 
-	for _, rec := range records {
+	var (
+		events []*jobv1.JobEvent
+		recs   []walRecord
+		total  int
+	)
+	for _, rec := range unsent {
+		if len(events) >= maxBatchEvents {
+			break
+		}
 		event, err := s.wal.readRecordAt(rec.offset)
 		if err != nil {
-			log.Warn().
-				Err(err).
-				Str("job_id", s.wal.jobID).
-				Int64("sequence", rec.sequence).
-				Int64("offset", rec.offset).
-				Msg("Failed to read record, skipping")
-			continue
+			if errors.Is(err, errWALClosed) {
+				return nil, nil, err
+			}
+			return nil, nil, fmt.Errorf("%w: unreadable WAL record sequence=%d offset=%d: %w",
+				ErrPermanent, rec.sequence, rec.offset, err)
 		}
-
+		size := proto.Size(event)
+		if len(events) > 0 && total+size > maxBatchBytes {
+			break
+		}
 		events = append(events, event)
-		validRecords = append(validRecords, rec)
+		recs = append(recs, rec)
+		total += size
 	}
+	return events, recs, nil
+}
 
-	if len(validRecords) == 0 && len(records) > 0 {
-		return nil, nil, fmt.Errorf("failed to read any records")
+// coveredSequence is the last sequence an event covers: the end of an output
+// batch, otherwise the event's own sequence.
+func coveredSequence(event *jobv1.JobEvent) int64 {
+	if ob := event.GetOutputBatch(); ob != nil {
+		return ob.GetEndSequence()
 	}
+	return event.GetSequence()
+}
 
-	return events, validRecords, nil
+func (s *asyncSender) initialInterval() time.Duration {
+	if s.cfg.RetryBackoff.InitialInterval <= 0 {
+		return 100 * time.Millisecond
+	}
+	return s.cfg.RetryBackoff.InitialInterval
+}
+
+func (s *asyncSender) nextInterval(cur time.Duration) time.Duration {
+	mult := s.cfg.RetryBackoff.Multiplier
+	if mult < 1 {
+		mult = 2
+	}
+	next := time.Duration(float64(cur) * mult)
+	if maxI := s.cfg.RetryBackoff.MaxInterval; maxI > 0 && next > maxI {
+		next = maxI
+	}
+	return next
+}
+
+// jitter spreads d by +/-20%.
+func jitter(d time.Duration) time.Duration {
+	//nolint:gosec // jitter does not need a cryptographic source
+	return time.Duration(float64(d) * (0.8 + 0.4*rand.Float64()))
 }
 
 // triggerFlush signals the sender to try sending immediately
 func (s *asyncSender) triggerFlush() {
 	select {
 	case s.flushCh <- struct{}{}:
-		// Signal sent
 	default:
-		// Channel already has a pending signal, skip
 	}
 }
 
-// stop signals the sender to stop
-func (s *asyncSender) stop() {
-	close(s.stopCh)
-	// Wait for sender to finish (with timeout)
+// stop signals the sender to stop and waits for it. With discard set, any
+// in-flight Send is cancelled and nothing further is sent; otherwise one final
+// best-effort pass runs.
+func (s *asyncSender) stop(discard bool) {
+	s.stopOnce.Do(func() {
+		if discard {
+			s.cancel()
+		}
+		close(s.stopCh)
+	})
 	select {
 	case <-s.doneCh:
-		log.Debug().Msg("Async sender stopped gracefully")
-	case <-time.After(5 * time.Second):
-		log.Warn().Msg("Async sender stop timeout")
+	case <-time.After(stopTimeout):
+		log.Warn().Str("job_id", s.wal.jobID).Msg("Async sender stop timeout")
 	}
+	s.cancel()
 }

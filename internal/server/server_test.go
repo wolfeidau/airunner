@@ -69,6 +69,7 @@ func TestCompleteJobWorkflow(t *testing.T) {
 	// 3. Publish some events (simplified - no streaming verification for now)
 	// Send a start event
 	startEvent := &jobv1.JobEvent{
+		Attempt:   1,
 		Sequence:  1,
 		Timestamp: timestamppb.Now(),
 		EventType: jobv1.EventType_EVENT_TYPE_PROCESS_START,

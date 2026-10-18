@@ -17,15 +17,28 @@ import (
 // mockEventSender is a mock implementation of EventSender for testing
 type mockEventSender struct {
 	sendFunc func(ctx context.Context, events []*jobv1.JobEvent) error
+	mu       sync.Mutex
 	calls    int
 }
 
-func (m *mockEventSender) Send(ctx context.Context, events []*jobv1.JobEvent) error {
+const testJob = "11111111-2222-3333-4444-555555555555"
+
+func (m *mockEventSender) Send(ctx context.Context, events []*jobv1.JobEvent) (Ack, error) {
+	m.mu.Lock()
 	m.calls++
+	m.mu.Unlock()
 	if m.sendFunc != nil {
-		return m.sendFunc(ctx, events)
+		if err := m.sendFunc(ctx, events); err != nil {
+			return Ack{}, err
+		}
 	}
-	return nil
+	return Ack{Attempt: 1, Through: coveredSequence(events[len(events)-1])}, nil
+}
+
+func (m *mockEventSender) callCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.calls
 }
 
 func TestNewWAL(t *testing.T) {
@@ -44,12 +57,12 @@ func TestNewWAL(t *testing.T) {
 		},
 	}
 
-	w, err := NewWAL(cfg, "test-job")
+	w, err := NewWAL(cfg, testJob, 1)
 	require.NoError(t, err)
 	require.NotNil(t, w)
 
 	// Verify WAL file was created
-	walPath := filepath.Join(walDir, "test-job.wal")
+	walPath := filepath.Join(walDir, testJob, "1.wal")
 	_, err = os.Stat(walPath)
 	require.NoError(t, err)
 
@@ -74,7 +87,7 @@ func TestWAL_Append(t *testing.T) {
 		},
 	}
 
-	w, err := NewWAL(cfg, "test-job")
+	w, err := NewWAL(cfg, testJob, 1)
 	require.NoError(t, err)
 	defer func() {
 		_ = w.Stop(context.Background())
@@ -113,7 +126,7 @@ func TestWAL_StartStop(t *testing.T) {
 		},
 	}
 
-	w, err := NewWAL(cfg, "test-job")
+	w, err := NewWAL(cfg, testJob, 1)
 	require.NoError(t, err)
 
 	// Mock sender
@@ -145,51 +158,25 @@ func TestWAL_StartStop(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify sender was called
-	assert.Positive(t, sender.calls)
+	assert.Positive(t, sender.callCount())
 }
 
-func TestWAL_Persistence(t *testing.T) {
-	walDir := t.TempDir()
-	archiveDir := t.TempDir()
+// TestWAL_ReopenRecreatesStaleFile verifies that an existing file for the same
+// (job, attempt) is a crash leftover and is recreated, never replayed.
+func TestWAL_ReopenRecreatesStaleFile(t *testing.T) {
+	cfg := &WALConfig{WALDir: t.TempDir(), ArchiveDir: t.TempDir(), FlushInterval: 50 * time.Millisecond}
 
-	cfg := &WALConfig{
-		WALDir:        walDir,
-		ArchiveDir:    archiveDir,
-		RetentionDays: 30,
-		FlushInterval: 100 * time.Millisecond,
-		RetryBackoff: BackoffConfig{
-			InitialInterval: 100 * time.Millisecond,
-			MaxInterval:     1 * time.Second,
-			Multiplier:      2.0,
-		},
-	}
-
-	// Create WAL and append events
-	w1, err := NewWAL(cfg, "test-job")
+	w1, err := NewWAL(cfg, testJob, 1)
 	require.NoError(t, err)
-
 	for i := 0; i < 5; i++ {
-		event := &jobv1.JobEvent{
-			Sequence:  int64(i + 1),
-			EventType: jobv1.EventType_EVENT_TYPE_OUTPUT_BATCH,
-		}
-		err = w1.Append(context.Background(), event)
-		require.NoError(t, err)
+		require.NoError(t, w1.Append(context.Background(), &jobv1.JobEvent{Sequence: int64(i + 1)}))
 	}
+	require.NoError(t, w1.Stop(context.Background()))
 
-	err = w1.Stop(context.Background())
+	w2, err := NewWAL(cfg, testJob, 1)
 	require.NoError(t, err)
-
-	// Reopen WAL and verify events are still there
-	w2, err := NewWAL(cfg, "test-job")
-	require.NoError(t, err)
-	defer func() {
-		_ = w2.Stop(context.Background())
-	}()
-
-	walImpl := w2.(*walImpl)
-	assert.Equal(t, 5, walImpl.index.Count())
-	assert.Equal(t, 5, walImpl.index.CountPending())
+	defer func() { _ = w2.Stop(context.Background()) }()
+	assert.Equal(t, 0, w2.Pending())
 }
 
 func TestWAL_Archive(t *testing.T) {
@@ -208,7 +195,7 @@ func TestWAL_Archive(t *testing.T) {
 		},
 	}
 
-	w, err := NewWAL(cfg, "test-job")
+	w, err := NewWAL(cfg, testJob, 1)
 	require.NoError(t, err)
 
 	// Append events
@@ -230,12 +217,12 @@ func TestWAL_Archive(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify archive exists
-	archivePath := filepath.Join(archiveDir, "test-job.wal.zst")
+	archivePath := filepath.Join(archiveDir, testJob+"-1.wal.zst")
 	_, err = os.Stat(archivePath)
 	require.NoError(t, err)
 
 	// Verify original WAL was deleted
-	walPath := filepath.Join(walDir, "test-job.wal")
+	walPath := filepath.Join(walDir, testJob, "1.wal")
 	_, err = os.Stat(walPath)
 	assert.True(t, os.IsNotExist(err))
 }
@@ -385,7 +372,7 @@ func TestWAL_NetworkFailureRecovery(t *testing.T) {
 		},
 	}
 
-	w, err := NewWAL(cfg, "test-job")
+	w, err := NewWAL(cfg, testJob, 1)
 	require.NoError(t, err)
 	defer func() {
 		_ = w.Stop(context.Background())
@@ -433,144 +420,35 @@ func TestWAL_NetworkFailureRecovery(t *testing.T) {
 	assert.Greater(t, attempts, 3, "Should have retried at least 3 times")
 }
 
-// TestWAL_WorkerCrashRecovery tests that events survive worker crashes
-func TestWAL_WorkerCrashRecovery(t *testing.T) {
-	walDir := t.TempDir()
-	archiveDir := t.TempDir()
-
-	cfg := &WALConfig{
-		WALDir:        walDir,
-		ArchiveDir:    archiveDir,
-		FlushInterval: 100 * time.Millisecond,
-		RetryBackoff: BackoffConfig{
-			InitialInterval: 100 * time.Millisecond,
-			MaxInterval:     1 * time.Second,
-			Multiplier:      2.0,
-		},
-	}
-
-	// Simulate first worker
-	w1, err := NewWAL(cfg, "test-job")
-	require.NoError(t, err)
-
-	// Append events but DON'T start sender (simulate crash before send)
-	for i := 0; i < 10; i++ {
-		event := &jobv1.JobEvent{
-			Sequence:  int64(i + 1),
-			EventType: jobv1.EventType_EVENT_TYPE_OUTPUT_BATCH,
-		}
-		err = w1.Append(context.Background(), event)
-		require.NoError(t, err)
-	}
-
-	// Simulate crash - close file without proper Stop()
-	impl := w1.(*walImpl)
-	impl.mu.Lock()
-	if impl.file != nil {
-		_ = impl.file.Close()
-		impl.file = nil
-	}
-	impl.mu.Unlock()
-
-	// Simulate second worker (restart after crash)
-	w2, err := NewWAL(cfg, "test-job")
-	require.NoError(t, err)
-	defer func() {
-		_ = w2.Stop(context.Background())
-	}()
-
-	// Verify unsent events were loaded
-	impl2 := w2.(*walImpl)
-	assert.Equal(t, 10, impl2.index.Count(), "Should load 10 events")
-	assert.Equal(t, 10, impl2.index.CountPending(), "All events should be pending")
-
-	// Start sender and verify events are sent
-	var mu sync.Mutex
-	var sentEvents []*jobv1.JobEvent
-	sender := &mockEventSender{
-		sendFunc: func(ctx context.Context, events []*jobv1.JobEvent) error {
-			mu.Lock()
-			defer mu.Unlock()
-			sentEvents = append(sentEvents, events...)
-			return nil
-		},
-	}
-
-	err = w2.Start(context.Background(), sender)
-	require.NoError(t, err)
-
-	// Wait for sender to process
-	time.Sleep(300 * time.Millisecond)
-
-	// Verify events replayed
-	mu.Lock()
-	eventsCount := len(sentEvents)
-	mu.Unlock()
-	assert.Equal(t, 10, eventsCount, "All events should be replayed after crash")
-}
-
-// TestWAL_CRC64Corruption tests that corrupted records are detected
+// TestWAL_CRC64Corruption tests that a corrupted pending record fails
+// publication permanently instead of being skipped.
 func TestWAL_CRC64Corruption(t *testing.T) {
-	walDir := t.TempDir()
-	archiveDir := t.TempDir()
+	cfg := &WALConfig{WALDir: t.TempDir(), ArchiveDir: t.TempDir(), FlushInterval: 20 * time.Millisecond}
 
-	cfg := &WALConfig{
-		WALDir:        walDir,
-		ArchiveDir:    archiveDir,
-		FlushInterval: 100 * time.Millisecond,
-		RetryBackoff: BackoffConfig{
-			InitialInterval: 100 * time.Millisecond,
-			MaxInterval:     1 * time.Second,
-			Multiplier:      2.0,
-		},
+	w, err := NewWAL(cfg, testJob, 1)
+	require.NoError(t, err)
+	defer func() { _ = w.Stop(context.Background()) }()
+
+	for i := 1; i <= 3; i++ {
+		require.NoError(t, w.Append(context.Background(), &jobv1.JobEvent{Sequence: int64(i)}))
 	}
 
-	w, err := NewWAL(cfg, "test-job")
+	// Corrupt the first record's sequence field (covered by the CRC).
+	f, err := os.OpenFile(filepath.Join(cfg.WALDir, testJob, "1.wal"), os.O_RDWR, 0)
 	require.NoError(t, err)
-
-	// Append an event
-	event := &jobv1.JobEvent{
-		Sequence:  1,
-		EventType: jobv1.EventType_EVENT_TYPE_OUTPUT_BATCH,
-	}
-	err = w.Append(context.Background(), event)
+	_, err = f.WriteAt([]byte{0xFF}, headerSize+5)
 	require.NoError(t, err)
+	require.NoError(t, f.Close())
 
-	err = w.Stop(context.Background())
-	require.NoError(t, err)
+	sender := &mockEventSender{}
+	require.NoError(t, w.Start(context.Background(), sender))
 
-	// Corrupt the WAL file (flip some bytes in the middle)
-	walPath := filepath.Join(walDir, "test-job.wal")
-	data, err := os.ReadFile(walPath)
-	require.NoError(t, err)
-
-	// Corrupt payload (not the header or CRC)
-	if len(data) > headerSize+100 {
-		data[headerSize+50] ^= 0xFF // Flip bits
-		//nolint:gosec // Test files can use 0644 permissions
-		err = os.WriteFile(walPath, data, 0644)
-		require.NoError(t, err)
-	}
-
-	// Try to reload - WAL should still open (corruption might not be detected until send)
-	w2, err := NewWAL(cfg, "test-job")
-	require.NoError(t, err)
-	defer func() {
-		_ = w2.Stop(context.Background())
-	}()
-
-	// The important part is that corrupted data doesn't cause crashes
-	// Depending on where we corrupted (header vs payload vs CRC), different things happen:
-	// 1. Header corruption: might not load record
-	// 2. Payload corruption: CRC check should fail on read
-	// 3. CRC corruption: check should fail on read
-	// Since we corrupted the payload, the sender will fail when trying to deserialize/send
-	impl := w2.(*walImpl)
-	// At minimum, WAL should be functional (not crash)
-	assert.NotNil(t, impl.index, "Index should be initialized")
-
-	//  Note: In production, corrupted records are skipped by the sender with warnings
-	// The key guarantee is: corruption doesn't crash the worker or prevent other events from being sent
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err = w.Flush(ctx)
+	require.ErrorIs(t, err, ErrPermanent)
+	assert.Equal(t, 0, sender.callCount(), "later records must not be sent past a corrupt one")
+	assert.Equal(t, 3, w.Pending())
 }
 
 // TestWAL_LargePayload tests handling of large events (up to 200KB)
@@ -589,7 +467,7 @@ func TestWAL_LargePayload(t *testing.T) {
 		},
 	}
 
-	w, err := NewWAL(cfg, "test-job")
+	w, err := NewWAL(cfg, testJob, 1)
 	require.NoError(t, err)
 	defer func() {
 		_ = w.Stop(context.Background())
@@ -639,7 +517,7 @@ func TestWAL_Flush(t *testing.T) {
 		},
 	}
 
-	w, err := NewWAL(cfg, "test-job")
+	w, err := NewWAL(cfg, testJob, 1)
 	require.NoError(t, err)
 	defer func() {
 		_ = w.Stop(context.Background())
@@ -701,7 +579,7 @@ func TestWAL_FlushTimeout(t *testing.T) {
 		},
 	}
 
-	w, err := NewWAL(cfg, "test-job")
+	w, err := NewWAL(cfg, testJob, 1)
 	require.NoError(t, err)
 	defer func() {
 		_ = w.Stop(context.Background())
@@ -752,7 +630,7 @@ func BenchmarkWAL_Append(b *testing.B) {
 		},
 	}
 
-	w, err := NewWAL(cfg, "bench-job")
+	w, err := NewWAL(cfg, testJob, 1)
 	require.NoError(b, err)
 	defer func() {
 		_ = w.Stop(context.Background())

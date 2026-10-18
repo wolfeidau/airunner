@@ -247,6 +247,7 @@ func TestIntegration_BasicJobLifecycle(t *testing.T) {
 		// Publish some events
 		events := []*jobv1.JobEvent{
 			{
+				Attempt:   1,
 				Sequence:  1,
 				Timestamp: timestamppb.Now(),
 				EventType: jobv1.EventType_EVENT_TYPE_PROCESS_START,
@@ -257,6 +258,7 @@ func TestIntegration_BasicJobLifecycle(t *testing.T) {
 				},
 			},
 			{
+				Attempt:   1,
 				Sequence:  2,
 				Timestamp: timestamppb.Now(),
 				EventType: jobv1.EventType_EVENT_TYPE_OUTPUT,
@@ -267,6 +269,7 @@ func TestIntegration_BasicJobLifecycle(t *testing.T) {
 				},
 			},
 			{
+				Attempt:   1,
 				Sequence:  3,
 				Timestamp: timestamppb.Now(),
 				EventType: jobv1.EventType_EVENT_TYPE_PROCESS_END,

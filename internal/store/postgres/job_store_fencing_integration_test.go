@@ -34,7 +34,7 @@ func dequeueOne(t *testing.T, js *JobStore, fx orgFixture, queue string, visibil
 }
 
 func startEvent(seq int64) *jobv1.JobEvent {
-	return &jobv1.JobEvent{Sequence: seq, Timestamp: timestamppb.Now(), EventType: jobv1.EventType_EVENT_TYPE_PROCESS_START}
+	return &jobv1.JobEvent{Attempt: 1, Sequence: seq, Timestamp: timestamppb.Now(), EventType: jobv1.EventType_EVENT_TYPE_PROCESS_START}
 }
 
 func outputItems(n int) []*jobv1.OutputItem {
@@ -47,7 +47,7 @@ func outputItems(n int) []*jobv1.OutputItem {
 
 func batchEvent(start, end int64) *jobv1.JobEvent {
 	return &jobv1.JobEvent{
-		Sequence: start, Timestamp: timestamppb.Now(), EventType: jobv1.EventType_EVENT_TYPE_OUTPUT_BATCH,
+		Attempt: 1, Sequence: start, Timestamp: timestamppb.Now(), EventType: jobv1.EventType_EVENT_TYPE_OUTPUT_BATCH,
 		EventData: &jobv1.JobEvent_OutputBatch{OutputBatch: &jobv1.OutputBatchEvent{
 			StartSequence: start, EndSequence: end, Outputs: outputItems(int(end - start + 1)),
 		}},
@@ -218,10 +218,10 @@ func TestFencing_Publish(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, int64(4), first.AcknowledgedThroughSequence)
 
-		// Retry with a fresh, unstamped copy of the same content.
+		// Retry with a fresh copy of the same content.
 		retry := []*jobv1.JobEvent{
-			{Sequence: 1, Timestamp: events[0].Timestamp, EventType: events[0].EventType},
-			{Sequence: 2, Timestamp: events[1].Timestamp, EventType: events[1].EventType, EventData: events[1].EventData},
+			{Attempt: 1, Sequence: 1, Timestamp: events[0].Timestamp, EventType: events[0].EventType},
+			{Attempt: 1, Sequence: 2, Timestamp: events[1].Timestamp, EventType: events[1].EventType, EventData: events[1].EventData},
 		}
 		second, err := js.PublishEvents(ctx, fx.Worker, token, retry)
 		require.NoError(t, err)
@@ -235,12 +235,12 @@ func TestFencing_Publish(t *testing.T) {
 		js, fx, jobID, token := setup(t, "conflict")
 		ts := timestamppb.Now()
 		_, err := js.PublishEvents(ctx, fx.Worker, token, []*jobv1.JobEvent{
-			{Sequence: 1, Timestamp: ts, EventType: jobv1.EventType_EVENT_TYPE_OUTPUT,
+			{Attempt: 1, Sequence: 1, Timestamp: ts, EventType: jobv1.EventType_EVENT_TYPE_OUTPUT,
 				EventData: &jobv1.JobEvent_Output{Output: &jobv1.OutputEvent{Output: []byte("a")}}},
 		})
 		require.NoError(t, err)
 		_, err = js.PublishEvents(ctx, fx.Worker, token, []*jobv1.JobEvent{
-			{Sequence: 1, Timestamp: ts, EventType: jobv1.EventType_EVENT_TYPE_OUTPUT,
+			{Attempt: 1, Sequence: 1, Timestamp: ts, EventType: jobv1.EventType_EVENT_TYPE_OUTPUT,
 				EventData: &jobv1.JobEvent_Output{Output: &jobv1.OutputEvent{Output: []byte("b")}}},
 		})
 		require.ErrorIs(t, err, jobstore.ErrConflict)

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
-	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -19,6 +18,7 @@ import (
 	"github.com/wolfeidau/airunner/internal/client"
 	"github.com/wolfeidau/airunner/internal/util"
 	"github.com/wolfeidau/airunner/internal/worker"
+	"github.com/wolfeidau/airunner/internal/worker/lease"
 	"github.com/wolfeidau/airunner/internal/worker/wal"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -29,6 +29,7 @@ type WorkerCmd struct {
 	Credential        string        `help:"Credential name (uses default if not specified)"`
 	ClientTimeout     time.Duration `help:"Client timeout in seconds" default:"5m"`
 	VisibilityTimeout int32         `help:"Visibility timeout in seconds (30-3600)" default:"300"`
+	KeepFailedWAL     time.Duration `help:"Keep discarded or stale WALs in the failed directory for this long (0 disables)" default:"0" env:"AIRUNNER_KEEP_FAILED_WAL"`
 }
 
 func (w *WorkerCmd) Run(ctx context.Context, globals *Globals) error {
@@ -67,6 +68,13 @@ func (w *WorkerCmd) Run(ctx context.Context, globals *Globals) error {
 	if err != nil {
 		return fmt.Errorf("failed to create clients: %w", err)
 	}
+
+	// Remove WALs left by crashed workers before taking new jobs.
+	report, err := wal.CleanupStale(wal.DefaultConfig(), w.KeepFailedWAL)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to clean up stale WALs")
+	}
+	log.Info().Interface("report", report).Msg("Stale WAL cleanup finished")
 
 	bkoffStrategy := backoff.NewExponentialBackOff()
 	bkoffStrategy.InitialInterval = 1 * time.Second
@@ -141,143 +149,206 @@ func (w *WorkerCmd) processJob(ctx context.Context, clients *client.Clients) (bo
 		return false, nil // No jobs available
 	}
 
-	job := stream.Msg().Job
-	taskToken := stream.Msg().TaskToken
+	return true, w.runJob(ctx, clients, wal.DefaultConfig(), stream.Msg())
+}
 
-	log.Info().Str("job_id", job.JobId).Str("repository", job.JobParams.Repository).Msg("Job dequeued")
+// runJob executes one dequeued job under a renewable lease and settles it.
+func (w *WorkerCmd) runJob(ctx context.Context, clients *client.Clients, walCfg *wal.WALConfig, dequeued *jobv1.DequeueJobResponse) error {
+	job := dequeued.Job
+	taskToken := dequeued.TaskToken
+
+	log.Info().Str("job_id", job.JobId).Int32("attempt", job.Attempt).Str("repository", job.JobParams.Repository).Msg("Job dequeued")
 
 	if job.JobParams.Command == "" {
 		log.Error().Str("job_id", job.JobId).Msg("No command specified for job")
-		return true, errors.New("no command specified")
+		return errors.New("no command specified")
 	}
 
-	// Create WAL for durable event persistence. The WAL is per attempt: a redelivered
-	// attempt starts a fresh sequence space and must never resend another attempt's records.
-	jobWAL, err := wal.NewWAL(wal.DefaultConfig(), fmt.Sprintf("%s-%d", job.JobId, job.Attempt))
+	// The WAL is per (job, attempt): a redelivered attempt starts a fresh sequence space
+	// and must never resend another attempt's records.
+	jobWAL, err := wal.NewWAL(walCfg, job.JobId, job.Attempt)
 	if err != nil {
-		return true, fmt.Errorf("failed to create WAL: %w", err)
+		return fmt.Errorf("failed to create WAL: %w", err)
 	}
-	defer func() {
-		if err := jobWAL.Stop(ctx); err != nil {
-			log.Error().Err(err).Msg("Failed to stop WAL")
+
+	if err := jobWAL.Start(ctx, &grpcEventSender{clients: clients, taskToken: taskToken}); err != nil {
+		_ = jobWAL.Discard(false)
+		return fmt.Errorf("failed to start WAL sender: %w", err)
+	}
+
+	// Renew the lease until the job settles. When the controller aborts, execCtx is
+	// cancelled and console-stream terminates the process group (SIGTERM, SIGKILL after 5s).
+	accepted := time.Duration(dequeued.VisibilityTimeoutSeconds) * time.Second
+	if accepted <= 0 {
+		accepted = time.Duration(w.VisibilityTimeout) * time.Second
+	}
+	ctrl := lease.New(newRenewFunc(clients, taskToken), accepted)
+	ctrlCtx, cancelCtrl := context.WithCancel(ctx)
+	defer cancelCtrl()
+	go ctrl.Run(ctrlCtx)
+
+	execCtx, cancelExec := context.WithCancel(ctx)
+	defer cancelExec()
+	go func() {
+		select {
+		case <-ctrl.Done():
+			cancelExec()
+		case <-execCtx.Done():
 		}
 	}()
 
-	// Wrap the unary publish RPC as EventSender for WAL
-	sender := &grpcEventSender{
-		clients:   clients,
-		taskToken: taskToken,
-	}
-
-	// Start async sender for WAL
-	if err := jobWAL.Start(ctx, sender); err != nil {
-		return true, fmt.Errorf("failed to start WAL sender: %w", err)
-	}
-
-	// Create event batcher with WAL callback
-	// EventBatcher writes to WAL with fsync (synchronous)
-	// Async sender will retry sending to server until success
+	// EventBatcher writes to the WAL with fsync; the WAL sender publishes asynchronously.
 	batcher := worker.NewEventBatcher(job.ExecutionConfig, func(event *jobv1.JobEvent) error {
 		return jobWAL.Append(ctx, event)
 	})
+	executeErr := worker.NewJobExecutor(taskToken, batcher).Execute(execCtx, job)
+	cancelExec()
 
-	executor := worker.NewJobExecutor(taskToken, batcher)
-
-	// Create a separate context for timeout extension so we can cancel it when the job completes
-	timeoutCtx, cancelTimeout := context.WithCancel(ctx)
-	defer cancelTimeout()
-
-	go w.extendVisibilityTimeout(timeoutCtx, clients, taskToken)
-
-	// Execute the job and capture result
-	var jobResult *jobv1.JobResult
-	executeErr := executor.Execute(ctx, job)
-
-	// CRITICAL: Flush WAL before completing job to ensure zero data loss
-	// This blocks until all events are sent or context times out
-	// Create a context with timeout for the flush (use remaining visibility timeout)
-	flushCtx, flushCancel := context.WithTimeout(ctx, max(time.Duration(w.VisibilityTimeout)*time.Second, 30*time.Second))
-	defer flushCancel()
-
-	flushErr := jobWAL.Flush(flushCtx)
-	if flushErr != nil {
-		log.Error().Err(flushErr).Str("job_id", job.JobId).Msg("Failed to flush WAL events")
-		// If we can't flush events, the job must FAIL
-		// This ensures we don't lose events by marking job as completed
-		executeErr = fmt.Errorf("failed to flush WAL events: %w", flushErr)
-	}
-
-	// Build job result based on execution outcome
-	if executeErr != nil {
-		log.Error().Err(executeErr).Str("job_id", job.JobId).Msg("Job execution failed")
-		exitCode := int32(1)
-		var exitErr *worker.ExitError
-		if errors.As(executeErr, &exitErr) {
-			exitCode = util.AsInt32(exitErr.Code)
-		}
-		jobResult = &jobv1.JobResult{
-			JobId:        job.JobId,
-			Success:      false,
-			ExitCode:     exitCode,
-			ErrorMessage: executeErr.Error(),
-			StartedAt:    job.UpdatedAt, // Job was marked RUNNING when dequeued
-			CompletedAt:  timestamppb.Now(),
-		}
-	} else {
-		log.Info().Str("job_id", job.JobId).Msg("Job executed successfully")
-		jobResult = &jobv1.JobResult{
-			JobId:       job.JobId,
-			Success:     true,
-			ExitCode:    0,
-			StartedAt:   job.UpdatedAt,
-			CompletedAt: timestamppb.Now(),
-		}
-	}
-
-	// Complete the job with the result
-	completeReq := &jobv1.CompleteJobRequest{
-		TaskToken:          taskToken,
-		JobResult:          jobResult,
-		FinalEventSequence: sender.acknowledgedThrough(),
-	}
-
-	if _, err := clients.Job.CompleteJob(ctx, connect.NewRequest(completeReq)); err != nil {
-		return true, fmt.Errorf("failed to complete job: %w", err)
-	}
-
-	log.Info().Str("job_id", job.JobId).Bool("success", jobResult.Success).Msg("Job completed")
-
-	return true, nil
+	r := &jobRun{clients: clients, walCfg: walCfg, job: job, taskToken: taskToken, wal: jobWAL, ctrl: ctrl, keep: w.KeepFailedWAL > 0}
+	defer ctrl.Stop()
+	return r.finish(ctx, executeErr)
 }
 
-func (w *WorkerCmd) extendVisibilityTimeout(ctx context.Context, clients *client.Clients, taskToken string) {
-	// Renew at a third of the visibility timeout so a lease survives two missed renewals.
-	interval := time.Duration(w.VisibilityTimeout) * time.Second / 3
-	if interval <= 0 {
-		interval = 100 * time.Second // matches the 300s server default
+// jobRun holds the state needed to settle a finished execution.
+type jobRun struct {
+	clients   *client.Clients
+	walCfg    *wal.WALConfig
+	job       *jobv1.Job
+	taskToken string
+	wal       wal.WAL
+	ctrl      *lease.Controller
+	keep      bool // keep discarded WALs in failed/ for diagnosis
+}
+
+// finish settles the job after execution returns: flush the WAL, then complete, fail,
+// or abandon the job depending on what the lease and the publish path report.
+func (r *jobRun) finish(ctx context.Context, executeErr error) error {
+	if r.leaseLost() {
+		r.abandon("lease lost")
+		return nil
 	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
 
-	for {
-		select {
-		case <-ctx.Done():
-			// Job completed or context cancelled
-			return
-		case <-ticker.C:
-			// Extend visibility timeout by the configured timeout value
-			req := &jobv1.UpdateJobRequest{
-				TaskToken:                taskToken,
-				VisibilityTimeoutSeconds: w.VisibilityTimeout,
-			}
+	flushCtx, cancel := context.WithTimeout(ctx, min(30*time.Second, r.ctrl.Remaining()))
+	flushErr := r.wal.Flush(flushCtx)
+	cancel()
 
-			if _, err := clients.Job.UpdateJob(ctx, connect.NewRequest(req)); err != nil {
-				log.Error().Err(err).Msg("Failed to extend visibility timeout")
-				// Continue trying - don't exit the goroutine
-			} else {
-				log.Debug().Msg("Extended visibility timeout")
-			}
+	switch {
+	case flushErr == nil:
+	case errors.Is(flushErr, wal.ErrLeaseLost) || r.leaseLost():
+		r.abandon("lease lost")
+		return nil
+	case errors.Is(flushErr, wal.ErrPermanent):
+		// The server will never accept the remaining events: fail the job with the
+		// acknowledged prefix and keep the log marked incomplete.
+		log.Error().Err(flushErr).Str("job_id", r.job.JobId).Msg("Permanent event publish failure")
+		executeErr = fmt.Errorf("event log incomplete (acknowledged through sequence %d): %w", r.wal.Acked(), flushErr)
+		err := r.complete(ctx, executeErr)
+		r.discard()
+		return err
+	case r.wal.Pending() > 0:
+		// Expiry redelivers the job; completing now would lose the pending events.
+		r.ctrl.Stop()
+		r.abandon("events could not be published before the lease budget ran out")
+		return nil
+	}
+
+	if err := r.complete(ctx, executeErr); err != nil {
+		r.discard()
+		return err
+	}
+	r.archive(ctx)
+	return nil
+}
+
+// leaseLost reports whether the lease controller aborted or the WAL sender saw lease loss.
+func (r *jobRun) leaseLost() bool {
+	return r.ctrl.Err() != nil || errors.Is(r.wal.Err(), wal.ErrLeaseLost)
+}
+
+// complete sends CompleteJob with the acknowledged event prefix. Lease loss on completion
+// abandons the job without reporting an error.
+func (r *jobRun) complete(ctx context.Context, executeErr error) error {
+	jobResult := &jobv1.JobResult{
+		JobId:       r.job.JobId,
+		Success:     executeErr == nil,
+		StartedAt:   r.job.UpdatedAt, // Job was marked RUNNING when dequeued
+		CompletedAt: timestamppb.Now(),
+	}
+	if executeErr != nil {
+		log.Error().Err(executeErr).Str("job_id", r.job.JobId).Msg("Job execution failed")
+		jobResult.ExitCode = 1
+		var exitErr *worker.ExitError
+		if errors.As(executeErr, &exitErr) {
+			jobResult.ExitCode = util.AsInt32(exitErr.Code)
 		}
+		jobResult.ErrorMessage = executeErr.Error()
+	} else {
+		log.Info().Str("job_id", r.job.JobId).Msg("Job executed successfully")
+	}
+
+	_, err := r.clients.Job.CompleteJob(ctx, connect.NewRequest(&jobv1.CompleteJobRequest{
+		TaskToken:          r.taskToken,
+		JobResult:          jobResult,
+		FinalEventSequence: r.wal.Acked(),
+	}))
+	if err != nil {
+		if connect.CodeOf(err) == connect.CodeFailedPrecondition {
+			r.abandon("lease lost on completion")
+			return nil
+		}
+		return fmt.Errorf("failed to complete job: %w", err)
+	}
+
+	log.Info().Str("job_id", r.job.JobId).Bool("success", jobResult.Success).Msg("Job completed")
+	return nil
+}
+
+// abandon drops the WAL without completing or releasing the job; lease expiry redelivers it.
+func (r *jobRun) abandon(reason string) {
+	log.Warn().
+		Str("job_id", r.job.JobId).
+		Int32("attempt", r.job.Attempt).
+		Int("pending", r.wal.Pending()).
+		Str("reason", reason).
+		Msg("Abandoning job without completing, lease expiry will redeliver")
+	r.discard()
+}
+
+func (r *jobRun) discard() {
+	if err := r.wal.Discard(r.keep); err != nil {
+		log.Error().Err(err).Str("job_id", r.job.JobId).Msg("Failed to discard WAL")
+	}
+}
+
+// archive stops the WAL after a confirmed completion and archives it when enabled.
+func (r *jobRun) archive(ctx context.Context) {
+	if !r.walCfg.ArchiveOnComplete {
+		r.discard()
+		return
+	}
+	if err := r.wal.Stop(ctx); err != nil {
+		log.Error().Err(err).Str("job_id", r.job.JobId).Msg("Failed to stop WAL")
+		return
+	}
+	if err := r.wal.Archive(ctx, r.walCfg.ArchiveDir); err != nil {
+		log.Error().Err(err).Str("job_id", r.job.JobId).Msg("Failed to archive WAL")
+	}
+}
+
+// newRenewFunc adapts UpdateJob to the lease controller, mapping FailedPrecondition to lease.ErrLost.
+func newRenewFunc(clients *client.Clients, taskToken string) lease.RenewFunc {
+	return func(ctx context.Context, requested time.Duration) (time.Duration, error) {
+		resp, err := clients.Job.UpdateJob(ctx, connect.NewRequest(&jobv1.UpdateJobRequest{
+			TaskToken:                taskToken,
+			VisibilityTimeoutSeconds: util.AsInt32(int(requested / time.Second)),
+		}))
+		if err != nil {
+			if connect.CodeOf(err) == connect.CodeFailedPrecondition {
+				return 0, fmt.Errorf("%w: %w", lease.ErrLost, err)
+			}
+			return 0, err
+		}
+		return time.Duration(resp.Msg.VisibilityTimeoutSeconds) * time.Second, nil
 	}
 }
 
@@ -308,29 +379,29 @@ func addJitter(base time.Duration, jitterFactor float64) time.Duration {
 type grpcEventSender struct {
 	clients   *client.Clients
 	taskToken string
-
-	mu           sync.Mutex
-	ackedThrough int64 // highest AcknowledgedThroughSequence received
 }
 
 // Send implements wal.EventSender
-func (s *grpcEventSender) Send(ctx context.Context, events []*jobv1.JobEvent) error {
+func (s *grpcEventSender) Send(ctx context.Context, events []*jobv1.JobEvent) (wal.Ack, error) {
 	resp, err := s.clients.Events.PublishJobEvents(ctx, connect.NewRequest(&jobv1.PublishJobEventsRequest{
 		TaskToken: s.taskToken,
 		Events:    events,
 	}))
 	if err != nil {
-		return err
+		return wal.Ack{}, classifyPublishError(err)
 	}
-	s.mu.Lock()
-	s.ackedThrough = max(s.ackedThrough, resp.Msg.AcknowledgedThroughSequence)
-	s.mu.Unlock()
-	return nil
+	return wal.Ack{Attempt: resp.Msg.Attempt, Through: resp.Msg.AcknowledgedThroughSequence}, nil
 }
 
-// acknowledgedThrough returns the highest sequence acknowledged by the server.
-func (s *grpcEventSender) acknowledgedThrough() int64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.ackedThrough
+// classifyPublishError wraps a publish error with the wal error class for its connect code.
+// Unlisted codes stay transient and are retried.
+func classifyPublishError(err error) error {
+	switch connect.CodeOf(err) {
+	case connect.CodeFailedPrecondition:
+		return fmt.Errorf("%w: %w", wal.ErrLeaseLost, err)
+	case connect.CodeInvalidArgument, connect.CodeAlreadyExists, connect.CodeResourceExhausted:
+		return fmt.Errorf("%w: %w", wal.ErrPermanent, err)
+	default:
+		return err
+	}
 }

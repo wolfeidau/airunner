@@ -861,7 +861,10 @@ type preparedEvent struct {
 func prepareEvents(events []*jobv1.JobEvent, attempt int32) ([]preparedEvent, error) {
 	prepared := make([]preparedEvent, 0, len(events))
 	for i, event := range events {
-		if event.Attempt != 0 && event.Attempt != attempt {
+		if event.Attempt == 0 {
+			return nil, fmt.Errorf("%w: event %d is missing the attempt", store.ErrInvalidArgument, i)
+		}
+		if event.Attempt != attempt {
 			return nil, fmt.Errorf("%w: event %d attempt=%d does not match leased attempt=%d",
 				store.ErrInvalidArgument, i, event.Attempt, attempt)
 		}

@@ -1,42 +1,115 @@
 # airunner
 
-This is demonstrating the use of [console-stream](https://github.com/wolfeidau/console-stream) and a [connectrpc](https://connectrpc.com/) server which recieves job events, and an agent which dequeues jobs and executes them.
+airunner runs commands on remote workers and streams their output back in order. Clients enqueue jobs through a [Connect RPC](https://connectrpc.com/) server, workers dequeue and execute them using [console-stream](https://github.com/wolfeidau/console-stream), and PostgreSQL stores job state and the event log. Delivery is at-least-once with bounded attempts, every job belongs to an organization, and a job completes only after its whole log is committed.
 
-# Prequisites
+## Prerequisites
 
-- Go 1.25.0 or later
+- Go 1.26.0 or later (see `go.mod`)
 - make
+- [bun](https://bun.sh) (frontend dependencies; esbuild runs inside the Go build)
+- Docker (PostgreSQL via `docker-compose.yml`, and testcontainers for integration tests)
 - [mkcert](https://github.com/FiloSottile/mkcert)
-- [goreman](https://github.com/mattn/goreman) or [Foreman](https://github.com/ddollar/foreman)
+- [goreman](https://github.com/mattn/goreman) and [direnv](https://direnv.net/)
 
-# Usage
+## Quick start
 
-Before we start you need some certs, run `make certs` to generate them. Note you will want to setup mkcert on your system to generate the certificates.
+1. Generate local TLS certificates (writes `.certs/cert.pem` and `.certs/key.pem`):
 
 ```sh
 brew install mkcert
 make certs
 ```
 
-In a shell window run.
+2. Create `.envrc` with these variables, then run `direnv allow`:
+
+| Variable | Purpose |
+|---|---|
+| `AIRUNNER_TLS_CERT`, `AIRUNNER_TLS_KEY` | Server TLS certificate and key |
+| `COMPOSE_POSTGRES_PASSWORD` | Password for the compose PostgreSQL container |
+| `POSTGRES_CONNECTION_STRING` | Server connection string for that database |
+| `AIRUNNER_POSTGRES_TOKEN_SECRET` | HMAC secret for task tokens |
+| `AIRUNNER_GITHUB_CLIENT_ID`, `AIRUNNER_GITHUB_CLIENT_SECRET`, `AIRUNNER_GITHUB_CALLBACK_URL` | GitHub OAuth for dashboard login |
+
+3. Start PostgreSQL:
 
 ```sh
-goreman start
+docker compose up -d postgres
 ```
 
-Then open another tab and run.
+4. Start the server and a worker. `Procfile.dev` runs the server with `--no-auth` and `--postgres-auto-migrate`:
 
 ```sh
-go run ./cmd/cli submit --config configs/example-job.yaml "https://github.com/wolfeidau/airunner"
+direnv exec . goreman -f Procfile.dev start
 ```
 
-This will enqueue a job to the airunner server, then monitor the job status and output the logs and the exit status.
-
-You can see a history of jobs by running.
+5. In another shell, submit, monitor, list and cancel jobs:
 
 ```sh
-go run ./cmd/cli list
+go run ./cmd/cli submit --config configs/example-job.yaml --monitor "https://github.com/wolfeidau/airunner"
+go run ./cmd/cli list --watch
+go run ./cmd/cli monitor <job-id>
+go run ./cmd/cli cancel <job-id>
 ```
+
+The server listens on `0.0.0.0:443` by default. Open the dashboard at `https://localhost`. It lists jobs, shows job events and has a Cancel button.
+
+## Authentication
+
+- **Development**: `--no-auth` disables authentication and seeds a dev organization and principal with admin, user and worker roles. `Procfile.dev` uses it.
+- **CLI and workers**: JWTs signed by a local credential.
+  1. `airunner-cli init <name> --set-default` creates a key pair under `~/.airunner/credentials/`.
+  2. Import the public key in the dashboard Credentials view (GitHub login).
+  3. `airunner-cli credentials update --org-id=<id> --principal-id=<id> <name>` records the server-assigned IDs.
+- **Dashboard**: GitHub OAuth sessions.
+- **Authorization**: user and admin roles may enqueue, list, stream and cancel. Worker and admin roles may dequeue, update, complete and publish events. Callers are derived from authentication only, and unknown procedures are denied.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    CLI[airunner-cli<br/>submit / monitor / list / cancel] -->|Connect RPC| S
+    UI[Dashboard<br/>GitHub OAuth] -->|Connect RPC| S
+    W[airunner-cli worker<br/>WAL + lease controller] -->|dequeue / renew / publish / complete| S
+    subgraph Server[airunner-server]
+        S[JobService<br/>JobEventsService]
+        R[Lease reaper]
+        T[Retention sweep]
+    end
+    S --> PG[(PostgreSQL)]
+    R --> PG
+    T --> PG
+    C[airunner-server cleanup] --> PG
+```
+
+Job flow:
+
+1. `submit` enqueues a job in `SCHEDULED` state for an organization and queue.
+2. A worker dequeues it with `SKIP LOCKED`. The job becomes `RUNNING`, consumes one attempt (`max_attempts` defaults to 3), and gets a task token and a lease (visibility timeout, 30-3600s, default 300s).
+3. The worker runs the command, writes events to a per-attempt WAL at `~/.airunner/wal/<job-id>/<attempt>.wal`, and publishes them with `PublishJobEvents` (up to 50 events and 1 MiB per call). The server acknowledges after commit.
+4. The worker renews the lease about every timeout/3 and stops at its local lease deadline if it cannot.
+5. On exit the worker completes the job. The server accepts completion only when `final_event_sequence` equals the last committed sequence. The job becomes `COMPLETED` or `FAILED`.
+6. The reaper (every 5s by default) returns expired leases to `SCHEDULED`, or to `FAILED` when attempts are exhausted.
+7. `cancel` moves a job to `CANCELLED`. A connected worker notices at its next renewal and stops.
+
+`monitor` streams events by polling (500ms by default), pinned to one attempt (`--attempt`, 0 selects the latest). The stream ends when the attempt closes.
+
+## Guarantees
+
+- At-least-once delivery with bounded attempts.
+- No writes through a stale lease. Every token operation is fenced under a row lock.
+- Committed events survive worker loss.
+- Unacknowledged WAL records are lost if the lease is lost or the worker disk is lost.
+- A job completes only after its whole log is committed.
+- Cancellation stops a connected worker within about 1.25 x timeout/3 + 5s RPC + 5s grace. A partitioned worker stops at its local lease deadline.
+
+Design and phase specs: [specs/job-lifecycle/README.md](specs/job-lifecycle/README.md) and [00-architecture.md](specs/job-lifecycle/00-architecture.md).
+
+## Operations
+
+- **Retention**: terminal jobs are kept 90 days (`--job-retention-days`) and their events 30 days (`--events-retention-days`; 0 keeps events until the job is deleted). The server sweeps every hour (`--retention-interval`). Set it to 0 to disable in-process sweeps and run `airunner-server cleanup` on a schedule instead.
+- **Metrics and tracing**: pass `--tracing` to `airunner-server server`, `airunner-server cleanup` and `airunner-cli worker`. Export is configured through the standard `OTEL_EXPORTER_OTLP_*` environment variables.
+- **Failed WALs**: `airunner-cli worker --keep-failed-wal=<duration>` keeps discarded WALs for inspection. The default (0) deletes them.
+- **Runbook**: [specs/job-lifecycle/operations-runbook.md](specs/job-lifecycle/operations-runbook.md).
 
 ## Demo: program status (OSC 7501)
 
@@ -72,179 +145,18 @@ What to expect:
 - The dashboard shows each report as its own line: blocked in orange, done in green, error in red. Raw escape sequences are stripped from the output.
 - `--scenario=fail` ends the job as `FAILED` with exit code 1.
 
-## Architecture
-
-Airunner is a distributed job orchestration platform that implements a job queue system with real-time event streaming. The system follows a client-server architecture similar to AWS SQS + Lambda, but designed for running arbitrary commands in Git repositories.
-
-### Components
-
-The system has three main binaries:
-
-1. `airunner-server` ([`cmd/server/main.go`](cmd/server/main.go)) - Central job queue service
-   - Exposes gRPC API via Connect protocol over HTTPS
-   - Runs on `localhost:8080` by default with TLS
-   - Uses in-memory job store for development
-   - Provides `JobService` and `JobEventsService`
-
-2. `airunner-cli` worker - Long-running job execution worker
-   - Continuously polls and executes jobs
-   - Maintains visibility timeouts
-   - Streams execution events in real-time
-
-3. `airunner-cli` submit/monitor/list - Client tools
-   - `submit` - Add jobs to the queue (supports YAML/JSON config)
-   - `monitor` - Stream real-time events for specific jobs
-   - `list` - Query and filter jobs with pagination
-
-### Job Flow
-
-1. Job Submission
-```bash
-./airunner-cli submit --queue=default github.com/example/repo
-```
-- Creates job with repository URL, command, and environment variables
-- Server stores job in `SCHEDULED` state
-- Returns job ID for tracking
-
-2. Job Dequeue (Worker pulls job)
-- Worker uses long polling (100ms intervals) to wait for jobs
-- Server marks job as `RUNNING` and makes it invisible for 300s
-- Returns job with task token (UUID) for authentication
-
-3. Job Execution ([`internal/worker/worker.go`](internal/worker/worker.go))
-- Worker spawns process using `console-stream` library (PTY or pipe mode)
-- Streams events in real-time:
-  - `ProcessStart` - PID and start timestamp
-  - `Output` - stdout/stderr data chunks
-  - `ProcessEnd` - exit code and duration
-  - `ProcessError` - error messages
-- Each event gets monotonic sequence number for ordering
-
-4. Heartbeat & Visibility
-- Worker sends `UpdateJob` every 60 seconds to extend visibility timeout
-- Prevents job reassignment to another worker
-- If worker crashes, timeout expires and job returns to queue (at-least-once delivery)
-
-5. Job Completion
-- Worker closes event stream and reports final status
-- Server updates job state to `COMPLETED` or `FAILED`
-- Job remains in store for querying and monitoring
-
-### Key Technical Details
-
-Job Store ([`internal/store/store.go`](internal/store/store.go))
-- In-memory implementation with multiple indexes:
-  - `jobs` - job ID → Job
-  - `queues` - queue name → FIFO job list
-  - `invisibleJobs` - visibility timeout tracking
-  - `taskTokens` - capability-based authentication
-  - `requestIds` - idempotency (prevents duplicate submissions)
-- Background cleanup task (2s interval) requeues expired jobs
-
-Event Streaming ([`internal/server/job_event.go`](internal/server/job_event.go))
-- Events stored per-job in append-only buffer
-- Real-time fanout to active monitors using Go channels
-- Supports replay from sequence number or timestamp
-- Powers `./airunner-cli monitor <job-id>` command
-
-This follows similar patterns from projects like loki and promtail.
-
-Protocol Buffers ([`api/job/v1/job.proto`](api/job/v1/job.proto))
-- `JobService` - EnqueueJob, DequeueJob, UpdateJob, CompleteJob, ListJobs
-- `JobEventsService` - StreamJobEvents (server→client), PublishJobEvents (worker→server)
-- Uses Connect protocol (gRPC over HTTP/2)
-
-**Process Types**
-- `PIPE` - Non-interactive commands (default)
-- `PTY` - Interactive commands with pseudo-terminal and ANSI support
-
-### Authentication
-
-The server uses mutual TLS (mTLS) for authentication with per-principal X.509 certificates:
-
-- **Server**: Requires client certificates signed by the Airunner CA
-- **CLI**: Pass certificates via `--cacert`, `--client-cert`, `--client-key` flags or environment variables
-- **Development**: Use `--no-auth` flag to disable authentication
-
-Bootstrap and certificate management:
-
-```bash
-# 1. Bootstrap (creates CA and admin credentials)
-./bin/airunner-cli bootstrap --environment=prod --domain=airunner.example.com
-
-# 2. Create principals
-./bin/airunner-cli principal create worker-01 --type=worker --server=...
-
-# 3. Generate certificates
-./bin/airunner-cli certificate generate worker-01 --server=...
-
-# 4. Use certificates with CLI
-./bin/airunner-cli list --server=https://airunner.example.com \
-  --cacert=~/.airunner/ca-cert.pem \
-  --client-cert=~/.airunner/worker-01-cert.pem \
-  --client-key=~/.airunner/worker-01-key.pem
-```
-
-See `specs/mtls/README.md` for complete documentation.
-
-### Design Patterns
-
-1. Visibility Timeout, AWS SQS pattern for at-least-once delivery
-2. Task Tokens, capability-based security (only token holder can complete job)
-3. Long Polling, reduces request overhead vs. short polling
-4. Event Sourcing, all job state changes tracked as events
-5. Server-Side Streaming, real-time monitoring without constant polling
-
-### Current State
-
-**Implemented:**
-- Complete job queue with visibility timeouts
-- Worker execution with PTY/pipe mode
-- Real-time event streaming
-- mTLS authentication with X.509 certificates
-- Role-based authorization (admin, worker, user, service)
-- Pagination and filtering
-- Idempotent job submission
-- **Multiple storage backends:**
-  - In-memory (development)
-  - PostgreSQL (production with SKIP LOCKED)
-
-**Not Implemented:**
-- Multi-tenancy
-
-This provides a production-ready development environment for testing job workflows, with clear extension points for cloud deployment. The architecture is similar to Buildkite Agent or GitHub Actions runners, but self-hosted.
-
 ## Development
 
-### Testing
-
-The project includes comprehensive integration tests using [testcontainers-go](https://golang.testcontainers.org/). No manual infrastructure setup required:
-
-```bash
-# Run all tests
-make test
-
-# Run integration tests (automatically spins up containers)
-make test-integration
-
-# Run PostgreSQL integration tests
-make test-integration-postgres  # PostgreSQL
+```sh
+make build                       # Build airunner-cli and airunner-server into ./bin
+make test                        # Unit tests with coverage
+make test-integration            # All tests including integration (testcontainers, Docker required)
+make test-integration-postgres   # PostgreSQL store integration tests only
+make lint                        # Run the linter
+make proto-generate              # Regenerate Go code from api/*.proto
 ```
 
-Testcontainers automatically manages:
-- PostgreSQL containers for PostgreSQL backend tests
-
-All containers are isolated, use dynamic ports, and clean up automatically after tests complete.
-
-### Building
-
-```bash
-make build         # Build all binaries
-make build-cli     # Build CLI only
-make build-server  # Build server only
-```
-
-See the [Makefile](Makefile) for all available targets.
+Integration tests start isolated PostgreSQL containers on dynamic ports and clean them up. Run `make help` for all targets. Contributor and agent guidance is in [AGENT.md](AGENT.md).
 
 ## License
 

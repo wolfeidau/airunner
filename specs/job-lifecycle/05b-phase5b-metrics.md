@@ -1,6 +1,6 @@
 # Phase 5b: Operational metrics and the stream stall deadline
 
-[← Redesign plan](../job-lifecycle-tenancy-redesign-plan.md) | [← Phase 5a](05a-phase5a-retention.md) | [Phase 6 →](06-phase6-cancellation.md)
+[← README](README.md) | [← Phase 5a](05a-phase5a-retention.md) | [Phase 6 →](06-phase6-cancellation.md)
 
 **Goal:** an operator can see redelivery, dead-lettering, lease loss, publish health, stream load, sweep backlog and worker durability from metrics alone, without per-job labels. A reader that stops reading cannot hold a stream open indefinitely.
 
@@ -97,4 +97,4 @@ go test -tags integration -race ./...
 make lint test proto-lint
 ```
 
-[← Redesign plan](../job-lifecycle-tenancy-redesign-plan.md) | [← Phase 5a](05a-phase5a-retention.md) | [Phase 6 →](06-phase6-cancellation.md)
+[← README](README.md) | [← Phase 5a](05a-phase5a-retention.md) | [Phase 6 →](06-phase6-cancellation.md)

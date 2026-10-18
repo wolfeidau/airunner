@@ -4,77 +4,55 @@ This file provides guidance to AI coding agents when working with code in this r
 
 ## Project Overview
 
-This is `airunner`, a Go-based job orchestration platform with production-ready PostgreSQL backend support.
+`airunner` is a Go job orchestration platform. Clients enqueue jobs, workers dequeue and run them, and the server persists job state and an ordered event log in PostgreSQL. Delivery is at-least-once with bounded attempts, and every job is scoped to an organization.
+
+PostgreSQL is the only job backend. There is no in-memory job store. In-memory identity stores (`internal/store/memory`) exist only as test fakes.
 
 ### Binaries
 
-- **airunner-server** (`cmd/server/main.go`) - Job queue server
-  - Provides gRPC API via Connect RPC for job management
-  - Supports in-memory store (development) or PostgreSQL backend (production)
-  - Handles job queuing, visibility timeouts, and event streaming
-  - OpenTelemetry integration for metrics and tracing
+- **airunner-server** (`cmd/server/main.go`)
+  - `server` - Serves the dashboard and the Connect RPC API (`JobService`, `JobEventsService`, credential service)
+  - `cleanup` - Runs one retention pass (events, jobs, expired sessions) and exits; schedule it externally when in-process retention is disabled
+- **airunner-cli** (`cmd/cli/main.go`)
+  - `worker` - Dequeues jobs, renews leases, runs commands, publishes events through a local WAL
+  - `submit` - Enqueue a job (optionally `--monitor`)
+  - `monitor` - Stream job events (`--attempt` pins an attempt)
+  - `list` - List and filter jobs, `--watch` for live refresh
+  - `cancel` - Cancel a scheduled or running job
+  - `init`, `credentials list|show|update|delete|set-default` - Manage local signing credentials
+  - `test-output`, `test-status` - Demo and test generators (`test-status` emits OSC 7501 program status reports)
 
-- **airunner-cli** (`cmd/cli/main.go`) - Multi-purpose client
-  - `worker` - Long-running job execution worker with event batching
-  - `submit` - Submit jobs to the queue
-  - `monitor` - Real-time job event monitoring with TUI
-  - `list` - List and filter jobs with watch mode
-  - `bootstrap` - Bootstrap mTLS certificates and principals
-
-The system uses Protocol Buffers with Connect RPC for service definitions, with the main job service defined in `api/job/v1/job.proto`.
+The API is defined in `api/job/v1/job.proto` (Protocol Buffers, Connect RPC).
 
 ## Development Commands
 
-**Quick start:**
 ```bash
-make help         # Show all available make targets
+make help         # Show all make targets
+make build        # Build airunner-cli and airunner-server into ./bin
+make build-cli
+make build-server
 ```
 
-**Building the project:**
+**Local run** (needs `mkcert`, Docker, `direnv`, `goreman`; see `README.md`):
 ```bash
-make build        # Build all binaries (airunner-cli, airunner-server)
-make build-cli    # Build only the CLI binary
-make build-server # Build only the server binary
+make certs                                   # Local TLS certs into .certs/
+docker compose up -d postgres
+direnv exec . goreman -f Procfile.dev start  # server (--no-auth, --postgres-auto-migrate) + worker
 ```
 
-**Usage Examples:**
+**CLI reference** (verify with `--help`; flags change):
 ```bash
-# Start the server
-./bin/airunner-server
-
-# Run a worker
-./bin/airunner-cli worker --server=https://localhost:8080
-
-# Submit a job
-./bin/airunner-cli submit --server=https://localhost:8080 github.com/example/repo
-
-# Monitor job progress
-./bin/airunner-cli monitor --server=https://localhost:8080 <job-id>
-
-# List jobs
-./bin/airunner-cli list --server=https://localhost:8080 --queue=default
-
-# Watch jobs in real-time
-./bin/airunner-cli list --server=https://localhost:8080 --watch
+airunner-cli worker  [--server=URL] [--queue=NAME] [--credential=NAME] [--visibility-timeout=SECONDS] [--keep-failed-wal=DURATION] [--tracing]
+airunner-cli submit  [--server=URL] [--queue=NAME] [--monitor] [--config=FILE] [--command=CMD] [--args=...] <repository>
+airunner-cli monitor [--server=URL] [--from-sequence=N] [--attempt=N] <job-id>
+airunner-cli list    [--server=URL] [--queue=NAME] [--state=STATE] [--page=N] [--page-size=N] [--watch]
+airunner-cli cancel  [--server=URL] <job-id>
+airunner-cli init <name> [--set-default]
+airunner-cli credentials update --org-id=ID --principal-id=ID <name>
+airunner-cli test-status [--scenario=happy|blocked|fail] [--steps=N] [--step-delay=DURATION]
 ```
 
-**CLI Command Reference:**
-```bash
-# Worker mode - runs continuously processing jobs
-./bin/airunner-cli worker [--server=URL] [--queue=NAME] [--timeout=SECONDS]
-
-# Submit mode - submit a single job
-./bin/airunner-cli submit [--server=URL] [--queue=NAME] [OPTIONS] <repository-url>
-
-# Monitor mode - stream events for a specific job
-./bin/airunner-cli monitor [--server=URL] [--from-sequence=N] <job-id>
-
-# List mode - list and filter jobs
-./bin/airunner-cli list [--server=URL] [--queue=NAME] [--state=STATE] [--watch]
-
-# Test status mode - emit OSC 7501 program status reports (demo/testing; see README)
-./bin/airunner-cli test-status [--scenario=happy|blocked|fail] [--steps=N] [--step-delay=DURATION]
-```
+**Server flags** (`airunner-server server --help`): `--listen`, `--cert`, `--key`, `--no-auth`, `--tracing`, `--postgres-conn-string` (`$POSTGRES_CONNECTION_STRING`), `--postgres-token-signing-secret` (`$AIRUNNER_POSTGRES_TOKEN_SECRET`), `--postgres-auto-migrate`, `--postgres-default-max-attempts` (3), `--lease-reaper-interval` (5s), `--job-retention-days` (90), `--events-retention-days` (30), `--retention-interval` (1h; 0 disables in-process sweeps), `--event-poll-interval` (500ms), `--stream-send-timeout` (30s). GitHub OAuth uses `--client-id`, `--client-secret`, `--callback-url`.
 
 **Protocol Buffers:**
 ```bash
@@ -85,76 +63,70 @@ make proto-breaking # Check for breaking changes
 
 **Testing:**
 ```bash
-make test                       # Run all tests with coverage
-make test-coverage              # Run tests and show coverage report
-make test-integration           # Run all integration tests (uses testcontainers)
-make test-integration-postgres  # Run PostgreSQL integration tests only
+make test                       # Unit tests with coverage
+make test-coverage              # Tests plus coverage report
+make test-integration           # All tests including the `integration` build tag (testcontainers)
+make test-integration-postgres  # PostgreSQL store integration tests only
 ```
 
-**Integration Testing with Testcontainers:**
-All integration tests use [testcontainers-go](https://golang.testcontainers.org/) to automatically spin up isolated containers. No manual infrastructure setup required - just run the tests and testcontainers handles everything:
-- PostgreSQL for PostgreSQL tests
+Integration tests use [testcontainers-go](https://golang.testcontainers.org/) to start isolated PostgreSQL containers. Docker is the only prerequisite.
 
-**Code Quality:**
+**Code quality and cleanup:**
 ```bash
 make lint          # Run linter
 make lint-fix      # Run linter with auto-fix
-```
-
-**Cleanup:**
-```bash
 make clean         # Clean build artifacts and coverage files
-```
-
-**TLS Certificates:**
-```bash
-make mkcert        # Generate local TLS certificates
 ```
 
 ## Architecture Notes
 
 ### Core Packages
 
-- **internal/store/** - Job storage backends
-  - `JobStore` interface defines the contract for all storage implementations
-  - `MemoryJobStore` (`internal/store/memory/`) - In-memory FIFO queues with visibility timeouts for development
-  - `PostgreSQLJobStore` (`internal/store/postgres/`) - Production backend using PostgreSQL with SKIP LOCKED for job queuing
-
-- **internal/worker/** - Job execution engine
-  - `JobExecutor` - Runs jobs via console-stream library with output capture
-  - `EventBatcher` - Buffers output events before publishing (max 50 items, 256KB, 2s flush interval)
-
-- **internal/server/** - HTTP/gRPC server implementation
-  - `JobService` - Enqueue, dequeue, complete, list operations
-  - `JobEventsService` - Publish and stream events with historical replay
-
-- **internal/telemetry/** - Observability
-  - OpenTelemetry initialization with OTLP exporters (Honeycomb-ready)
-  - 20+ custom metrics for event publish/errors, job lifecycle
-
-- **internal/auth/** - Authentication and Authorization
-  - mTLS authentication with X.509 client certificates
-  - Role-based authorization (admin, worker, user, service)
+- **internal/store/** - Storage contracts
+  - `job_store.go` - `JobStore` interface and sentinel errors
+  - `postgres/` - Production `JobStore` (SKIP LOCKED dequeue, fenced token operations, reaper, retention, sessions, principals, organizations)
+  - `postgres/migrations/` - Squashed schema (`1_initial_schema.sql`, `2_principal_org_fks.sql`)
+  - `postgres/postgrestest/`, `internal/testutil/pgtest/` - Testcontainers PostgreSQL helpers
+  - `storetest/` - Reference model and command generators for differential replay against PostgreSQL
+  - `memory/` - In-memory identity stores, test fakes only
+- **internal/worker/** - Job execution
+  - `worker.go` - `JobExecutor` runs commands via console-stream
+  - `event_batcher.go` - `EventBatcher` buffers output (defaults: 50 items, 256KB, 2s flush)
+  - `wal/` - Per-attempt write-ahead log, flock, ack-validated sender, archive and stale-WAL cleanup
+  - `lease/` - Lease controller: renewal at about timeout/3 with a local deadline
+- **internal/server/** - Connect handlers (`job.go`, `job_event.go`), store-error to RPC-code map (`errors.go`), stream send deadline (`stream_deadline.go`)
+- **internal/auth/** - JWT and session authentication, role authorization (`authz.go`)
+- **internal/telemetry/** - OpenTelemetry setup, `NewMetrics`, worker metrics; `telemetrytest/` for assertions
+- **internal/leasereason/** - Shared lease-loss reason labels
 
 ### Key Patterns
 
-- **Interface-Based Design**: `JobStore` interface allows swapping MemoryJobStore or PostgreSQLJobStore
-- **Stateless Task Tokens**: HMAC-signed tokens containing job_id, queue, receipt_handle
-- **Event Streaming**: Bi-directional streaming with historical replay from database
-- **Visibility Timeout**: Job invisibility for at-least-once delivery
-- **Idempotent Operations**: Request ID tracking for safe retries
-- **Size-Aware Batching**: Conservative limits for efficient event processing
+- **Interface-based store**: `JobStore` is the contract; `storetest` holds the reference model the PostgreSQL store is replayed against
+- **Leases and fencing**: Dequeue creates an attempt and a lease. Every token operation (update, publish, complete) runs under a row lock and is rejected with `ErrLeaseLost` once the lease is gone
+- **Stateless task tokens**: HMAC-SHA256 signed over job ID, queue and the per-lease receipt handle; validated in constant time
+- **Contiguous events**: Sequences are contiguous per attempt; identical retries are no-ops; acknowledgment follows commit
+- **Polling streams**: `StreamJobEvents` polls the database, is pinned to an attempt, and ends when the attempt closes
+- **Idempotent enqueue**: Request ID tracking with a request fingerprint
+- **Org scoping**: Callers are derived from authentication only, never from request fields
 
-### PostgreSQL Backend (PostgreSQLJobStore)
+### PostgreSQL Backend
 
-The PostgreSQL backend provides a relational database implementation:
-- **Jobs Table** - Job metadata with indexes on queue, state, and request_id for idempotency
-- **Job Events Table** - Event persistence with partitioning support
-- **SKIP LOCKED** - Used for concurrent job dequeuing without blocking
-- **Automatic migrations** - Schema management with auto-migrate support
-- **Visibility timeout** - Managed via `visible_at` timestamp column
-- Task tokens use HMAC-SHA256 signing with constant-time validation
-- Supports PostgreSQL 12+
+- Tables: `jobs`, `job_events`, `organizations`, `principals`, `sessions`, `schema_migrations` (see `internal/store/postgres/migrations/`)
+- `FOR UPDATE SKIP LOCKED` for concurrent dequeue
+- Lease state in `receipt_handle`, `leased_by` and `visibility_until`; the reaper returns expired leases to `SCHEDULED`, or to `FAILED` when attempts are exhausted
+- Migrations run on startup with `--postgres-auto-migrate`
+- Developed and tested against PostgreSQL 18 (`docker-compose.yml`, testcontainers)
+
+### Job Lifecycle Guarantees
+
+- States: `SCHEDULED` -> `RUNNING` -> `COMPLETED` / `FAILED` / `CANCELLED`
+- At-least-once delivery. Each dequeue consumes one of `max_attempts` (default 3)
+- No writes through a stale lease. Committed events survive worker loss
+- Unacknowledged WAL records are lost if the lease is lost or the worker disk is lost
+- A job completes only after its whole log is committed (`final_event_sequence` equals the last committed sequence)
+- Cancellation stops a connected worker within about 1.25 x timeout/3 + 5s RPC + 5s grace; a partitioned worker stops at its local lease deadline
+
+Details: `specs/job-lifecycle/00-architecture.md`. Operations: `specs/job-lifecycle/operations-runbook.md`.
 
 ## Code Style
 - **Logging**: ALWAYS use `"github.com/rs/zerolog/log"` for all logging operations
@@ -163,20 +135,27 @@ The PostgreSQL backend provides a relational database implementation:
 - Package names: lowercase, descriptive (buildkite, commands, trace, tokens)
 - Use contexts for cancellation and tracing throughout
 
+
 ### Error Handling Patterns
 
-The codebase uses sentinel errors for common conditions:
+The codebase uses sentinel errors from `internal/store/job_store.go`:
 ```go
 var (
-    ErrInvalidTaskToken = errors.New("invalid task token")
-    ErrQueueMismatch    = errors.New("queue mismatch")
-    ErrJobNotFound      = errors.New("job not found")
-    ErrThrottled        = errors.New("request throttled")
-    ErrEventTooLarge    = errors.New("event exceeds maximum size")
+    ErrInvalidTaskToken   = errors.New("invalid task token")
+    ErrQueueMismatch      = errors.New("queue mismatch")
+    ErrJobNotFound        = errors.New("job not found")
+    ErrJobIDMismatch      = errors.New("job ID mismatch")
+    ErrEventTooLarge      = errors.New("event exceeds maximum size")
+    ErrInvalidArgument    = errors.New("invalid argument")
+    ErrUnavailable        = errors.New("storage temporarily unavailable")
+    ErrLeaseLost          = errors.New("lease lost")
+    ErrJobCancelled       = fmt.Errorf("job cancelled: %w", ErrLeaseLost)
+    ErrFailedPrecondition = errors.New("failed precondition")
+    ErrConflict           = errors.New("conflict")
 )
 ```
 
-Use `errors.Is()` to check for specific error types.
+Use `errors.Is()` to check for specific error types. `internal/server/errors.go` maps them to RPC codes.
 
 ## Documentation Style
 When creating any documentation (README files, code comments, design docs), write in the style of an Amazon engineer:
@@ -190,7 +169,7 @@ When creating any documentation (README files, code comments, design docs), writ
 
 ## Specification Documentation Standards
 
-For complex features requiring significant implementation work (multi-package changes, infrastructure updates, new authentication systems), follow the **layered specification pattern** demonstrated in `specs/mtls/`.
+For complex features requiring significant implementation work (multi-package changes, infrastructure updates, new authentication systems), follow the **layered specification pattern** demonstrated in `specs/job-lifecycle/` and `specs/cli-credentials/`.
 
 ### When to Use Layered Specs
 
@@ -247,7 +226,7 @@ specs/<feature-name>/
 - Summary and goals (what/why)
 - Design decisions and trade-offs
 - Architecture diagrams (Mermaid)
-- Data models (DynamoDB schemas, structs)
+- Data models (database schemas, structs)
 - Key concepts and terminology
 - References to example code (with links to phase files where applicable)
 - Breadcrumb navigation at bottom
@@ -320,7 +299,7 @@ Organize phases by natural implementation flow:
 When asking Claude Code to create layered specs, provide this template:
 
 ```
-I need to create a layered specification for [FEATURE NAME] following the pattern in specs/mtls/.
+I need to create a layered specification for [FEATURE NAME] following the pattern in specs/job-lifecycle/.
 
 The feature involves:
 - [List key components/packages affected]
@@ -334,7 +313,7 @@ Please create a layered spec structure with:
 4. operations-runbook.md for Day 2 operations
 5. examples/ directory with code references
 
-Follow the pattern established in specs/mtls/ including:
+Follow the pattern established in specs/job-lifecycle/ including:
 - Hyperlinks between all spec files (breadcrumbs at top/bottom of each file)
 - All file references as markdown links in tables and text
 - Inline code for interfaces and small snippets
@@ -346,94 +325,76 @@ Follow the pattern established in specs/mtls/ including:
 See AGENT.md "Specification Documentation Standards" section for complete guidelines.
 ```
 
-### Example: mTLS Authentication Spec
 
-**Reference implementation:** `specs/mtls/`
+### Example: Job Lifecycle Spec
 
-This spec demonstrates:
-- ✅ Clear README with navigation and quick start
-- ✅ Architecture file with design decisions and Mermaid diagrams
-- ✅ 5 phase files for sequential implementation
-- ✅ Operations runbook with procedures and metrics
-- ✅ Examples directory with 12 code reference files
-- ✅ Original 3,056-line spec archived for reference
-- ✅ Each phase independently actionable
-- ✅ Total: 3,062 lines across 8 focused spec files
+**Reference implementations:** `specs/job-lifecycle/` and `specs/cli-credentials/`
 
-**Key principles demonstrated:**
-- Each file is independently readable
-- Cross-references between files are clear and use hyperlinks
-- Breadcrumb navigation at top and bottom of every file
-- All file references in tables and text are clickable links
-- Developers can start at README and execute sequentially
-- Easy navigation when viewing on GitHub or in markdown viewers
-- Examples are copy-paste ready when needed
-- Original consolidated spec preserved for reference
+Key principles demonstrated:
+- README entry point with navigation
+- Architecture file with design decisions
+- One file per phase, each independently actionable
+- Operations runbook (`specs/job-lifecycle/operations-runbook.md`)
+- Hyperlinked cross-references and breadcrumbs
 
 ## Authentication
 
-mTLS (mutual TLS) authentication using per-principal X.509 certificates:
-
-- **Server**: Requires client certificates signed by the Airunner CA
-- **CLI**: Pass certificates via `--cacert`, `--client-cert`, `--client-key` flags or environment variables
-- **Bootstrap**: `./bin/airunner-cli bootstrap` to create CA and initial admin credentials
-- **Certificate Management**: Use PrincipalService RPCs to manage principals and certificates
-- **Development**: Use `--no-auth` flag to disable authentication
-
-Key files:
-- `internal/pki/oid.go` - Custom OID extraction for principal metadata
-- `internal/pki/signer.go` - CASigner interface (FileSigner for local, KMSSigner for AWS)
-- `internal/auth/mtls.go` - mTLS authentication middleware
-- `internal/auth/authz.go` - Role-based authorization
-- `internal/store/principal_store.go` - Principal management
-- `internal/store/certificate_store.go` - Certificate management
-- `specs/mtls/` - Complete mTLS implementation documentation
+- **CLI and workers**: JWTs signed by a local credential. Run `airunner-cli init <name>`, import the public key in the dashboard Credentials view, then `airunner-cli credentials update --org-id=... --principal-id=... <name>`
+- **Dashboard**: GitHub OAuth sessions
+- **Authorization**: `NewJobAuthzInterceptor` and `jobProcedureRoles` in `internal/auth/authz.go`. user/admin: EnqueueJob, ListJobs, StreamJobEvents, CancelJob. worker/admin: DequeueJob, UpdateJob, CompleteJob, PublishJobEvents. Unknown procedures fail closed
+- **Development**: `--no-auth` seeds a dev org and principal with admin, user and worker roles (`internal/store/postgres/dev_identity.go`)
 
 ## Key Files
 
 ### API & Proto
-- `api/job/v1/job.proto` - Core job service gRPC definitions
-- `api/buf.yaml` - Protocol buffer configuration and linting rules
+- `api/job/v1/job.proto` - Job and event service definitions
+- `api/buf.yaml` - Buf configuration and lint rules
 
-### Store Implementations
-- `internal/store/store.go` - `JobStore` interface
-- `internal/store/memory/` - In-memory implementation for development
-- `internal/store/postgres/` - PostgreSQL implementation for production
+### Store
+- `internal/store/job_store.go` - `JobStore` interface and sentinel errors
+- `internal/store/postgres/job_store.go` - PostgreSQL job store
+- `internal/store/postgres/job_store_retention.go` - Retention deletes
+- `internal/store/postgres/task_token.go` - Task token signing
+- `internal/store/postgres/migrations/` - Schema
+- `internal/store/storetest/model.go` - Reference model
 
-### Worker & Event Processing
-- `internal/worker/worker.go` - `JobExecutor` for running jobs
-- `internal/worker/event_batcher.go` - Event batching with configurable flush thresholds
+### Worker
+- `cmd/cli/internal/commands/worker.go` - Worker loop, lease wiring, WAL cleanup
+- `internal/worker/worker.go` - `JobExecutor`
+- `internal/worker/event_batcher.go` - Event batching
+- `internal/worker/wal/` - WAL, sender, archive
+- `internal/worker/lease/controller.go` - Lease controller
 
 ### Server
-- `internal/server/server.go` - HTTP server setup with Connect RPC
-- `internal/server/job.go` - JobService implementation
-- `internal/server/job_event.go` - JobEventsService implementation
+- `internal/server/server.go` - HTTP server and Connect wiring
+- `internal/server/job.go`, `job_event.go` - Service implementations
+- `internal/server/errors.go` - Store error to RPC code mapping
+- `internal/server/stream_deadline.go` - Stream send deadline
+
+### Auth
+- `internal/auth/authz.go` - Role authorization
+- `internal/auth/jwt_middleware.go`, `dual_auth_middleware.go`, `session_interceptor.go` - Authentication
 
 ### Observability
 - `internal/telemetry/telemetry.go` - OpenTelemetry initialization
-- `internal/telemetry/metrics.go` - Custom metrics definitions
-
-### Authentication & Authorization
-- `internal/pki/oid.go` - Custom OID extraction
-- `internal/pki/signer.go` - CASigner interface and implementations
-- `internal/auth/mtls.go` - mTLS authentication middleware
-- `internal/auth/authz.go` - Role-based authorization
-- `internal/store/principal_store.go` - Principal management
-- `internal/store/certificate_store.go` - Certificate management
+- `internal/telemetry/metrics.go`, `worker.go` - Metric definitions
 
 ### CLI Commands
-- `cmd/cli/internal/commands/` - Worker, submit, monitor, list, bootstrap commands
+- `cmd/cli/internal/commands/` - worker, submit, monitor, list, cancel, init, credentials, test-output, test-status
 
 ### Design Specs
 
-**Layered Specifications** (follow this pattern for complex features):
-- `specs/mtls/` - mTLS authentication (layered spec with 5 phases, examples, runbook)
-  - See `specs/mtls/README.md` for entry point
-  - Reference implementation of layered spec pattern
+**Layered specifications** (reference implementations of the pattern):
+- `specs/job-lifecycle/` - Job lifecycle, tenancy, fencing, worker durability, event streams, retention, metrics, cancellation
+  - Start at `specs/job-lifecycle/README.md`; Day 2 procedures in `specs/job-lifecycle/operations-runbook.md`
+- `specs/cli-credentials/` - CLI credential storage and JWT signing
 
-**Legacy Specifications** (deprecated, archived):
-- `specs/event_batching.md` - Event batching design (archived)
+**Other specs:**
+- `specs/wal/` - Original WAL design, superseded by `specs/job-lifecycle/04b-phase4b-worker-durability.md`
+- `specs/ui-credentials/` - Dashboard credentials view
+- `specs/ui_job_events_drilldown.md` - Dashboard job events drilldown
 
 ### Infrastructure
-- `infra/` - Terraform configuration (currently being refactored)
-- `docker-compose.yml` - Local PostgreSQL for testing
+- `docker-compose.yml` - Local PostgreSQL 18
+- `Procfile.dev` - Local server (`--no-auth`) and worker
+- `infra/` - Terraform. **Stale**: it still sets `AIRUNNER_STORE_TYPE` and `AIRUNNER_EVENTS_TTL_DAYS`, which the server no longer reads. Do not treat it as a deployment reference

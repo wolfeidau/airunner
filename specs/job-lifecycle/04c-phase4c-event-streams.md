@@ -1,6 +1,6 @@
 # Phase 4c: Event streams
 
-[← Redesign plan](../job-lifecycle-tenancy-redesign-plan.md) | [← Phase 4b](04b-phase4b-worker-durability.md) | [Phase 5a →](05a-phase5a-retention.md)
+[← README](README.md) | [← Phase 4b](04b-phase4b-worker-durability.md) | [Phase 5a →](05a-phase5a-retention.md)
 
 **Goal:** a reader streams exactly one attempt's committed events, in order and without loss, from any server replica. The server tells the reader which attempt it selected, the job state, and when no further events can arrive.
 
@@ -90,4 +90,4 @@ make lint test proto-lint
 bunx biome check ui/pages/
 ```
 
-[← Redesign plan](../job-lifecycle-tenancy-redesign-plan.md) | [← Phase 4b](04b-phase4b-worker-durability.md) | [Phase 5a →](05a-phase5a-retention.md)
+[← README](README.md) | [← Phase 4b](04b-phase4b-worker-durability.md) | [Phase 5a →](05a-phase5a-retention.md)

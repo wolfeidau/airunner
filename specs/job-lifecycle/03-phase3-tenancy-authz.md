@@ -1,6 +1,6 @@
 # Phase 3: Tenancy, authorization, and lifecycle wiring
 
-[← Redesign plan](../job-lifecycle-tenancy-redesign-plan.md) | [← Phase 2](02-phase2-schema-contract.md) | [Phase 4a →](04a-phase4a-fencing.md)
+[← README](README.md) | [← Phase 2](02-phase2-schema-contract.md) | [Phase 4a →](04a-phase4a-fencing.md)
 
 **Goal:** every job RPC enforces the caller's role. Store errors reach clients with consistent Connect codes. The schema guarantees that creators and leasers belong to the job's org. The job store can be started and stopped safely.
 
@@ -101,4 +101,4 @@ go test -tags integration -race -count=5 -run 'Lifecycle|Stop' ./internal/store/
 make lint test proto-lint
 ```
 
-[← Redesign plan](../job-lifecycle-tenancy-redesign-plan.md) | [← Phase 2](02-phase2-schema-contract.md) | [Phase 4a →](04a-phase4a-fencing.md)
+[← README](README.md) | [← Phase 2](02-phase2-schema-contract.md) | [Phase 4a →](04a-phase4a-fencing.md)

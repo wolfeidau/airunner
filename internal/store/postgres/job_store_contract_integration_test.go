@@ -91,7 +91,7 @@ func TestContract_OrgIsolation(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, jobs)
 
-	_, err = js.StreamEvents(ctx, other.User, enq.JobId, 0, 0, 0, nil)
+	err = js.StreamEvents(ctx, other.User, jobstore.StreamRequest{JobID: enq.JobId}, discardStream)
 	require.ErrorIs(t, err, jobstore.ErrJobNotFound)
 
 	// The owning org still sees and can dequeue its job.

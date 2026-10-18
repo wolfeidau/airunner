@@ -1,6 +1,6 @@
 # Phase 4b: Worker durability
 
-[← Redesign plan](../job-lifecycle-tenancy-redesign-plan.md) | [← Phase 4a](04a-phase4a-fencing.md) | [Phase 4c (planned) →](../job-lifecycle-tenancy-redesign-plan.md#deliverable-2-implementation-phases)
+[← Redesign plan](../job-lifecycle-tenancy-redesign-plan.md) | [← Phase 4a](04a-phase4a-fencing.md) | [Phase 4c →](04c-phase4c-event-streams.md)
 
 **Goal:** a worker publishes exactly the events of its own attempt and marks them sent only on a valid server acknowledgement. It stops work as soon as its lease is gone, and it never completes a job whose log the server does not hold.
 
@@ -90,4 +90,4 @@ go test -tags integration -race ./...
 make lint test proto-lint
 ```
 
-[← Redesign plan](../job-lifecycle-tenancy-redesign-plan.md) | [← Phase 4a](04a-phase4a-fencing.md) | [Phase 4c (planned) →](../job-lifecycle-tenancy-redesign-plan.md#deliverable-2-implementation-phases)
+[← Redesign plan](../job-lifecycle-tenancy-redesign-plan.md) | [← Phase 4a](04a-phase4a-fencing.md) | [Phase 4c →](04c-phase4c-event-streams.md)

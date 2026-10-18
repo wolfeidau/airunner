@@ -91,6 +91,33 @@ func TestRPCErrorCodes(t *testing.T) {
 		require.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 	})
 
+	t.Run("stream existing job sends initial status", func(t *testing.T) {
+		resp, err := enqueue("streamstatus", nil)
+		require.NoError(t, err)
+		streamCtx, cancelStream := context.WithCancel(ctx)
+		defer cancelStream()
+		stream, err := userEvents.StreamJobEvents(streamCtx, connect.NewRequest(&jobv1.StreamJobEventsRequest{JobId: resp.Msg.JobId}))
+		require.NoError(t, err)
+		defer stream.Close()
+		require.True(t, stream.Receive(), "stream error: %v", stream.Err())
+		require.Nil(t, stream.Msg().Event)
+		require.GreaterOrEqual(t, stream.Msg().ResolvedAttempt, int32(1))
+		require.False(t, stream.Msg().AttemptClosed)
+	})
+
+	t.Run("stream attempt beyond latest InvalidArgument", func(t *testing.T) {
+		resp, err := enqueue("streamattempt", nil)
+		require.NoError(t, err)
+		stream, err := userEvents.StreamJobEvents(ctx, connect.NewRequest(&jobv1.StreamJobEventsRequest{JobId: resp.Msg.JobId, Attempt: 99}))
+		if err == nil {
+			defer stream.Close()
+			for stream.Receive() {
+			}
+			err = stream.Err()
+		}
+		require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	})
+
 	t.Run("max_attempts out of range InvalidArgument", func(t *testing.T) {
 		for _, n := range []int32{0, 101} {
 			_, err := enqueue("range", &n)

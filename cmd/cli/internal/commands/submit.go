@@ -141,6 +141,7 @@ func (s *SubmitCmd) Run(ctx context.Context, globals *Globals) error {
 			FromSequence:  0,
 			FromTimestamp: 0,
 			EventFilter:   nil,
+			Attempt:       0,
 		}); err != nil {
 			return fmt.Errorf("failed to monitor job: %w", err)
 		}

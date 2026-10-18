@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
+	jobstore "github.com/wolfeidau/airunner/internal/store"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -293,31 +294,17 @@ func TestIntegration_BasicJobLifecycle(t *testing.T) {
 		streamCtx, cancelStream := context.WithCancel(ctx)
 		defer cancelStream()
 
-		eventCh, err := store.StreamEvents(streamCtx, fx.User, jobID, 0, 0, 0, nil)
-		require.NoError(t, err)
-
-		// Collect events
 		var receivedEvents []*jobv1.JobEvent
-		timeout := time.After(2 * time.Second)
-
-	collectLoop:
-		for {
-			select {
-			case event, ok := <-eventCh:
-				if !ok {
-					break collectLoop
-				}
-				receivedEvents = append(receivedEvents, event)
+		err = store.StreamEvents(streamCtx, fx.User, jobstore.StreamRequest{JobID: jobID}, func(r *jobstore.StreamResponse) error {
+			if r.Event != nil {
+				receivedEvents = append(receivedEvents, r.Event)
 				if len(receivedEvents) >= 3 {
-					break collectLoop
+					cancelStream()
 				}
-			case <-timeout:
-				break collectLoop
 			}
-		}
-
-		// Cancel the stream context to clean up the goroutine
-		cancelStream()
+			return nil
+		})
+		require.ErrorIs(t, err, context.Canceled)
 
 		require.GreaterOrEqual(t, len(receivedEvents), 3, "Should receive at least 3 events")
 		t.Logf("Received %d events from stream", len(receivedEvents))

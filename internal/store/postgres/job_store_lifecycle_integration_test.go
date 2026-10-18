@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	jobv1 "github.com/wolfeidau/airunner/api/gen/proto/go/job/v1"
+	jobstore "github.com/wolfeidau/airunner/internal/store"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -69,9 +70,8 @@ func TestLifecycle_StreamEventsAfterStop(t *testing.T) {
 
 	require.NoError(t, js.Stop())
 
-	ch, err := js.StreamEvents(context.Background(), fx.User, jobID, 0, 0, 0, nil)
+	err := js.StreamEvents(context.Background(), fx.User, jobstore.StreamRequest{JobID: jobID}, discardStream)
 	require.Error(t, err)
-	require.Nil(t, ch)
 }
 
 func TestLifecycle_StopReleasesBlockedStream(t *testing.T) {
@@ -79,24 +79,32 @@ func TestLifecycle_StopReleasesBlockedStream(t *testing.T) {
 	jobID, _ := enqueueAndDequeue(t, js, fx, "release")
 
 	// Context is never cancelled: only Stop can release the consumer.
-	ch, err := js.StreamEvents(context.Background(), fx.User, jobID, 0, 0, 0, nil)
-	require.NoError(t, err)
-
-	closed := make(chan struct{})
+	started := make(chan struct{})
+	var once sync.Once
+	done := make(chan error, 1)
 	go func() {
-		for range ch {
-		}
-		close(closed)
+		done <- js.StreamEvents(context.Background(), fx.User, jobstore.StreamRequest{JobID: jobID},
+			func(*jobstore.StreamResponse) error {
+				once.Do(func() { close(started) })
+				return nil
+			})
 	}()
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stream did not start")
+	}
 
 	start := time.Now()
 	require.NoError(t, js.Stop())
 	require.Less(t, time.Since(start), 2*time.Second)
 
 	select {
-	case <-closed:
+	case err := <-done:
+		require.ErrorIs(t, err, jobstore.ErrUnavailable)
 	case <-time.After(2 * time.Second):
-		t.Fatal("stream channel not closed after Stop")
+		t.Fatal("stream not released after Stop")
 	}
 }
 
@@ -142,16 +150,9 @@ func TestLifecycle_ConcurrentPublishStreamAndStop(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < 50 && time.Now().Before(deadline); i++ {
-				sctx, cancel := context.WithCancel(ctx)
-				ch, err := js.StreamEvents(sctx, fx.User, jobID, 0, 0, 0, nil)
-				if err != nil {
-					cancel()
-					continue
-				}
-				time.Sleep(time.Millisecond)
+				sctx, cancel := context.WithTimeout(ctx, 5*time.Millisecond)
+				_ = js.StreamEvents(sctx, fx.User, jobstore.StreamRequest{JobID: jobID}, discardStream)
 				cancel()
-				for range ch {
-				}
 			}
 		}()
 	}

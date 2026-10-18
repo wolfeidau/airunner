@@ -328,6 +328,35 @@ DEALLOCATE audit_dequeue;
 
 Prepared-statement parameters in the first five audit queries are bound by the test/SQL client. After a successful, fully drained sweep, eligible counts at its fixed cutoff should be zero. Track recurring backlog/age in production instead of asserting that expired rows can never exist between sweeps.
 
+## Validated assumptions and repro tests
+
+Checked 2026-10-18 on PostgreSQL 18 (Compose) before implementation.
+
+**Experiment 1: partial index with a bound state parameter.** A 100,000-row temp table (1% SCHEDULED) with `(queue, created_at) WHERE state = 1` and `(queue, state)` indexes, queried with the current dequeue shape:
+
+| Query form | `plan_cache_mode` | Plan |
+|---|---|---|
+| `state = $2` | `force_generic_plan` | Bitmap scan on `(queue, state)`, then Sort over 50,000 estimated rows |
+| `state = 1` literal | `force_generic_plan` | Index scan on the partial index, no Sort |
+| `state = $2` | `auto`, first executions | Index scan on the partial index (custom plan) |
+
+PostgreSQL may switch to a generic plan after five executions, so a bound state parameter loses the partial index in steady state. **Result:** the literal-state rule in [Schema and invariants](#schema-and-invariants) is required.
+
+**Experiment 2: transaction time across a row-lock wait.** Session 1 held `FOR UPDATE` on a row for 3s; session 2 began its transaction, then waited for the same lock. After the wait, `now()` still equalled the transaction start, while `clock_timestamp()` had advanced by 2.46s. **Result:** validating `visibility_until` with `now()` would accept a lease that expired during the wait. The post-lock `clock_timestamp()` rule in [Atomic fencing and time](#atomic-fencing-and-time) is required.
+
+**Repro tests.** Each test asserts the correct behavior, was confirmed to fail on current code for the stated reason, and starts with `t.Skip("known bug: ...")`. The owning phase removes the skip as part of its fix.
+
+| Test | Defect | Observed failure | Phase |
+|---|---|---|---|
+| [`TestHandleEventProcessError`](../internal/worker/process_error_test.go) | ProcessError dropped by `handleEvent` | No PROCESS_ERROR event published | 1 |
+| [`TestContainerEventsRemoveAfterProcessEnd`](../internal/worker/container_events_integration_test.go) (integration) | Executor returns on ProcessEnd | No CONTAINER_REMOVE event published | 1 |
+| [`TestRepro_DequeueIndexPredicateMatchesScheduledState`](../internal/store/postgres/job_lifecycle_repro_integration_test.go) | Partial index on `state = 0` | `idx_jobs_dequeue ... WHERE (state = 0)` | 2 |
+| [`TestRepro_JobHandlersEnforceRoles`](../internal/server/authz_repro_test.go) | No role checks on job RPCs | `user` dequeue long-polled (DeadlineExceeded); `worker` enqueue succeeded | 3 |
+| [`TestRepro_ExpiredLeaseIsRedelivered`](../internal/store/postgres/job_lifecycle_repro_integration_test.go) | No lease reclamation | Job never redelivered within 15s | 4 |
+| [`TestRepro_StaleTokenCannotPublishEvents`](../internal/store/postgres/job_lifecycle_repro_integration_test.go) | Publish not fenced | Publish after completion succeeded | 4 |
+
+`TestRepro_JobHandlersEnforceRoles` uses the memory JobStore; phase 2 moves it to the shared PostgreSQL helper along with [server tests](../internal/server/server_test.go). The existing `TestVisibilityTimeoutExpiry` in that file has been skipped as too slow, which is why missing redelivery went undetected; phase 4 replaces it with the fast repro.
+
 ## Research provenance
 
 Sources accessed 2026-10-18. External facts inform the design; numeric limits, polling, and failure policies are project choices that require the verification above.

@@ -15,6 +15,10 @@ type testCLI struct {
 
 func newTestParser(t *testing.T, cli *testCLI) *kong.Kong {
 	t.Helper()
+	// PostgresStoreFlags.Validate runs during Parse; set placeholders so the tests do not
+	// depend on the developer's environment (CI has neither variable).
+	t.Setenv("POSTGRES_CONNECTION_STRING", "postgres://test@localhost/test")
+	t.Setenv("AIRUNNER_POSTGRES_TOKEN_SECRET", "test-secret-key-min-32-bytes-long")
 	parser, err := kong.New(cli)
 	require.NoError(t, err)
 	return parser

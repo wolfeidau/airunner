@@ -15,6 +15,7 @@ require (
 	filippo.io/csrf v0.2.1
 	github.com/alecthomas/kong v1.16.1
 	github.com/cenkalti/backoff/v5 v5.0.3
+	github.com/cenkalti/backoff/v7 v7.0.1
 	github.com/evanw/esbuild v0.28.2
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0

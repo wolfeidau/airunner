@@ -9,7 +9,8 @@ tool (
 )
 
 require (
-	connectrpc.com/connect v1.21.1
+	connectrpc.com/connect v1.19.1
+	connectrpc.com/connect/v2 v2.0.1
 	connectrpc.com/cors v0.1.0
 	connectrpc.com/otelconnect v0.12.0
 	filippo.io/csrf v0.2.1
@@ -42,7 +43,6 @@ require (
 )
 
 require (
-	connectrpc.com/connect/v2 v2.0.1 // indirect
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20261006220739-8c912ac31dd4 // indirect
 	github.com/Microsoft/go-winio v0.6.4 // indirect

@@ -119,7 +119,7 @@ Every goal of the [redesign plan](../job-lifecycle-tenancy-redesign-plan.md) is 
 | Unacknowledged WAL records | Lost if the lease is lost or the worker disk is lost. Deliberate; see [WAL loss boundary](00-architecture.md#worker-wal-and-sender) |
 | Completion | Only with `final_event_sequence` equal to the last committed sequence |
 | Redelivery latency | Reaper interval (5s) plus the lease duration. A polling interval, not a hard bound under overload or database failure |
-| Cancellation, connected worker | About `1.25 x timeout/3 + 5s` RPC bound, plus up to 5s termination grace: about 135s at the 300s default, about 22.5s at 30s |
+| Cancellation, connected worker | Next publish (about 2s plus one RPC) while the job produces output; otherwise the next renewal, about `1.25 x timeout/3 + 5s` (135s at the 300s default, 22.5s at 30s). Plus up to 5s termination grace |
 | Cancellation, partitioned worker | The local lease deadline stops the worker |
 | Stream latency | Up to one poll interval (500ms by default) behind the commit |
 | Deletion | Eventual. Depends on sweep schedule, backlog and database availability |
@@ -133,12 +133,9 @@ These are accepted limits of the current implementation. None blocks the complet
 | Gap | Impact | Direction |
 |---|---|---|
 | `infra/` still sets `AIRUNNER_STORE_TYPE` and `AIRUNNER_EVENTS_TTL_DAYS` and describes DynamoDB and SQS | Terraform does not describe a deployable PostgreSQL server | Rewrite `infra/` in a separate effort |
-| The worker stops on its **next renewal** after losing its lease, not on the first publish-side lease or cancel signal. The WAL sender stops publishing at once, but execution continues until the controller aborts | Up to one renewal interval of wasted work after a cancel or reclaim | Planned fix: cancel the execution context when the sender reports lease loss |
 | `WAL CleanupStale` logs a pending count that is overstated | Record sent status is in memory only, so a crashed WAL looks fully pending. Diagnostic only; stale files are never uploaded | None needed |
 | `streams.delivery_lag` uses worker clocks | Clock skew biases the histogram | Use for trends, not exact latency |
-| Archived WALs (`~/.airunner/archive/*.wal.zst`) are never pruned | `wal.CleanupArchive` exists but nothing calls it, so the archive grows with every completed job | Prune with `find` as shown in the [runbook](operations-runbook.md#failed-wal-diagnostics) |
 | The WAL directory is fixed at `~/.airunner/wal` | No flag selects another directory | Set `HOME` for the worker process |
-| `airunner-server cleanup` accepts `--postgres-auto-migrate` but ignores it | None; the command never migrates | Run the server once with `--postgres-auto-migrate` |
 
 ## Troubleshooting
 
@@ -167,8 +164,6 @@ These are accepted limits of the current implementation. None blocks the complet
 ## Next steps
 
 - Update `infra/` to a PostgreSQL deployment, then remove the stale environment variables.
-- Cancel execution as soon as the sender or `CompleteJob` reports lease loss, instead of waiting for the next renewal.
-- Prune archived WALs by calling `wal.CleanupArchive` at worker start.
 - Measure active streams, poll query rate and tail lag before changing the polling transport.
 - Add a WAL directory flag to the worker.
 

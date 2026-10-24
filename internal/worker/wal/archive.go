@@ -127,10 +127,10 @@ func archiveWAL(walPath, archiveDir, jobID string, attempt int32) error {
 	return nil
 }
 
-// CleanupArchive removes archived WAL files older than the retention period
-func CleanupArchive(archiveDir string, retentionDays int) error {
-	if retentionDays <= 0 {
-		log.Debug().Msg("Archive cleanup disabled (retentionDays <= 0)")
+// CleanupArchive removes archived WAL files older than retention. A retention <= 0 keeps them.
+func CleanupArchive(archiveDir string, retention time.Duration) error {
+	if retention <= 0 {
+		log.Debug().Msg("Archive cleanup disabled (retention <= 0)")
 		return nil
 	}
 
@@ -140,11 +140,11 @@ func CleanupArchive(archiveDir string, retentionDays int) error {
 		return nil
 	}
 
-	cutoffTime := time.Now().AddDate(0, 0, -retentionDays)
+	cutoffTime := time.Now().Add(-retention)
 
 	log.Debug().
 		Str("archive_dir", archiveDir).
-		Int("retention_days", retentionDays).
+		Dur("retention", retention).
 		Time("cutoff_time", cutoffTime).
 		Msg("Starting archive cleanup")
 

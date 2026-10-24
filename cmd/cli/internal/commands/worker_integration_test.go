@@ -25,7 +25,10 @@ import (
 	"github.com/wolfeidau/airunner/internal/server"
 	"github.com/wolfeidau/airunner/internal/store"
 	"github.com/wolfeidau/airunner/internal/store/postgres/postgrestest"
+	"github.com/wolfeidau/airunner/internal/telemetry"
 	"github.com/wolfeidau/airunner/internal/worker/wal"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 type workerEnv struct {
@@ -71,6 +74,11 @@ func newWorkerEnv(t *testing.T) *workerEnv {
 
 func (e *workerEnv) enqueueAndDequeue(t *testing.T, command string, args ...string) *jobv1.DequeueJobResponse {
 	t.Helper()
+	return e.enqueueAndDequeueVT(t, 30, command, args...)
+}
+
+func (e *workerEnv) enqueueAndDequeueVT(t *testing.T, visibilitySeconds int32, command string, args ...string) *jobv1.DequeueJobResponse {
+	t.Helper()
 	ctx := context.Background()
 	_, err := e.user.EnqueueJob(ctx, connect.NewRequest(&jobv1.EnqueueJobRequest{
 		RequestId: uuid.NewString(),
@@ -79,7 +87,7 @@ func (e *workerEnv) enqueueAndDequeue(t *testing.T, command string, args ...stri
 	}))
 	require.NoError(t, err)
 
-	stream, err := e.clients.Job.DequeueJob(ctx, connect.NewRequest(&jobv1.DequeueJobRequest{Queue: "q", MaxJobs: 1, VisibilityTimeoutSeconds: 30}))
+	stream, err := e.clients.Job.DequeueJob(ctx, connect.NewRequest(&jobv1.DequeueJobRequest{Queue: "q", MaxJobs: 1, VisibilityTimeoutSeconds: visibilitySeconds}))
 	require.NoError(t, err)
 	defer stream.Close()
 	require.True(t, stream.Receive(), "%v", stream.Err())
@@ -246,4 +254,144 @@ func TestRunJob_PermanentPublishErrorFailsJob(t *testing.T) {
 	require.Zero(t, lastSeq, "final sequence is the acknowledged prefix")
 	require.Contains(t, result, "event log incomplete")
 	requireNoWAL(t, e.walCfg, jobID)
+}
+
+// chattyCommand prints a line every 200ms for about 300s and records its pid.
+func chattyArgs(pidFile string) []string {
+	return []string{"-c", "echo $$ > " + pidFile + "; i=0; while [ $i -lt 1500 ]; do echo line $i; i=$((i+1)); sleep 0.2; done"}
+}
+
+func waitPID(t *testing.T, pidFile string) int {
+	t.Helper()
+	var pid int
+	require.Eventually(t, func() bool {
+		b, err := os.ReadFile(pidFile)
+		if err != nil || len(strings.TrimSpace(string(b))) == 0 {
+			return false
+		}
+		pid, err = strconv.Atoi(strings.TrimSpace(string(b)))
+		return err == nil
+	}, 10*time.Second, 50*time.Millisecond)
+	return pid
+}
+
+func requireProcessGone(t *testing.T, pid int) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		return errors.Is(syscall.Kill(pid, 0), syscall.ESRCH)
+	}, 10*time.Second, 100*time.Millisecond, "job process should be killed")
+}
+
+func abandonedByReason(t *testing.T, reader sdkmetric.Reader) map[string]int64 {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+	got := map[string]int64{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, mm := range sm.Metrics {
+			if mm.Name != "worker.jobs.abandoned" {
+				continue
+			}
+			for _, dp := range mm.Data.(metricdata.Sum[int64]).DataPoints {
+				v, _ := dp.Attributes.Value("reason")
+				got[v.AsString()] += dp.Value
+			}
+		}
+	}
+	return got
+}
+
+// With a 300s lease the renewal is far away, so only the WAL sender can stop execution early.
+func TestRunJob_CancelWhileOutputFlowsStopsViaWALSender(t *testing.T) {
+	e := newWorkerEnv(t)
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	d := e.enqueueAndDequeueVT(t, 300, "sh", chattyArgs(pidFile)...)
+	jobID := d.Job.JobId
+
+	done := make(chan error, 1)
+	go func() {
+		done <- (&WorkerCmd{VisibilityTimeout: 300}).runJob(context.Background(), e.clients, e.walCfg, d)
+	}()
+	pid := waitPID(t, pidFile)
+	time.Sleep(time.Second) // let output flow
+
+	cancelledAt := time.Now()
+	_, err := e.user.CancelJob(context.Background(), connect.NewRequest(&jobv1.CancelJobRequest{JobId: jobID}))
+	require.NoError(t, err)
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(15 * time.Second):
+		t.Fatal("worker did not stop within 15s of cancel")
+	}
+	t.Logf("worker exited %s after cancel", time.Since(cancelledAt))
+
+	state, _, result := e.jobState(t, jobID)
+	require.Equal(t, jobv1.JobState_JOB_STATE_CANCELLED, state)
+	require.Empty(t, result)
+	requireNoWAL(t, e.walCfg, jobID)
+	requireProcessGone(t, pid)
+}
+
+func TestRunJob_LeaseLostOnPublishStopsExecution(t *testing.T) {
+	e := newWorkerEnv(t)
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	d := e.enqueueAndDequeueVT(t, 300, "sh", chattyArgs(pidFile)...)
+	jobID := d.Job.JobId
+
+	reader := sdkmetric.NewManualReader()
+	m, err := telemetry.NewWorkerMetrics(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("test"))
+	require.NoError(t, err)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- (&WorkerCmd{VisibilityTimeout: 300, metrics: m}).runJob(context.Background(), e.clients, e.walCfg, d)
+	}()
+	pid := waitPID(t, pidFile)
+	time.Sleep(time.Second)
+
+	_, err = e.stores.Pool.Exec(context.Background(),
+		`UPDATE jobs SET visibility_until = clock_timestamp() - INTERVAL '1 second' WHERE job_id = $1`, jobID)
+	require.NoError(t, err)
+	n, err := e.stores.Jobs.ReapExpired(context.Background(), 10)
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(15 * time.Second):
+		t.Fatal("worker did not stop within 15s of lease loss")
+	}
+
+	state, _, result := e.jobState(t, jobID)
+	require.Equal(t, jobv1.JobState_JOB_STATE_SCHEDULED, state, "result=%s", result)
+	requireNoWAL(t, e.walCfg, jobID)
+	require.Equal(t, map[string]int64{"lease_lost": 1}, abandonedByReason(t, reader))
+	requireProcessGone(t, pid)
+}
+
+type lossyCompleteJobs struct {
+	jobv1connect.JobServiceClient
+}
+
+func (lossyCompleteJobs) CompleteJob(context.Context, *connect.Request[jobv1.CompleteJobRequest]) (*connect.Response[jobv1.CompleteJobResponse], error) {
+	return nil, connect.NewError(connect.CodeUnavailable, errors.New("response lost"))
+}
+
+func TestRunJob_LostCompleteResponseKeepsWAL(t *testing.T) {
+	e := newWorkerEnv(t)
+	d := e.enqueueAndDequeue(t, "sh", "-c", "echo hello")
+	jobID := d.Job.JobId
+	e.clients.Job = lossyCompleteJobs{e.clients.Job}
+
+	err := (&WorkerCmd{VisibilityTimeout: 30}).runJob(context.Background(), e.clients, e.walCfg, d)
+	require.Error(t, err)
+	require.Equal(t, connect.CodeUnavailable, connect.CodeOf(errors.Unwrap(err)))
+
+	requireNoWAL(t, e.walCfg, jobID)
+	kept, err := filepath.Glob(filepath.Join(e.walCfg.WALDir, "failed", "*"+jobID+"*"))
+	require.NoError(t, err)
+	require.NotEmpty(t, kept, "WAL is kept in failed/ when the complete response is lost")
 }

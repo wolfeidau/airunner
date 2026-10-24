@@ -68,7 +68,9 @@ type ServerCmd struct {
 
 	// Store configuration
 	PostgresStore PostgresStoreFlags `embed:"" prefix:"postgres-"`
-	Execution     ExecutionFlags     `embed:"" prefix:"execution-"`
+	// AutoMigrate lives here, not in PostgresStoreFlags, because cleanup never migrates.
+	AutoMigrate bool           `name:"postgres-auto-migrate" help:"run database migrations on startup" default:"false" env:"AIRUNNER_POSTGRES_AUTO_MIGRATE"`
+	Execution   ExecutionFlags `embed:"" prefix:"execution-"`
 }
 
 type PostgresStoreFlags struct {
@@ -84,9 +86,6 @@ type PostgresStoreFlags struct {
 	MinConns        int32 `help:"minimum number of connections in pool" default:"5"`
 	MaxConnLifetime int32 `help:"maximum connection lifetime in seconds" default:"3600"`
 	MaxConnIdleTime int32 `help:"maximum connection idle time in seconds" default:"1800"`
-
-	// Migration Configuration
-	AutoMigrate bool `help:"run database migrations on startup" default:"false" env:"AIRUNNER_POSTGRES_AUTO_MIGRATE"`
 }
 
 func (s *PostgresStoreFlags) Validate() error {
@@ -94,7 +93,7 @@ func (s *PostgresStoreFlags) Validate() error {
 		return errors.New("PostgreSQL connection string is required (--postgres-conn-string or POSTGRES_CONNECTION_STRING)")
 	}
 	if s.TokenSigningSecret == "" {
-		return errors.New("token signing secret is required (--postgres-token-secret or AIRUNNER_POSTGRES_TOKEN_SECRET)")
+		return errors.New("token signing secret is required (--postgres-token-signing-secret or AIRUNNER_POSTGRES_TOKEN_SECRET)")
 	}
 	if len(s.TokenSigningSecret) < 32 {
 		return errors.New("token signing secret must be at least 32 bytes (256 bits) for HMAC-SHA256")
@@ -170,7 +169,7 @@ func (c *ServerCmd) Run(globals *Globals) error {
 	defer pool.Close()
 
 	// Run migrations if enabled
-	if c.PostgresStore.AutoMigrate {
+	if c.AutoMigrate {
 		if err = postgresstore.RunMigrations(ctx, pool); err != nil {
 			return fmt.Errorf("failed to run migrations: %w", err)
 		}

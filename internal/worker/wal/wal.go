@@ -53,6 +53,10 @@ type WAL interface {
 	// Err returns the sticky publish error, if any.
 	Err() error
 
+	// Failed returns a channel that is closed when the sticky publish error is
+	// first set (lease lost or permanent). It is not closed by transient retries.
+	Failed() <-chan struct{}
+
 	// Pending returns the number of unacknowledged records.
 	Pending() int
 
@@ -96,9 +100,6 @@ type WALConfig struct {
 
 	// ArchiveDir is the directory for compressed archives
 	ArchiveDir string
-
-	// RetentionDays is how long to keep archived files
-	RetentionDays int
 
 	// FlushInterval is how often the async sender checks for unsent events
 	FlushInterval time.Duration
@@ -144,7 +145,6 @@ func DefaultConfig() *WALConfig {
 	return &WALConfig{
 		WALDir:            filepath.Join(homeDir, ".airunner", "wal"),
 		ArchiveDir:        filepath.Join(homeDir, ".airunner", "archive"),
-		RetentionDays:     30,
 		FlushInterval:     100 * time.Millisecond,
 		FlushPollInterval: 100 * time.Millisecond,
 		ArchiveOnComplete: true,
@@ -355,6 +355,9 @@ func (w *walImpl) Start(ctx context.Context, sender EventSender) error {
 
 	return nil
 }
+
+// Failed implements WAL.
+func (w *walImpl) Failed() <-chan struct{} { return w.errCh }
 
 // setErr records the first sticky error and wakes waiting Flush callers.
 func (w *walImpl) setErr(err error) {

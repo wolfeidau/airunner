@@ -28,8 +28,8 @@ require (
 	github.com/rs/zerolog v1.35.1
 	github.com/stretchr/testify v1.12.1
 	github.com/testcontainers/testcontainers-go v0.44.0
-	github.com/wolfeidau/console-stream v0.6.5
-	github.com/wolfeidau/osc7501 v0.1.0
+	github.com/wolfeidau/console-stream v0.6.6
+	github.com/wolfeidau/osc7501 v0.2.1
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.47.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.47.0

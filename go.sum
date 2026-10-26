@@ -163,10 +163,10 @@ github.com/tklauser/go-sysconf v0.4.0 h1:7H0uAN+7RkwWRaxhYXDLqa5V3LPrJeV8wmD9dRU
 github.com/tklauser/go-sysconf v0.4.0/go.mod h1:8mTNWyog7H+MpKijp4VmKJAd2bbYQ2zuUwkYRbUArPI=
 github.com/tklauser/numcpus v0.12.0 h1:NR85qdvHA9pFse3x3weVZ0r0ST8R6l5RHbZrlRaqob4=
 github.com/tklauser/numcpus v0.12.0/go.mod h1:ABHeXzJnr/qqwguhClkZKT1/8VABcYrsyUiUGobwWJg=
-github.com/wolfeidau/console-stream v0.6.5 h1:vFeO7Szw4u2y343gqV7rV7LACkfqERFqlKAZu9MUIDg=
-github.com/wolfeidau/console-stream v0.6.5/go.mod h1:Fjn+Kmxo3k5gwUP3tBwD8I1/JSXcl7jUm13JfmXBebQ=
-github.com/wolfeidau/osc7501 v0.1.0 h1:TkKtM51PBn8BOQviTqEC9voHXLhO2riR9FydDalFClM=
-github.com/wolfeidau/osc7501 v0.1.0/go.mod h1:BXJLnwGjkj9GfujZL/ND26Qv9W/4LPtlfdNCV7PG2Fc=
+github.com/wolfeidau/console-stream v0.6.6 h1:Rhgq5PAjb9b+01DXG4hYOxwWyGKs5v45WMtcH6WCE+o=
+github.com/wolfeidau/console-stream v0.6.6/go.mod h1:mXHQOFNqAnT7LJ3YA4bf2cz0tq/h3246a+BxBhjWdk8=
+github.com/wolfeidau/osc7501 v0.2.1 h1:Rfu6Ss0zefMP/1aN8mvgrsQ720tcwFH/KbJjUmlzobM=
+github.com/wolfeidau/osc7501 v0.2.1/go.mod h1:BXJLnwGjkj9GfujZL/ND26Qv9W/4LPtlfdNCV7PG2Fc=
 github.com/yusufpapurcu/wmi v1.2.4 h1:zFUKzehAFReQwLys1b/iSMl+JQGSCSjtVqQn9bBrPo0=
 github.com/yusufpapurcu/wmi v1.2.4/go.mod h1:SBZ9tNy3G9/m5Oi98Zks0QjeHVDvuK0qfxQmPyzfmi0=
 go.opentelemetry.io/auto/sdk v1.2.1 h1:jXsnJ4Lmnqd11kwkBV2LgLoFMZKizbCi5fNZ/ipaZ64=

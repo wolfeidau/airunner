@@ -13,14 +13,14 @@ require (
 	connectrpc.com/cors v0.1.0
 	connectrpc.com/otelconnect v0.12.0
 	filippo.io/csrf v0.2.1
-	github.com/alecthomas/kong v1.16.1
+	github.com/alecthomas/kong v1.17.0
 	github.com/cenkalti/backoff/v5 v5.0.3
 	github.com/evanw/esbuild v0.28.2
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/gregjones/httpcache v0.0.0-20190611155906-901d90724c79
 	github.com/jackc/pgerrcode v0.0.0-20250907135507-afb5586c32a6
-	github.com/jackc/pgx/v5 v5.11.0
+	github.com/jackc/pgx/v5 v5.12.0
 	github.com/klauspost/compress v1.20.3
 	github.com/minio/crc64nvme v1.1.1
 	github.com/mr-tron/base58 v1.3.0
@@ -29,7 +29,7 @@ require (
 	github.com/stretchr/testify v1.12.1
 	github.com/testcontainers/testcontainers-go v0.44.0
 	github.com/wolfeidau/console-stream v0.6.6
-	github.com/wolfeidau/osc7501 v0.2.1
+	github.com/wolfeidau/osc7501 v0.3.0
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.47.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.47.0

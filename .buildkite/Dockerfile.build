@@ -1,6 +1,6 @@
 FROM golang:1.27.3@sha256:e519d3b0a5b285e5aa53ab9eef02bc6bbb9cb04608389b743a136a9ce75f0d1e
 
-COPY --from=goreleaser/goreleaser:v2.19.0@sha256:b62e651c2fd9e7b1c94133a4e5d131187649e45aeeca137fbf4940f0f654ad08 /usr/bin/goreleaser /usr/local/bin/goreleaser
+COPY --from=goreleaser/goreleaser:v2.20.0@sha256:19ca96ff782e521af4002ca42dd42021d360a04a8d2a06bb79f720a284c3fee1 /usr/bin/goreleaser /usr/local/bin/goreleaser
 COPY --from=golangci/golangci-lint:v2.15.0@sha256:fbfcfd12a6f8d7f1b97b3362ca80fc2a244d46863148c73cb88e7793af96c481 /usr/bin/golangci-lint /usr/local/bin/golangci-lint
 COPY --from=ghcr.io/ko-build/ko@sha256:ae515f52e090ad52f5da159c2a54d16f33ffb4903a635166ce43c5d3416f0a82 /ko-app/ko /usr/local/bin/ko
 COPY --from=oven/bun:1.4.4@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d /usr/local/bin/bun /usr/local/bin/bun

@@ -3,7 +3,7 @@ FROM golang:1.27.4@sha256:205c7636d74e0ffbe3d007162df7d74f859f5a8c8322dfb9f90797
 COPY --from=goreleaser/goreleaser:v2.20.2@sha256:5d30bb36091b1a6d275ef450be05ee9c0d8c8b22955efe53dfe0974dd583cdc2 /usr/bin/goreleaser /usr/local/bin/goreleaser
 COPY --from=golangci/golangci-lint:v2.15.0@sha256:fbfcfd12a6f8d7f1b97b3362ca80fc2a244d46863148c73cb88e7793af96c481 /usr/bin/golangci-lint /usr/local/bin/golangci-lint
 COPY --from=ghcr.io/ko-build/ko@sha256:ae515f52e090ad52f5da159c2a54d16f33ffb4903a635166ce43c5d3416f0a82 /ko-app/ko /usr/local/bin/ko
-COPY --from=oven/bun:1.4.4@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d /usr/local/bin/bun /usr/local/bin/bun
+COPY --from=oven/bun:1.4.5@sha256:3aa040e5445efa09d75bb428a64ba50db13e2b3ac9b6b0c7f145615f62b2ee18 /usr/local/bin/bun /usr/local/bin/bun
 
 # install aws-cli
 RUN --mount=type=cache,target=/var/cache/apt \

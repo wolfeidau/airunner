@@ -7,5 +7,5 @@ lockfile = true
 bun = "latest"
 go = "latest"
 golangci-lint = "latest"
-goreleaser = "2.20.2"
+goreleaser = "2.20.3"
 ko = "0.19.1"
